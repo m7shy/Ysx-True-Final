@@ -1,0 +1,123 @@
+{
+	"info": {
+		"_postman_id": "b3f8d8c2-4c2d-4b5e-9f8a-1a2b3c4d5e6f",
+		"name": "Secure Mail Gateway",
+		"description": "Collection for testing the Secure Mail Gateway API endpoints.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/health",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"health"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Sent Emails (Zoho)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/mail/sent?provider=zoho&limit=5",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"mail",
+						"sent"
+					],
+					"query": [
+						{
+							"key": "provider",
+							"value": "zoho",
+							"description": "Provider: 'zoho' or 'gmail'"
+						},
+						{
+							"key": "limit",
+							"value": "5",
+							"description": "Max number of emails"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Sent Emails (Gmail)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/mail/sent?provider=gmail&limit=5",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"mail",
+						"sent"
+					],
+					"query": [
+						{
+							"key": "provider",
+							"value": "gmail"
+						},
+						{
+							"key": "limit",
+							"value": "5"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Send Email",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"provider\": \"zoho\",\n    \"from\": \"sender@example.com\",\n    \"to\": \"recipient@example.com\",\n    \"subject\": \"Test from Postman\",\n    \"text\": \"Hello! This is a test email sent via the API gateway.\",\n    \"html\": \"<p>Hello! This is a <b>test</b> email.</p>\"\n}"
+				},
+				"url": {
+					"raw": "{{baseUrl}}/api/mail/send",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"mail",
+						"send"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3001",
+			"type": "string"
+		}
+	]
+}

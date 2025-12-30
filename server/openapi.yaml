@@ -1,0 +1,174 @@
+openapi: 3.1.0
+info:
+  title: Secure Mail Gateway API
+  description: A secure Node.js backend acting as a gateway for IMAP/SMTP operations with providers like Zoho and Gmail.
+  version: 1.0.0
+servers:
+  - url: http://localhost:3001
+    description: Local Development Server
+
+components:
+  schemas:
+    Provider:
+      type: string
+      enum:
+        - gmail
+        - zoho
+      description: The email service provider.
+
+    SentItem:
+      type: object
+      properties:
+        uid:
+          type: integer
+          description: IMAP UID of the message.
+        id:
+          type: string
+          description: Message-ID header.
+        subject:
+          type: string
+        from:
+          type: string
+        to:
+          type: array
+          items:
+            type: string
+        date:
+          type: string
+          format: date-time
+        snippet:
+          type: string
+          description: Short preview of the email content.
+      required:
+        - uid
+        - subject
+        - from
+        - date
+        - snippet
+
+    SendRequest:
+      type: object
+      properties:
+        provider:
+          $ref: '#/components/schemas/Provider'
+        from:
+          type: string
+          format: email
+        to:
+          type: string
+          format: email
+        subject:
+          type: string
+        text:
+          type: string
+          description: Plain text content.
+        html:
+          type: string
+          description: HTML content.
+      required:
+        - provider
+        - from
+        - to
+        - subject
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          example: VALIDATION
+        message:
+          type: string
+          example: Invalid provider
+        error:
+          type: object
+          nullable: true
+
+paths:
+  /api/health:
+    get:
+      summary: Health Check
+      description: Verifies that the server is running.
+      responses:
+        '200':
+          description: Server is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  env:
+                    type: string
+                    example: development
+
+  /api/mail/sent:
+    get:
+      summary: Fetch Sent Emails
+      description: Retrieves a list of sent emails from the specified provider via IMAP.
+      parameters:
+        - in: query
+          name: provider
+          schema:
+            $ref: '#/components/schemas/Provider'
+          required: true
+          description: The email provider to fetch from.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+          required: false
+          description: Number of emails to retrieve.
+      responses:
+        '200':
+          description: List of sent emails.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SentItem'
+        '400':
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed with provider.
+        '504':
+          description: Operation timed out.
+
+  /api/mail/send:
+    post:
+      summary: Send Email
+      description: Sends an email via SMTP using the specified provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendRequest'
+      responses:
+        '200':
+          description: Email sent successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messageId:
+                    type: string
+                    description: The ID of the sent message.
+        '400':
+          description: Validation error.
+        '401':
+          description: Authentication failed.
+        '504':
+          description: Operation timed out.

@@ -1,0 +1,5 @@
+{
+  "name": "YSX Flow",
+  "description": "An intelligent email follow-up assistant that simulates Zoho Mail integration to draft contextual follow-ups using Gemini 2.5 Flash by YSX Flow.",
+  "requestFramePermissions": []
+}

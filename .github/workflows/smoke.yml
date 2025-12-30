@@ -1,0 +1,58 @@
+name: Smoke Test
+
+on: push
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      PORT: 3001
+      ALLOWLIST_HOSTS: imap.gmail.com,smtp.gmail.com
+      GMAIL_USER: ${{ secrets.GMAIL_USER }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm install
+
+      - name: Start server
+        working-directory: server
+        run: |
+          npm start &
+          echo $! > server.pid
+
+      - name: Wait for server
+        env:
+          PORT: ${{ env.PORT }}
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost "$PORT"; then
+              echo "Server is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to start" >&2
+          exit 1
+
+      - name: Run smoke test
+        working-directory: server
+        run: npm run test:smoke
+
+      - name: Stop server
+        if: always()
+        working-directory: server
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" || true
+          fi
