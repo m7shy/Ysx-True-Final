@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for ysxxs on 2026-01-20T21:08:43+02:00
+# fly.toml app configuration file generated for ysx-true-final on 2026-01-20T19:54:18Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'ysxxs'
-primary_region = 'cdg'
+app = 'ysx-true-final'
+primary_region = 'ams'
 
 [build]
 
@@ -20,4 +20,4 @@ primary_region = 'cdg'
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 1024
+  memory_mb = 256
