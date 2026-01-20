@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import { z } from "zod";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
+import { getMicrosoftImapAccessToken } from "./microsoftOauth.js";
 
 /**
  * Mail router (self-contained)
@@ -618,6 +619,11 @@ function safeShortImapDetail(err: unknown): string {
 function authErrorMessage(provider: Provider, err?: unknown): string {
   const detail = safeShortImapDetail(err);
   if (provider === "microsoft") {
+    // Check for specific refresh failure messages
+    if (detail.includes("Token refresh failed") || detail.includes("AADSTS700025")) {
+      return `Microsoft OAuth refresh failed. ${detail} (Public client apps must not send client_secret. Either remove MICROSOFT_CLIENT_SECRET or use a confidential client app registration)`;
+    }
+
     const base =
       "IMAP authentication failed. Verify IMAP is enabled for the mailbox and that Basic Auth/App Passwords are allowed by your tenant policies (many tenants require OAuth2 for IMAP).";
     return detail ? `${base} Server said: ${detail}` : base;
@@ -687,6 +693,48 @@ async function connectImap(provider: Provider, cfg: ImapConfig): Promise<ImapFlo
     return client;
   }
 
+  // Microsoft: Try OAuth2 first
+  let oauthToken: string | undefined;
+  let oauthError: unknown;
+  try {
+    oauthToken = await getMicrosoftImapAccessToken(cfg.user);
+  } catch (err) {
+    oauthError = err;
+  }
+
+  if (oauthToken) {
+    const client = new ImapFlow({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.secure,
+      servername: cfg.host,
+      auth: {
+        user: cfg.user,
+        accessToken: oauthToken,
+      },
+      connectionTimeout: 60_000,
+      greetingTimeout: 60_000,
+      socketTimeout: 120_000,
+      logger: false,
+      tls: {
+        rejectUnauthorized: true,
+        minVersion: "TLSv1.2",
+      },
+    });
+
+    try {
+      await client.connect();
+      return client;
+    } catch (err) {
+      console.error("Microsoft OAuth2 connection failed:", err);
+      // If OAuth connection failed, we might want to throw here or fall back?
+      // Usually if we have a token and it fails, it's a real auth error.
+      // But let's allow fallback to basic just in case the token was for a different scope/tenant logic mismatch.
+      oauthError = err;
+    }
+  }
+
+  // Fallback to Basic Auth (Legacy / App Passwords)
   const loginMethods = getMicrosoftLoginMethodCandidates();
   const passCandidates = getMicrosoftPasswordCandidates(cfg.pass);
 
@@ -694,9 +742,6 @@ async function connectImap(provider: Provider, cfg: ImapConfig): Promise<ImapFlo
 
   for (const pass of passCandidates) {
     for (const loginMethod of loginMethods) {
-      // IMPORTANT:
-      // loginMethod belongs under auth (auth.loginMethod) per ImapFlow API docs.
-      // Your previous build error happened because it was placed at the top level.
       const auth: any = { user: cfg.user, pass };
       auth.loginMethod = loginMethod;
 
@@ -704,17 +749,11 @@ async function connectImap(provider: Provider, cfg: ImapConfig): Promise<ImapFlo
         host: cfg.host,
         port: cfg.port,
         secure: cfg.secure,
-
-        // Helps some TLS/SNI edge cases.
         servername: cfg.host,
-
         auth,
-
-        // Make failures surface faster instead of hanging for a long time.
-        connectionTimeout: 20_000,
-        greetingTimeout: 20_000,
+        connectionTimeout: 60_000,
+        greetingTimeout: 60_000,
         socketTimeout: 120_000,
-
         logger: false,
         tls: {
           rejectUnauthorized: true,
@@ -734,6 +773,17 @@ async function connectImap(provider: Provider, cfg: ImapConfig): Promise<ImapFlo
         }
       }
     }
+  }
+
+  // If we had an OAuth error initially, and basic auth also failed,
+  // append the OAuth error to the message so the user knows what's missing.
+  if (oauthError) {
+    // If the OAuth error was a specific AUTH failure (like the public client issue), prioritize it.
+    if ((oauthError as any).code === 'AUTH' && (oauthError as any).status === 401) {
+      throw oauthError;
+    }
+    const msg = (oauthError as any)?.message || String(oauthError);
+    throw new Error(`Authentication failed. OAuth2 error: ${msg}. Basic Auth error: ${(lastErr as any)?.message}`);
   }
 
   throw lastErr;
@@ -764,6 +814,11 @@ async function fetchSentViaImap(provider: Provider, cfg: ImapConfig, limit: numb
       throw err;
     }
   } catch (err: unknown) {
+    // Check if it's already a 401/AUTH error from OAuth (has status/code props)
+    if (err && typeof err === 'object' && (err as any).status === 401 && (err as any).code === 'AUTH') {
+      throw err;
+    }
+
     if (isImapAuthError(err)) {
       throw makeHttpError(401, "AUTH", authErrorMessage(provider, err));
     }

@@ -73,9 +73,10 @@ function toGatewayProviderKey(provider: ActiveProvider): GatewayProviderKey {
 }
 
 function toFollowupProviderKey(provider: ActiveProvider): ProviderKeyDto | null {
-  // Follow-up scheduler backend currently only supports gmail/zoho.
+  // Follow-up scheduler backend supports gmail/zoho/microsoft.
   if (provider === 'GMAIL') return 'gmail';
   if (provider === 'ZOHO') return 'zoho';
+  if (provider === 'MICROSOFT') return 'microsoft';
   return null;
 }
 

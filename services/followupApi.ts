@@ -2,7 +2,7 @@ import { AppError, AppErrorCode } from '../types';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
 
-export type ProviderKeyDto = 'gmail' | 'zoho';
+export type ProviderKeyDto = 'gmail' | 'zoho' | 'microsoft';
 
 export interface FollowupJobDto {
   id: string;
@@ -49,13 +49,14 @@ export interface ScheduleFollowupInput {
   onlyIfNoReply?: boolean;
 }
 
-const providerToAppErrorTarget = (provider: ProviderKeyDto): 'ZOHO' | 'GOOGLE' => {
+const providerToAppErrorTarget = (provider: ProviderKeyDto): 'ZOHO' | 'GOOGLE' | 'MICROSOFT' => {
+  if (provider === 'microsoft') return 'MICROSOFT';
   return provider === 'gmail' ? 'GOOGLE' : 'ZOHO';
 };
 
 async function parseJsonResponse(
   response: Response,
-  provider: 'ZOHO' | 'GOOGLE' | 'SYSTEM'
+  provider: 'ZOHO' | 'GOOGLE' | 'MICROSOFT' | 'SYSTEM'
 ) {
   let data: any = null;
 

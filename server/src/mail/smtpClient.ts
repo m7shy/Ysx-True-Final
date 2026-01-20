@@ -7,10 +7,17 @@ import { maskEmail } from '../util/redact.js';
 import { MailError } from '../httpErrors.js';
 import { sendDuration, sendTotal } from '../metrics.js';
 
-interface SmtpSendOptions extends SmtpConfig, SendMailOptions {}
+interface SmtpSendOptions extends SmtpConfig, SendMailOptions {
+  connectionTimeout?: number;
+  greetingTimeout?: number;
+  socketTimeout?: number;
+}
 
 export async function sendMail(options: SmtpSendOptions): Promise<string> {
-  const { host, port = 465, secure = true, auth, from, to, subject, text, html, attachments } = options;
+  const { 
+    host, port = 465, secure = true, auth, from, to, subject, text, html, attachments,
+    connectionTimeout, greetingTimeout, socketTimeout
+  } = options;
 
   const start = performance.now();
 
@@ -54,9 +61,9 @@ export async function sendMail(options: SmtpSendOptions): Promise<string> {
     secure, // true for 465, false for other ports
     auth: transporterAuth,
     // Robustness settings
-    connectionTimeout: 15000, // 15s
-    greetingTimeout: 15000,
-    socketTimeout: 15000,
+    connectionTimeout: connectionTimeout ?? 15000, // 15s default
+    greetingTimeout: greetingTimeout ?? 15000,
+    socketTimeout: socketTimeout ?? 15000,
   });
 
   // Listen for token updates if using OAuth2 (optional logging or handling)

@@ -60,4 +60,4 @@ export interface ProviderConfig {
   smtpHost: string;
 }
 
-export type ProviderName = 'gmail' | 'zoho';
+export type ProviderName = 'gmail' | 'zoho' | 'microsoft';
