@@ -1,0 +1,60 @@
+[1mdiff --git a/server/package-lock.json b/server/package-lock.json[m
+[1mindex 7056419..229ac11 100644[m
+[1m--- a/server/package-lock.json[m
+[1m+++ b/server/package-lock.json[m
+[36m@@ -3839,9 +3839,9 @@[m
+       }[m
+     },[m
+     "node_modules/qs": {[m
+[31m-      "version": "6.14.0",[m
+[31m-      "resolved": "https://registry.npmjs.org/qs/-/qs-6.14.0.tgz",[m
+[31m-      "integrity": "sha512-YWWTjgABSKcvs/nWBi9PycY/JiPJqOD4JA6o9Sej2AtvSGarXxKC3OQSk4pAarbdQlKAh5D4FCQkJNkW+GAn3w==",[m
+[32m+[m[32m      "version": "6.14.1",[m
+[32m+[m[32m      "resolved": "https://registry.npmjs.org/qs/-/qs-6.14.1.tgz",[m
+[32m+[m[32m      "integrity": "sha512-4EK3+xJl8Ts67nLYNwqw/dsFVnCf+qR7RgXSK9jEEm9unao3njwMDdmsdvoKBKHzxd7tCYz5e5M+SnMjdtXGQQ==",[m
+       "license": "BSD-3-Clause",[m
+       "dependencies": {[m
+         "side-channel": "^1.1.0"[m
+[1mdiff --git a/server/src/mail/replyCheck.ts b/server/src/mail/replyCheck.ts[m
+[1mindex 76bc0c4..c98f40e 100644[m
+[1m--- a/server/src/mail/replyCheck.ts[m
+[1m+++ b/server/src/mail/replyCheck.ts[m
+[36m@@ -1,7 +1,6 @@[m
+ import { ImapFlow } from 'imapflow';[m
+ import { logger } from '../logger.js';[m
+ import { getImapConfig } from './smtpGateway.js';[m
+[31m-import { getMicrosoftImapAccessToken } from './microsoftOauth.js';[m
+ import type { ProviderName } from './types.js';[m
+ [m
+ const DEBUG_REPLY_DETECT = String(process.env.DEBUG_REPLY_DETECT ?? '').trim() === '1';[m
+[36m@@ -185,30 +184,6 @@[m [mfunction pickUserPass(auth: any): { user: string; pass: string } {[m
+ }[m
+ [m
+ async function buildImapAuth(provider: ProviderName, auth: any): Promise<any> {[m
+[31m-  if (provider === 'microsoft') {[m
+[31m-    // Prefer OAuth2 (XOAUTH2) for Microsoft IMAP.[m
+[31m-    const user = auth && typeof auth === 'object' ? String((auth as any).user ?? '') : '';[m
+[31m-    if (!user) throw new Error('Invalid Microsoft IMAP auth config (expected user).');[m
+[31m-[m
+[31m-    try {[m
+[31m-      const accessToken = await getMicrosoftImapAccessToken(user);[m
+[31m-      return { user, accessToken };[m
+[31m-    } catch (err) {[m
+[31m-      // Fallback to basic auth when available (works for some consumer accounts/tenants).[m
+[31m-      try {[m
+[31m-        const { pass } = pickUserPass(auth);[m
+[31m-        debugLog('Reply check: Microsoft OAuth2 unavailable, falling back to basic auth', {[m
+[31m-          provider,[m
+[31m-          user,[m
+[31m-          err: (err as any)?.message ?? String(err),[m
+[31m-        });[m
+[31m-        return { user, pass };[m
+[31m-      } catch {[m
+[31m-        throw err;[m
+[31m-      }[m
+[31m-    }[m
+[31m-  }[m
+[31m-[m
+   const { user, pass } = pickUserPass(auth);[m
+   return { user, pass };[m
+ }[m
