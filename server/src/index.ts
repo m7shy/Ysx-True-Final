@@ -11,6 +11,7 @@ import { logger } from './logger.js';
 import mailRouter from './mail/routes.js';
 import followupsRouter from './followups/routes.js';
 import geminiRouter from './gemini/routes.js';
+import campaignsRouter from './campaigns/routes.js';
 
 import { startFollowupScheduler, cancelFollowup, cancelRemainingFollowupsForRecipient } from './scheduler/followupScheduler.js';
 import { sendSmtpMail, parseProvider } from './mail/smtpGateway.js';
@@ -67,6 +68,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/mail', mailRouter);
 app.use('/api/followups', followupsRouter);
 app.use('/api/gemini', geminiRouter);
+app.use('/api/campaigns', campaignsRouter);
 
 // ---- Static Files (Frontend) ----
 const __filename = fileURLToPath(import.meta.url);

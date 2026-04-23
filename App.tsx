@@ -23,12 +23,13 @@ import { StoryVaultView } from './components/StoryVaultView';
 import { CampaignsListView } from './components/CampaignsListView';
 import { CampaignDetailView } from './components/CampaignDetailView';
 import { UniboxView } from './components/UniboxView';
+import { CampaignWizard } from './src/features/campaigns/CampaignWizard';
 
 // Icons & UI
 import { Mail, RefreshCcw, Layout, CalendarClock, Plus, Moon, Sun, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle } from 'lucide-react';
 import { gwHealth } from './services/mailGateway';
 
-type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX';
+type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'CAMPAIGN_CREATE' | 'UNIBOX';
 
 // --- Inner App Logic to use Campaign Context ---
 const AppContent: React.FC = () => {
@@ -314,6 +315,7 @@ const AppContent: React.FC = () => {
           <nav className="space-y-1">
             <NavButton view="DASHBOARD" icon={Mail} label="Dashboard" isActive={currentView === 'DASHBOARD'} />
             <NavButton view="CAMPAIGNS" icon={Megaphone} label="All Campaigns" isActive={currentView === 'CAMPAIGNS' || currentView === 'CAMPAIGN_DETAIL'} />
+            <NavButton view="CAMPAIGN_CREATE" icon={Plus} label="New Campaign" isActive={currentView === 'CAMPAIGN_CREATE'} />
           </nav>
         </div>
 
@@ -430,6 +432,7 @@ const AppContent: React.FC = () => {
                currentView === 'STORY_VAULT' ? 'Story Vault' : 
                currentView === 'CAMPAIGNS' ? 'Campaigns' :
                currentView === 'CAMPAIGN_DETAIL' ? 'Campaign Details' :
+               currentView === 'CAMPAIGN_CREATE' ? 'New Campaign' :
                currentView === 'UNIBOX' ? 'Unified Inbox' :
                currentView === 'PERFORMANCE' ? 'Performance' : 'Integrations'}
             </h1>
@@ -491,12 +494,20 @@ const AppContent: React.FC = () => {
         {currentView === 'CAMPAIGNS' && (
           <CampaignsListView 
             onNewCampaign={() => {
-              setComposeInitialData(undefined);
-              setIsComposing(true);
+              setCurrentView('CAMPAIGN_CREATE');
             }}
             onSelectCampaign={(id) => {
               setSelectedCampaignId(id);
               setCurrentView('CAMPAIGN_DETAIL');
+            }}
+          />
+        )}
+        {currentView === 'CAMPAIGN_CREATE' && (
+          <CampaignWizard
+            onClose={() => setCurrentView('CAMPAIGNS')}
+            onSubmitted={() => {
+              showToast('SUCCESS', 'Campaign queued.');
+              setCurrentView('CAMPAIGNS');
             }}
           />
         )}
