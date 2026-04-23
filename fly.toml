@@ -1,4 +1,8 @@
+<<<<<<< Updated upstream
 # fly.toml app configuration file generated for ysx-true-final on 2026-01-20T19:54:18Z
+=======
+# fly.toml app configuration file generated for ysxxs on 2026-01-20T23:33:00+02:00
+>>>>>>> Stashed changes
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -11,9 +15,9 @@ primary_region = 'ams'
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = 'off'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
 
 [[vm]]

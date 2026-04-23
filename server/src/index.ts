@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { config } from './config.js';
@@ -19,7 +20,27 @@ export const app = express();
 
 app.set('trust proxy', 1);
 
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          'https://cdn.tailwindcss.com',
+          'https://aistudiocdn.com',
+          'https://esm.sh',
+        ],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        connectSrc: ["'self'", 'https://esm.sh', 'https://aistudiocdn.com'],
+        upgradeInsecureRequests: null,
+      },
+    },
+  })
+);
 app.use(
   cors({
     origin: true,
@@ -46,6 +67,18 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/mail', mailRouter);
 app.use('/api/followups', followupsRouter);
 app.use('/api/gemini', geminiRouter);
+
+// ---- Static Files (Frontend) ----
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const clientDistPath = path.join(__dirname, '../../dist');
+
+app.use(express.static(clientDistPath));
+
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) return next();
+  res.sendFile(path.join(clientDistPath, 'index.html'));
+});
 
 // ---- Followup scheduler boot wiring ----
 async function sendFollowupJob(job: any) {
