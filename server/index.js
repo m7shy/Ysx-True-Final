@@ -25,7 +25,14 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 app.use(limiter);
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      "upgrade-insecure-requests": null,
+    }
+  }
+}));
 
 // Increase payload limit for email bodies
 app.use(express.json({ limit: '50mb' }));

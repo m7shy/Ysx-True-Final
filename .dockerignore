@@ -1,1 +1,29 @@
-fly.toml
+# dependencies
+node_modules
+**/node_modules
+
+# your weird folders that are huge in THIS repo
+node
+npm
+
+# builds
+dist
+**/dist
+
+# git + cache
+.git
+**/.git
+.vscode
+**/.cache
+**/.vite
+
+# logs / junk
+*.log
+server/server.log
+server/server.err
+
+# secrets / local env
+
+# local data that should NOT be shipped
+server/data/tokens.json
+server/data/tokens.json.bak_pre

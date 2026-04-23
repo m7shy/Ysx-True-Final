@@ -12,7 +12,7 @@ const Type = {
   NULL: 'NULL'
 } as const;
 
-const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
+const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
 const PROXY_URL = `${API_URL}/api/gemini/generate`;
 
 const cleanJsonString = (text: string): string => {
