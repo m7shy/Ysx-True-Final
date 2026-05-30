@@ -12,9 +12,14 @@ fly.secrets.env
 server/.env
 server/.env.*
 
-server/data/tokens.json
-server/data/tokens.json.bak_pre
-server/data/followups.json
+# Runtime/secret data under server/data must never be committed.
+# Covers tokens.json, followups.json, *.json.bak_pre and any other backups.
+server/data/*.json
+server/data/*.json*
+server/data/*.bak
+server/data/*.bak_*
+# Keep the directory tracked (runtime files above stay ignored).
+!server/data/.gitkeep
 
 *.log
 server.log

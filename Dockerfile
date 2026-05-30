@@ -25,8 +25,11 @@ RUN npm ci --omit=dev
 
 # Copy backend build
 COPY --from=backend-builder /app/server/dist ./dist
-# Copy backend data (tokens, etc.)
-COPY --from=backend-builder /app/server/data ./data
+# Runtime data dir (followups.json, tokens.json, etc.) is intentionally NOT
+# baked into the image — that would ship secrets/runtime state in image layers.
+# It is created empty on boot and, in production, backed by a Fly volume
+# mounted at /app/server/data (see fly.toml).
+RUN mkdir -p /app/server/data
 
 # Copy frontend build to ../dist (relative to server/dist/index.js)
 # server is at /app/server. 
