@@ -29,7 +29,12 @@ export function stripSecrets<T extends Record<string, unknown>>(obj: T): Partial
  */
 export function persistPublicSettings(settings: UserSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stripSecrets(settings)));
+    const publicSettings = stripSecrets(settings);
+    // Never persist the unsupported legacy 'oauth-api' transport mode.
+    if (publicSettings.transportMode && publicSettings.transportMode !== 'gateway-imap-smtp') {
+      publicSettings.transportMode = 'gateway-imap-smtp';
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(publicSettings));
   } catch (e) {
     console.error('Failed to persist settings', e);
   }
@@ -70,9 +75,17 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
         const parsed = JSON.parse(saved);
         // Sanitize: never trust secrets that may exist in an older blob.
         const sanitized = stripSecrets(parsed);
-        // Migration: if the stored blob contained secret keys, rewrite it clean
-        // so the secrets are removed from disk immediately on first load.
-        if (Object.keys(parsed).length !== Object.keys(sanitized).length) {
+        // Migration: the 'oauth-api' transport mode is no longer supported
+        // (it called backend routes that do not exist). Coerce it back to the
+        // only production-supported transport so users never load into it.
+        const hadLegacyTransport =
+          sanitized.transportMode !== undefined && sanitized.transportMode !== 'gateway-imap-smtp';
+        if (hadLegacyTransport) {
+          sanitized.transportMode = 'gateway-imap-smtp';
+        }
+        // Migration: if the stored blob contained secret keys or a legacy
+        // transport, rewrite it clean so it is fixed on disk on first load.
+        if (Object.keys(parsed).length !== Object.keys(sanitized).length || hadLegacyTransport) {
           try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
           } catch (e) {
