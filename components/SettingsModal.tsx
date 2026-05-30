@@ -305,30 +305,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                                  </span>
                               </div>
                            </label>
-
-                           <label className="flex items-center p-3 border rounded-lg cursor-pointer bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-brand-300">
-                              <input 
-                                type="radio" 
-                                name="transportMode" 
-                                value="oauth-api"
-                                checked={localSettings.transportMode === 'oauth-api'}
-                                onChange={() => setLocalSettings({...localSettings, transportMode: 'oauth-api'})}
-                                className="w-4 h-4 text-brand-600 focus:ring-brand-500 border-gray-300"
-                              />
-                              <div className="ml-3">
-                                 <span className="block text-sm font-medium text-slate-900 dark:text-white flex items-center">
-                                    <Globe className="w-4 h-4 mr-2 text-purple-500" />
-                                    Browser API (OAuth)
-                                 </span>
-                                 <span className="block text-xs text-slate-500">
-                                    Legacy mode. Connects directly from browser using provider APIs.
-                                 </span>
-                              </div>
-                           </label>
                         </div>
+                        <p className="text-xs text-slate-500 mt-3">
+                           Secure Gateway (IMAP/SMTP) is the only supported transport mode. The legacy Browser API (OAuth) mode has been removed.
+                        </p>
                      </div>
 
-                     {localSettings.transportMode === 'gateway-imap-smtp' ? (
+                     {(
                        <div className="p-6 border border-slate-300 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/50 flex flex-col items-center text-center">
                           <div className="w-12 h-12 bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 rounded-full flex items-center justify-center mb-4">
                              <Server className="w-6 h-6" />
@@ -347,13 +330,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                                 Note: For Outlook/Microsoft, use an App Password generated from your Microsoft Account Security page.
                              </p>
                           )}
-                       </div>
-                     ) : (
-                       /* LEGACY OAUTH CONFIGURATION - Placeholder or existing */
-                       <div className="flex flex-col items-center justify-center py-6 px-4 text-center bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
-                          <p className="text-sm text-slate-500 dark:text-slate-400">
-                            Please switch to <strong>Secure Gateway</strong> mode to use {localSettings.activeProvider} securely with App Passwords.
-                          </p>
                        </div>
                      )}
                   </div>

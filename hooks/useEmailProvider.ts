@@ -80,6 +80,21 @@ function toFollowupProviderKey(provider: ActiveProvider): ProviderKeyDto | null 
   return null;
 }
 
+/**
+ * Only 'gateway-imap-smtp' is supported. The legacy 'oauth-api' transport
+ * called backend routes that do not exist, so guard every real-API path and
+ * fail with a clear, non-secret error instead of silently hitting dead routes.
+ */
+function assertGatewayMode(transportMode: UserSettings['transportMode']): void {
+  if (transportMode !== 'gateway-imap-smtp') {
+    throw new AppError(
+      AppErrorCode.VALIDATION,
+      'SYSTEM',
+      'OAuth API mode is not available yet. Use gateway-imap-smtp.'
+    );
+  }
+}
+
 export const useEmailProvider = () => {
   const { settings, updateSettings } = useSettings();
   const [emails, setEmails] = useState<Email[]>([]);
@@ -193,6 +208,7 @@ export const useEmailProvider = () => {
 
     try {
       if (settings.useRealApi) {
+        assertGatewayMode(settings.transportMode);
         // --- GATEWAY MODE ---
         if (settings.transportMode === 'gateway-imap-smtp') {
           const gatewayProviderKey = toGatewayProviderKey(settings.activeProvider);
@@ -259,6 +275,7 @@ export const useEmailProvider = () => {
       };
 
       if (settings.useRealApi) {
+        assertGatewayMode(settings.transportMode);
         const gatewayProviderKey = toGatewayProviderKey(settings.activeProvider);
         const followupProviderKey = toFollowupProviderKey(settings.activeProvider);
 
@@ -406,6 +423,7 @@ export const useEmailProvider = () => {
   const sendFollowUp = useCallback(
     async (email: Email, content: string, date?: string) => {
       if (settings.useRealApi) {
+        assertGatewayMode(settings.transportMode);
         if (date) {
           console.warn('Real API Scheduling requires a backend queue.');
           // In a production app, this would send a payload to your scheduler backend
