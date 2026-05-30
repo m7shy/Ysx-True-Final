@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Save, Globe, Shield, User, Sliders, AlertTriangle, PlugZap, CheckCircle2, Lock, Hammer, Square, ChevronDown, ChevronUp, Copy, ExternalLink, ArrowRight, Mail, Key, HelpCircle, Server } from 'lucide-react';
 import { UserSettings, FollowUpTone } from '../types';
 import { ConfirmModal } from './ConfirmModal';
+import { persistPublicSettings } from '../context/SettingsContext';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -79,7 +80,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
     setClientIdError(false);
 
     const settingsToSave = { ...settings, ...localSettings };
-    localStorage.setItem('ysxflow_settings', JSON.stringify(settingsToSave));
+    // Persist PUBLIC settings only (clientId, provider, region) so they survive
+    // the OAuth redirect. Secrets are never written to localStorage (C3).
+    persistPublicSettings(settingsToSave);
     onSave(settingsToSave); 
     
     const redirectUri = window.location.origin;
@@ -101,7 +104,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
     setGoogleClientIdError(false);
 
     const settingsToSave = { ...settings, ...localSettings };
-    localStorage.setItem('ysxflow_settings', JSON.stringify(settingsToSave));
+    // Persist PUBLIC settings only (clientId, provider, region) so they survive
+    // the OAuth redirect. Secrets are never written to localStorage (C3).
+    persistPublicSettings(settingsToSave);
     onSave(settingsToSave); 
 
     const redirectUri = window.location.origin;
