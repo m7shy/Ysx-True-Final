@@ -132,6 +132,20 @@ export interface SecureState {
 
 export type UserSettings = PublicSettings & SecureState;
 
+/**
+ * Keys holding sensitive OAuth/credential material (access tokens, refresh
+ * tokens, client secrets). These are kept in memory for the active session
+ * only and must NEVER be written to localStorage. See context/SettingsContext.
+ */
+export const SECRET_SETTING_KEYS: ReadonlyArray<keyof SecureState> = [
+  'zohoAccessToken',
+  'zohoRefreshToken',
+  'googleAccessToken',
+  'googleRefreshToken',
+  'zohoClientSecret',
+  'googleClientSecret',
+];
+
 // UPDATED: Default is now GMAIL to prevent missing ZOHO errors
 export const DEFAULT_SETTINGS: UserSettings = {
   zohoClientId: '',

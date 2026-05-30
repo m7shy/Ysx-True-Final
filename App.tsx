@@ -111,34 +111,22 @@ const AppContent: React.FC = () => {
         const handleExchange = async () => {
             setConnecting(true);
             try {
-                // FALLBACK: Read directly from LocalStorage if context seems empty.
-                // This ensures we can complete the handshake even if React Context isn't fully hydrated from LS yet.
-                let clientId = userSettings.googleClientId;
-                let clientSecret = userSettings.googleClientSecret;
+                // C3: client secrets are NO LONGER persisted to localStorage. The
+                // authorization-code exchange needs the Google client secret, which
+                // only lives in memory and does not survive the OAuth redirect
+                // round-trip. Completing this securely requires a server-side token
+                // exchange (tracked as a future task). We read in-memory context
+                // only and fail gracefully instead of reading secrets from storage.
+                const clientId = userSettings.googleClientId;
+                const clientSecret = userSettings.googleClientSecret;
 
                 if (!clientId || !clientSecret) {
-                   try {
-                     const stored = localStorage.getItem('ysxflow_settings');
-                     if (stored) {
-                       const parsed = JSON.parse(stored);
-                       if (parsed.googleClientId) clientId = parsed.googleClientId;
-                       if (parsed.googleClientSecret) clientSecret = parsed.googleClientSecret;
-                       
-                       // Sync back to context if found
-                       if (clientId || clientSecret) {
-                          updateSettings({ 
-                             googleClientId: clientId || userSettings.googleClientId, 
-                             googleClientSecret: clientSecret || userSettings.googleClientSecret
-                          });
-                       }
-                     }
-                   } catch(err) {
-                     console.error("Manual LS read failed", err);
-                   }
-                }
-
-                if (!clientId || !clientSecret) {
-                    showToast('ERROR', 'Missing Google Client ID or Secret in settings. Cannot exchange code.');
+                    showToast(
+                        'ERROR',
+                        'Google OAuth-API connect can’t complete in the browser because client secrets are no longer stored locally (security hardening). Use Gateway (IMAP/SMTP) mode, or wait for server-side OAuth.'
+                    );
+                    // Clear the ?code= from the URL so we don't loop on reload.
+                    window.history.replaceState(null, '', window.location.pathname);
                     return;
                 }
 
