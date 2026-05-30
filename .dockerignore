@@ -24,6 +24,14 @@ server/server.err
 
 # secrets / local env
 
-# local data that should NOT be shipped
-server/data/tokens.json
-server/data/tokens.json.bak_pre
+# local data that should NOT be shipped (tokens, backups, runtime json)
+# Exclude the whole data dir from the build context so secrets can never be
+# baked into image layers. The runtime creates this dir on boot (see Dockerfile),
+# and in production it is backed by a Fly volume (see fly.toml).
+server/data
+server/data/
+**/server/data
+server/data/*.json
+server/data/*.json*
+server/data/*.bak
+server/data/*.bak_*

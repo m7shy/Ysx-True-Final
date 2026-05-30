@@ -1,8 +1,4 @@
-<<<<<<< Updated upstream
-# fly.toml app configuration file generated for ysx-true-final on 2026-01-20T19:54:18Z
-=======
-# fly.toml app configuration file generated for ysxxs on 2026-01-20T23:33:00+02:00
->>>>>>> Stashed changes
+# fly.toml app configuration file for ysx-true-final
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -20,8 +16,14 @@ primary_region = 'ams'
   min_machines_running = 1
   processes = ['app']
 
+# Persist follow-up scheduler data (server/data) across restarts/deploys.
+# Create the volume once with:
+#   fly volumes create ysx_data --region ams --size 1
+[[mounts]]
+  source = 'ysx_data'
+  destination = '/app/server/data'
+
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 256
