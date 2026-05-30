@@ -23,7 +23,11 @@ jobs:
 
       - name: Install dependencies
         working-directory: server
-        run: npm install
+        run: npm ci
+
+      - name: Build server
+        working-directory: server
+        run: npm run build
 
       - name: Start server
         working-directory: server
