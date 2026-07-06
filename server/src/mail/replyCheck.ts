@@ -1,7 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import { logger } from '../logger.js';
 import { getImapConfig } from './smtpGateway.js';
-import { getMicrosoftImapAccessToken } from './microsoftOauth.js';
 import type { ProviderName } from './types.js';
 
 const DEBUG_REPLY_DETECT = String(process.env.DEBUG_REPLY_DETECT ?? '').trim() === '1';
@@ -43,6 +42,7 @@ function debugLog(msg: string, extra?: Record<string, unknown>): void {
  * - Optionally referencing the original Message-ID (In-Reply-To / References)
  */
 export async function hasRecipientReplied(input: {
+  userId: string;
   provider: ProviderName;
   recipientEmail: string;
   initialSentAt: string;
@@ -54,13 +54,12 @@ export async function hasRecipientReplied(input: {
   const sinceDate = new Date(input.initialSentAt);
   const hasValidSince = !Number.isNaN(sinceDate.getTime());
 
-  const imap = getImapConfig(input.provider);
-
-  let auth: any;
+  let imap: Awaited<ReturnType<typeof getImapConfig>>;
   try {
-    auth = await buildImapAuth(input.provider, (imap as any).auth);
+    // Sender mailbox credentials resolved from the DB for this tenant.
+    imap = await getImapConfig(input.userId, input.provider);
   } catch (err: any) {
-    debugLog('Reply check: failed to build IMAP auth', {
+    debugLog('Reply check: failed to resolve mailbox credentials', {
       provider: input.provider,
       err: err?.message ?? String(err),
     });
@@ -71,7 +70,7 @@ export async function hasRecipientReplied(input: {
     host: imap.host,
     port: imap.port ?? 993,
     secure: imap.secure ?? true,
-    auth,
+    auth: imap.auth,
     logger: false,
     tls: {
       rejectUnauthorized: true,
@@ -174,41 +173,4 @@ export async function hasRecipientReplied(input: {
       // ignore
     }
   }
-}
-
-function pickUserPass(auth: any): { user: string; pass: string } {
-  if (!auth || typeof auth !== 'object') throw new Error('Invalid IMAP auth config.');
-  const user = (auth as any).user;
-  const pass = (auth as any).pass;
-  if (!user || !pass) throw new Error('Invalid IMAP auth config (expected user+pass).');
-  return { user, pass };
-}
-
-async function buildImapAuth(provider: ProviderName, auth: any): Promise<any> {
-  if (provider === 'microsoft') {
-    // Prefer OAuth2 (XOAUTH2) for Microsoft IMAP.
-    const user = auth && typeof auth === 'object' ? String((auth as any).user ?? '') : '';
-    if (!user) throw new Error('Invalid Microsoft IMAP auth config (expected user).');
-
-    try {
-      const accessToken = await getMicrosoftImapAccessToken(user);
-      return { user, accessToken };
-    } catch (err) {
-      // Fallback to basic auth when available (works for some consumer accounts/tenants).
-      try {
-        const { pass } = pickUserPass(auth);
-        debugLog('Reply check: Microsoft OAuth2 unavailable, falling back to basic auth', {
-          provider,
-          user,
-          err: (err as any)?.message ?? String(err),
-        });
-        return { user, pass };
-      } catch {
-        throw err;
-      }
-    }
-  }
-
-  const { user, pass } = pickUserPass(auth);
-  return { user, pass };
 }

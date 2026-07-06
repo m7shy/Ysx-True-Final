@@ -8,6 +8,7 @@ import {
   cancelFollowup,
 } from "../scheduler/followupScheduler.js";
 import { parseProvider } from "../mail/smtpGateway.js";
+import { requireUserId } from "../auth/middleware.js";
 import type { FollowupJobInput } from "../scheduler/types.js";
 
 const router = express.Router();
@@ -70,19 +71,22 @@ function toErrorPayload(err: unknown): { status: number; code: string; message: 
   return { status: 500, code: "UNKNOWN", message };
 }
 
-router.get("/", async (_req, res) => {
-  const jobs = await getScheduledFollowups();
+router.get("/", async (req, res) => {
+  const userId = requireUserId(req);
+  const jobs = (await getScheduledFollowups()).filter((j) => j.userId === userId);
   res.json({ jobs });
 });
 
 router.post("/schedule", async (req, res) => {
   try {
+    const userId = requireUserId(req);
     const parsed = scheduleSchema.parse(req.body);
 
-    const provider = parseProvider(parsed.provider, "zoho");
+    const provider = parseProvider(parsed.provider, "gmail");
     const replyGate = parsed.skipIfReplied ?? parsed.onlyIfNoReply ?? false;
 
     const input: FollowupJobInput = {
+      userId,
       provider,
       to: parsed.to,
       subject: parsed.subject,
@@ -112,6 +116,16 @@ router.post("/schedule", async (req, res) => {
 });
 
 router.post("/:id/cancel", async (req, res) => {
+  const userId = requireUserId(req);
+
+  // Ownership check: a tenant may only cancel its own jobs.
+  const jobs = await getScheduledFollowups();
+  const job = jobs.find((j) => j.id === req.params.id);
+  if (!job || job.userId !== userId) {
+    res.status(404).json({ code: "NOT_FOUND", message: "Follow-up not found" });
+    return;
+  }
+
   const ok = await cancelFollowup(req.params.id);
   res.json({ ok });
 });

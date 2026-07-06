@@ -1,6 +1,12 @@
 import { Email, EmailStatus, AppError, AppErrorCode } from '../types';
+import { getAccessToken } from './authStorage';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
+
+function authHeaders(): Record<string, string> {
+  const token = getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export type MailGatewayProviderKey = 'gmail' | 'zoho' | 'microsoft';
 
@@ -104,7 +110,7 @@ const handleGatewayError = async (response: Response, provider: GatewayErrorProv
 
 export async function gwHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_URL}/api/mail/health`);
+    const response = await fetch(`${API_URL}/api/mail/health`, { headers: authHeaders() });
     return response.ok;
   } catch {
     return false;
@@ -116,7 +122,8 @@ export async function gwFetchSent(provider: MailGatewayProviderKey, limit = 20):
 
   try {
     const response = await fetch(
-      `${API_URL}/api/mail/sent?provider=${encodeURIComponent(provider)}&limit=${encodeURIComponent(String(limit))}`
+      `${API_URL}/api/mail/sent?provider=${encodeURIComponent(provider)}&limit=${encodeURIComponent(String(limit))}`,
+      { headers: authHeaders() }
     );
     const data = await handleGatewayError(response, targetProvider);
 
@@ -167,7 +174,7 @@ export async function gwSend(
 
     const response = await fetch(`${API_URL}/api/mail/send`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
     });
 

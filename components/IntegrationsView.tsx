@@ -1,9 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
-import { Check, Plus, Layers, ExternalLink, RefreshCw, Loader2, XCircle, FlaskConical, AlertTriangle, Wrench } from 'lucide-react';
+import { Check, Plus, Layers, ExternalLink, RefreshCw, Loader2, XCircle, FlaskConical, AlertTriangle, Wrench, Mailbox as MailboxIcon } from 'lucide-react';
 import { AppError, AppErrorCode } from '../types';
 import { ConfirmModal } from './ConfirmModal';
 import { useSettings } from '../context/SettingsContext';
+import { apiGet, apiPost, ApiError } from '../services/apiClient';
+import { useNotification } from '../context/NotificationContext';
 
 interface IntegrationItem {
   id: string;
@@ -14,15 +16,35 @@ interface IntegrationItem {
   hasError?: boolean;
 }
 
+// 'google_workspace' and 'microsoft_365' are backed by the real backend OAuth2
+// consent flow (GET /api/auth/oauth/:provider/start); everything else here is
+// still a simulated integration with no backend support.
 const INITIAL_INTEGRATIONS: IntegrationItem[] = [
   { id: 'zoho_mail', name: "Zoho Mail", connected: true, desc: "Sync sent items, drafts, and folders.", color: "bg-[#2C72B8]" },
   { id: 'google_workspace', name: "Google Workspace", connected: false, desc: "Sync Gmail sent items and drafts via OAuth2.", color: "bg-[#EA4335]" },
+  { id: 'microsoft_365', name: "Microsoft 365", connected: false, desc: "Sync Outlook sent items and drafts via OAuth2.", color: "bg-[#00A4EF]" },
   { id: 'zoho_crm', name: "Zoho CRM", connected: false, desc: "Sync contacts, leads, and deals bi-directionally.", color: "bg-[#e32933]" },
   { id: 'hubspot', name: "HubSpot", connected: false, desc: "Import contacts and log email activity automatically.", color: "bg-[#ff7a59]" },
   { id: 'salesforce', name: "Salesforce", connected: false, desc: "Enterprise CRM sync for leads and opportunities.", color: "bg-[#00a1e0]" },
   { id: 'slack', name: "Slack", connected: false, desc: "Get instant notifications for replies and bounces.", color: "bg-[#4a154b]" },
   { id: 'calendly', name: "Calendly", connected: false, desc: "Include dynamic booking links in your signatures.", color: "bg-[#006bff]" },
 ];
+
+const OAUTH_BACKED_IDS = new Set(['google_workspace', 'microsoft_365']);
+
+function oauthProviderFor(id: string): 'gmail' | 'microsoft' | null {
+  if (id === 'google_workspace') return 'gmail';
+  if (id === 'microsoft_365') return 'microsoft';
+  return null;
+}
+
+interface ConnectedMailbox {
+  id: string;
+  email: string;
+  provider: 'GMAIL' | 'MICROSOFT';
+  isActive: boolean;
+  expiresAt: string | null;
+}
 
 interface IntegrationsViewProps {
   onViewDocumentation: () => void;
@@ -33,13 +55,33 @@ interface IntegrationsViewProps {
 
 export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocumentation, isSandbox = false, onFixConnection, appError }) => {
   const { settings } = useSettings();
+  const { showToast } = useNotification();
   const [integrations, setIntegrations] = useState<IntegrationItem[]>(INITIAL_INTEGRATIONS);
   const [connectingId, setConnectingId] = useState<string | null>(null);
-  
+  const [mailboxes, setMailboxes] = useState<ConnectedMailbox[]>([]);
+  const [isLoadingMailboxes, setIsLoadingMailboxes] = useState(true);
+
   // Modal State
   const [disconnectId, setDisconnectId] = useState<string | null>(null);
 
-  // Sync connection status with Settings
+  const loadMailboxes = async () => {
+    setIsLoadingMailboxes(true);
+    try {
+      const data = await apiGet<{ mailboxes: ConnectedMailbox[] }>('/api/mail/health');
+      setMailboxes(data.mailboxes);
+    } catch (err) {
+      // Non-fatal: the integrations grid still renders without the mailbox list.
+      console.error('Failed to load connected mailboxes', err);
+    } finally {
+      setIsLoadingMailboxes(false);
+    }
+  };
+
+  useEffect(() => {
+    loadMailboxes();
+  }, []);
+
+  // Google/Microsoft connection state is derived from real connected mailboxes.
   useEffect(() => {
     setIntegrations(prev => prev.map(item => {
       if (item.id === 'zoho_mail') {
@@ -48,19 +90,20 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
         return { ...item, connected: isConnected };
       }
       if (item.id === 'google_workspace') {
-        // Google is connected if we have a token
-        const isConnected = !!settings.googleAccessToken;
-        return { ...item, connected: isConnected };
+        return { ...item, connected: mailboxes.some(m => m.provider === 'GMAIL' && m.isActive) };
+      }
+      if (item.id === 'microsoft_365') {
+        return { ...item, connected: mailboxes.some(m => m.provider === 'MICROSOFT' && m.isActive) };
       }
       return item;
     }));
-  }, [settings.zohoAccessToken, settings.googleAccessToken, settings.useRealApi]);
+  }, [settings.zohoAccessToken, settings.useRealApi, mailboxes]);
 
   // Update integrations state based on structured AppError
   useEffect(() => {
     // Determine if we have an authentication error
     const isAuthError = appError && appError.code === AppErrorCode.AUTH_EXPIRED;
-    
+
     // Determine which provider has the error (if known)
     const targetProvider = appError?.provider;
 
@@ -81,17 +124,31 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
     }));
   }, [appError]);
 
-  const handleConnect = (id: string) => {
-    // For Zoho and Google, we redirect to settings/auth flow
-    if (id === 'zoho_mail' || id === 'google_workspace') {
+  const handleConnect = async (id: string) => {
+    // Zoho isn't backed by the new OAuth2 mailbox flow; keep the legacy redirect.
+    if (id === 'zoho_mail') {
       if (onFixConnection) onFixConnection();
+      return;
+    }
+
+    const provider = oauthProviderFor(id);
+    if (provider) {
+      setConnectingId(id);
+      try {
+        const data = await apiGet<{ authorizeUrl: string }>(`/api/auth/oauth/${provider}/start`);
+        window.location.href = data.authorizeUrl;
+      } catch (err) {
+        const message = err instanceof ApiError ? err.message : 'Could not start the OAuth connect flow.';
+        showToast('ERROR', message);
+        setConnectingId(null);
+      }
       return;
     }
 
     setConnectingId(id);
     // Simulate API connection delay for others
     setTimeout(() => {
-      setIntegrations(prev => prev.map(item => 
+      setIntegrations(prev => prev.map(item =>
         item.id === id ? { ...item, connected: true } : item
       ));
       setConnectingId(null);
@@ -126,12 +183,50 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
           </h2>
           <p className="text-slate-500 dark:text-slate-400 mt-1">Connect your workflow tools to supercharge YSX Flow.</p>
         </div>
-        <button 
+        <button
           onClick={onViewDocumentation}
           className="text-sm text-brand-600 dark:text-brand-400 font-medium hover:underline flex items-center group"
         >
           View Documentation <ExternalLink className="w-3 h-3 ml-1 group-hover:translate-x-0.5 transition-transform" />
         </button>
+      </div>
+
+      <div className="mb-8">
+        <div className="flex justify-between items-center mb-3">
+          <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center">
+            <MailboxIcon className="w-4 h-4 mr-2 text-brand-500" />
+            Connected Mailboxes
+          </h3>
+          <button
+            onClick={loadMailboxes}
+            className="p-1.5 text-slate-400 hover:text-brand-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoadingMailboxes ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+
+        {isLoadingMailboxes ? (
+          <div className="p-4 text-sm text-slate-400">Loading mailboxes...</div>
+        ) : mailboxes.length === 0 ? (
+          <div className="p-4 text-sm text-slate-400 bg-slate-50 dark:bg-slate-900 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+            No mailboxes connected yet. Connect Google Workspace or Microsoft 365 below to start rotating sends across them.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {mailboxes.map((mb) => (
+              <div key={mb.id} className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-800 dark:text-white truncate">{mb.email}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{mb.provider === 'GMAIL' ? 'Google Workspace' : 'Microsoft 365'}</p>
+                </div>
+                <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full shrink-0 ${mb.isActive ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}`}>
+                  {mb.isActive ? 'Active' : 'Paused'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-4">

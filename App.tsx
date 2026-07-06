@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useSettings } from './context/SettingsContext';
 import { useNotification } from './context/NotificationContext';
+import { useAuth } from './context/AuthContext';
 import { CampaignProvider, useCampaigns } from './context/CampaignContext';
 import { Lead, Campaign } from './types';
-import { exchangeGoogleCode } from './services/realGoogle';
 
 // Components
 import LoginScreen from './components/LoginScreen';
@@ -25,7 +25,7 @@ import { CampaignDetailView } from './components/CampaignDetailView';
 import { UniboxView } from './components/UniboxView';
 
 // Icons & UI
-import { Mail, RefreshCcw, Layout, CalendarClock, Plus, Moon, Sun, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle } from 'lucide-react';
+import { Mail, RefreshCcw, Layout, CalendarClock, Plus, Moon, Sun, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle, LogOut } from 'lucide-react';
 import { gwHealth } from './services/mailGateway';
 
 type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX';
@@ -36,140 +36,36 @@ const AppContent: React.FC = () => {
   const { showToast } = useNotification();
   const { campaigns, addCampaign } = useCampaigns();
 
-  const [zohoConnected, setZohoConnected] = useState(false);
-  const [connecting, setConnecting] = useState(false);
+  const { isLoggedIn, isHydrating, logout, user } = useAuth();
   const [darkMode, setDarkMode] = useState(false);
   const [showGatewayWarning, setShowGatewayWarning] = useState(false);
-  
+
   // Navigation
   const [currentView, setCurrentView] = useState<View>('DASHBOARD');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
-  
+
   // Modals
   const [isComposing, setIsComposing] = useState(false);
   const [composeInitialData, setComposeInitialData] = useState<{email: string, name: string, company: string} | undefined>(undefined);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // Handle OAuth Callback (Implicit Flow for Zoho)
+  // Handle the backend's OAuth mailbox-connect redirect
+  // (GET /api/auth/oauth/:provider/callback -> ?connected=<provider>&email=... or ?oauth_error=...).
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash && hash.includes('access_token')) {
-      try {
-        const params = new URLSearchParams(hash.substring(1));
-        const accessToken = params.get('access_token');
-        const state = params.get('state'); 
-        
-        // Security Check: Validate State to prevent CSRF
-        const storedState = sessionStorage.getItem('oauth_state');
-        if (!state || !storedState || state !== storedState) {
-             // For simplicity in this demo, strict state checking might fail if reloaded, so we log but proceed if token exists for demo purposes.
-             // In prod: return;
-             console.warn("OAuth State Check", { received: state, stored: storedState });
-        }
-        
-        // Clean up nonce
-        sessionStorage.removeItem('oauth_state');
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get('connected');
+    const email = params.get('email');
+    const oauthError = params.get('oauth_error');
 
-        if (accessToken) {
-          if (state && state.includes('provider=google')) {
-             // Note: This path handles implicit flow for Google if response_type=token was used
-             updateSettings({
-               useRealApi: true,
-               googleAccessToken: accessToken,
-               activeProvider: 'GMAIL'
-             });
-             showToast('SUCCESS', 'Google Workspace Connected Successfully!');
-          } else {
-             // Zoho Implicit Flow
-             updateSettings({
-               useRealApi: true,
-               zohoAccessToken: accessToken,
-               activeProvider: 'ZOHO'
-             });
-             showToast('SUCCESS', 'Zoho Mail Connected Successfully!');
-          }
-          window.history.replaceState(null, '', window.location.pathname);
-          setZohoConnected(true);
-        }
-      } catch (e) {
-        console.error("Error parsing OAuth hash", e);
-        showToast('ERROR', 'Failed to complete OAuth connection.');
-      }
+    if (connected) {
+      showToast('SUCCESS', `${connected === 'gmail' ? 'Google Workspace' : 'Microsoft 365'} connected: ${email ?? ''}`);
+      window.history.replaceState(null, '', window.location.pathname);
+    } else if (oauthError) {
+      showToast('ERROR', `Mailbox connection failed: ${oauthError}`);
+      window.history.replaceState(null, '', window.location.pathname);
     }
   }, []);
-
-  // Handle OAuth Code Callback (Authorization Code Flow for Google)
-  useEffect(() => {
-    const search = window.location.search;
-    const params = new URLSearchParams(search);
-    const code = params.get('code');
-    const state = params.get('state');
-
-    if (code && state && state.includes('provider=google')) {
-        const handleExchange = async () => {
-            setConnecting(true);
-            try {
-                // FALLBACK: Read directly from LocalStorage if context seems empty.
-                // This ensures we can complete the handshake even if React Context isn't fully hydrated from LS yet.
-                let clientId = userSettings.googleClientId;
-                let clientSecret = userSettings.googleClientSecret;
-
-                if (!clientId || !clientSecret) {
-                   try {
-                     const stored = localStorage.getItem('ysxflow_settings');
-                     if (stored) {
-                       const parsed = JSON.parse(stored);
-                       if (parsed.googleClientId) clientId = parsed.googleClientId;
-                       if (parsed.googleClientSecret) clientSecret = parsed.googleClientSecret;
-                       
-                       // Sync back to context if found
-                       if (clientId || clientSecret) {
-                          updateSettings({ 
-                             googleClientId: clientId || userSettings.googleClientId, 
-                             googleClientSecret: clientSecret || userSettings.googleClientSecret
-                          });
-                       }
-                     }
-                   } catch(err) {
-                     console.error("Manual LS read failed", err);
-                   }
-                }
-
-                if (!clientId || !clientSecret) {
-                    showToast('ERROR', 'Missing Google Client ID or Secret in settings. Cannot exchange code.');
-                    return;
-                }
-
-                const tokens = await exchangeGoogleCode(
-                    code,
-                    clientId,
-                    clientSecret,
-                    window.location.origin
-                );
-
-                updateSettings({
-                    useRealApi: true,
-                    googleAccessToken: tokens.access_token,
-                    activeProvider: 'GMAIL',
-                    // Only update refresh token if returned (usually only on first consent)
-                    ...(tokens.refresh_token ? { googleRefreshToken: tokens.refresh_token } : {})
-                });
-
-                showToast('SUCCESS', 'Google Workspace Connected (Offline Access)!');
-                setZohoConnected(true);
-                // Clear URL
-                window.history.replaceState(null, '', window.location.pathname);
-            } catch (e: any) {
-                console.error("Google Code Exchange Failed", e);
-                showToast('ERROR', `Google Connection Failed: ${e.message}`);
-            } finally {
-                setConnecting(false);
-            }
-        };
-        handleExchange();
-    }
-  }, [userSettings.googleClientId, userSettings.googleClientSecret]);
 
   useEffect(() => {
     if (darkMode) {
@@ -198,35 +94,6 @@ const AppContent: React.FC = () => {
       cancelled = true;
     };
   }, [userSettings.transportMode]);
-
-  const handleLogin = async (mode: 'SANDBOX' | 'LIVE') => {
-    setConnecting(true);
-    try {
-      // @ts-ignore
-      if (typeof window !== 'undefined' && window.aistudio) {
-        // @ts-ignore
-        const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-          // @ts-ignore
-          await window.aistudio.openSelectKey();
-        }
-      }
-    } catch (e) {
-      console.warn("API Key check skipped or failed", e);
-    }
-
-    setTimeout(() => {
-      if (mode === 'LIVE') {
-        updateSettings({ useRealApi: true });
-        setZohoConnected(true);
-        setIsSettingsOpen(true); 
-      } else {
-        updateSettings({ useRealApi: false });
-        setZohoConnected(true);
-      }
-      setConnecting(false);
-    }, 1000);
-  };
 
   const handleCreateCampaign = async (campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'>) => {
     await addCampaign(campaignData);
@@ -257,8 +124,16 @@ const AppContent: React.FC = () => {
     setIsMobileMenuOpen(false);
   };
 
-  if (!zohoConnected) {
-    return <LoginScreen onConnect={handleLogin} isConnecting={connecting} />;
+  if (isHydrating) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <RefreshCcw className="w-6 h-6 text-slate-400 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return <LoginScreen />;
   }
 
   const NavButton = ({ view, icon: Icon, label, isActive }: { view: View, icon: any, label: string, isActive: boolean }) => {
@@ -358,14 +233,23 @@ const AppContent: React.FC = () => {
           </div>
         </button>
 
-        <div className="flex items-center group cursor-pointer pb-safe">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-brand-400 to-purple-500 flex items-center justify-center text-white font-bold text-xs shadow-lg transition-transform group-hover:scale-110">
-            JD
+        <div className="flex items-center justify-between group pb-safe">
+          <div className="flex items-center min-w-0">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-brand-400 to-purple-500 flex items-center justify-center text-white font-bold text-xs shadow-lg shrink-0">
+              {(user?.email ?? '?').charAt(0).toUpperCase()}
+            </div>
+            <div className="ml-3 min-w-0">
+              <p className="text-sm font-medium text-white truncate">{user?.email}</p>
+              <p className="text-xs text-slate-500">Logged in</p>
+            </div>
           </div>
-          <div className="ml-3 transition-opacity opacity-80 group-hover:opacity-100">
-            <p className="text-sm font-medium text-white">{userSettings.emailSignature.split('\n')[0]}</p>
-            <p className="text-xs text-slate-500">Synced: Just now</p>
-          </div>
+          <button
+            onClick={logout}
+            title="Log out"
+            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors shrink-0"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </>

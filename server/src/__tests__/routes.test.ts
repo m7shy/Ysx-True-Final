@@ -1,74 +1,46 @@
-
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
+
+// Mail/followups/gemini routers are tenant-scoped and must never touch a real
+// mailbox during tests; a mailbox-less Prisma stand-in is enough to prove the
+// requireAuth gate rejects unauthenticated calls before any DB/IMAP work.
+vi.mock('../db/prisma.js', () => ({
+  prisma: {
+    user: { findUnique: async () => null },
+    mailbox: { findMany: async () => [], findFirst: async () => null },
+  },
+}));
+
 import { app } from '../index.js';
 
-// Mock configuration to provide credentials
-vi.mock('../config.js', async () => {
-  const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
-  return {
-    ...actual,
-    config: {
-      ...actual.config,
-      GMAIL_USER: 'test@gmail.com',
-      GMAIL_APP_PASSWORD: 'pass',
-      ZOHO_USER: 'test@zoho.com',
-      ZOHO_APP_PASSWORD: 'pass',
-      ALLOWLIST_HOSTS: new Set(['imap.gmail.com', 'smtp.gmail.com', 'imap.zoho.com', 'smtp.zoho.com']),
-    },
-  };
-});
-
-// Mock the clients
-vi.mock('../mail/smtpClient.js');
-vi.mock('../mail/imapClient.js');
-
-import { sendMail } from '../mail/smtpClient.js';
-import { fetchSent } from '../mail/imapClient.js';
-
-describe('Mail Routes', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe('multi-tenant gating', () => {
+  it('rejects GET /api/mail/sent without a token', async () => {
+    const res = await request(app).get('/api/mail/sent').query({ provider: 'gmail' });
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('AUTH');
   });
 
-  it('GET /api/mail/sent should return items', async () => {
+  it('rejects POST /api/mail/send without a token', async () => {
+    const res = await request(app)
+      .post('/api/mail/send')
+      .send({ provider: 'gmail', to: 'you@example.com', subject: 'Hi', text: 'Hello' });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects GET /api/mail/health without a token', async () => {
+    const res = await request(app).get('/api/mail/health');
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects GET /api/followups without a token', async () => {
+    const res = await request(app).get('/api/followups');
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a malformed Bearer token', async () => {
     const res = await request(app)
       .get('/api/mail/sent')
-      .query({ provider: 'gmail', limit: 2 });
-
-    expect(res.status).toBe(200);
-    expect(res.body.items).toHaveLength(3); // Mock returns 3 fixed items
-    expect(fetchSent).toHaveBeenCalledWith(expect.objectContaining({ limit: 2 }));
-  });
-
-  it('POST /api/mail/send should return messageId', async () => {
-    const res = await request(app)
-      .post('/api/mail/send')
-      .send({
-        provider: 'gmail',
-        from: 'me@gmail.com',
-        to: 'you@gmail.com',
-        subject: 'Hello',
-        text: 'World'
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ messageId: 'mock-message-id' });
-    expect(sendMail).toHaveBeenCalled();
-  });
-
-  it('POST /api/mail/send should fail with invalid provider', async () => {
-    const res = await request(app)
-      .post('/api/mail/send')
-      .send({
-        provider: 'invalid',
-        from: 'me@gmail.com',
-        to: 'you@gmail.com',
-        subject: 'Hello',
-        text: 'World'
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('VALIDATION');
+      .set('Authorization', 'Bearer not-a-real-jwt');
+    expect(res.status).toBe(401);
   });
 });

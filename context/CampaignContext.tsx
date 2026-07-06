@@ -1,57 +1,12 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { Campaign, SequenceStep } from '../types';
-import { useSettings } from './SettingsContext';
 import { useNotification } from './NotificationContext';
-import { useEmailProvider } from '../hooks/useEmailProvider';
-
-// Mock Initial Campaigns
-const INITIAL_CAMPAIGNS: Campaign[] = [
-  {
-    id: 'c1',
-    name: 'Q4 Sales Outreach',
-    status: 'ACTIVE',
-    recipients: [
-      { email: 'ceo@tech.com', name: 'John Tech', company: 'Tech Inc' },
-      { email: 'cto@tech.com', name: 'Jane Tech', company: 'Tech Inc' },
-    ],
-    subject: 'Partnership Opportunity',
-    body: 'Hi, wanted to reach out...',
-    scheduledAt: new Date(Date.now() + 86400000).toISOString(),
-    createdAt: new Date().toISOString(),
-    distributionMethod: 'INDIVIDUAL',
-    autoFollowUps: [],
-    progress: 45,
-    stats: { sent: 12, clicked: 3, replied: 1, opportunities: 0 },
-    sequence: [
-      {
-        id: 's1',
-        step: 1,
-        subject: 'Partnership Opportunity',
-        body: 'Hi, wanted to reach out...',
-        scheduledFor: new Date().toISOString(),
-        status: 'SENT',
-        type: 'INITIAL',
-      },
-    ],
-  },
-  {
-    id: 'c2',
-    name: 'Webinar Invites - March',
-    status: 'PAUSED',
-    recipients: [],
-    subject: 'Join our exclusive webinar',
-    body: '...',
-    scheduledAt: new Date().toISOString(),
-    createdAt: new Date().toISOString(),
-    distributionMethod: 'INDIVIDUAL',
-    autoFollowUps: [],
-    progress: 12,
-    stats: { sent: 50, clicked: 8, replied: 0, opportunities: 0 },
-  },
-];
+import { useAuth } from './AuthContext';
+import { apiGet, apiPost, apiPatch, apiDelete, ApiError } from '../services/apiClient';
 
 interface CampaignContextType {
   campaigns: Campaign[];
+  isLoading: boolean;
   addCampaign: (
     campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'>
   ) => Promise<void>;
@@ -63,202 +18,180 @@ interface CampaignContextType {
 
 const CampaignContext = createContext<CampaignContextType | undefined>(undefined);
 
+function buildSequence(campaignData: {
+  subject: string;
+  body: string;
+  scheduledAt: string;
+  autoFollowUps: Campaign['autoFollowUps'];
+}): SequenceStep[] {
+  let baseDate = new Date(campaignData.scheduledAt || Date.now());
+  const sequence: SequenceStep[] = [];
+
+  sequence.push({
+    id: `seq_${Date.now()}_1`,
+    step: 1,
+    subject: campaignData.subject,
+    body: campaignData.body,
+    scheduledFor: baseDate.toISOString(),
+    status: 'PENDING',
+    type: 'INITIAL',
+  });
+
+  campaignData.autoFollowUps.forEach((af, idx) => {
+    const nextDate = new Date(baseDate.getTime());
+    const multiplier =
+      af.unit === 'MINUTES' ? 60 * 1000 :
+      af.unit === 'HOURS' ? 60 * 60 * 1000 :
+      af.unit === 'WEEKS' ? 7 * 24 * 60 * 60 * 1000 :
+      24 * 60 * 60 * 1000; // DAYS (default)
+
+    nextDate.setTime(nextDate.getTime() + af.delay * multiplier);
+    baseDate = nextDate;
+
+    sequence.push({
+      id: `seq_${Date.now()}_${idx + 2}`,
+      step: idx + 2,
+      subject: `Re: ${campaignData.subject}`,
+      body: af.content,
+      scheduledFor: nextDate.toISOString(),
+      status: 'PENDING',
+      type: 'FOLLOW_UP',
+    });
+  });
+
+  return sequence;
+}
+
 export const CampaignProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [campaigns, setCampaigns] = useState<Campaign[]>(INITIAL_CAMPAIGNS);
-  const { settings } = useSettings();
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const { isLoggedIn } = useAuth();
   const { showToast } = useNotification();
-  const { sendNewEmail } = useEmailProvider();
+
+  const loadCampaigns = async () => {
+    setIsLoading(true);
+    try {
+      const data = await apiGet<{ campaigns: Campaign[] }>('/api/campaigns');
+      setCampaigns(data.campaigns);
+    } catch (err) {
+      console.error('Failed to load campaigns', err);
+      showToast('ERROR', 'Failed to load campaigns.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isLoggedIn) {
+      loadCampaigns();
+    } else {
+      setCampaigns([]);
+      setIsLoading(false);
+    }
+  }, [isLoggedIn]);
 
   const addCampaign = async (
     campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'>
   ) => {
     const isScheduled = campaignData.scheduledAt && new Date(campaignData.scheduledAt) > new Date();
     const status = isScheduled ? 'SCHEDULED' : 'ACTIVE';
+    const sequence = buildSequence(campaignData);
 
-    // Generate Sequence (UI-only representation)
-    let baseDate = new Date(campaignData.scheduledAt || Date.now());
-    const sequence: SequenceStep[] = [];
-
-    // Step 1: Initial Email
-    sequence.push({
-      id: `seq_${Date.now()}_1`,
-      step: 1,
-      subject: campaignData.subject,
-      body: campaignData.body,
-      scheduledFor: baseDate.toISOString(),
-      status: 'PENDING',
-      type: 'INITIAL',
-    });
-
-    // Subsequent Steps (Follow-ups) - cumulative schedule for UI
-    campaignData.autoFollowUps.forEach((af, idx) => {
-      const nextDate = new Date(baseDate.getTime());
-      const delay = af.delay;
-      let multiplier = 0;
-
-      switch (af.unit) {
-        case 'MINUTES':
-          multiplier = 60 * 1000;
-          break;
-        case 'HOURS':
-          multiplier = 60 * 60 * 1000;
-          break;
-        case 'DAYS':
-          multiplier = 24 * 60 * 60 * 1000;
-          break;
-        case 'WEEKS':
-          multiplier = 7 * 24 * 60 * 60 * 1000;
-          break;
-        default:
-          multiplier = 24 * 60 * 60 * 1000; // Default to Days
-      }
-
-      nextDate.setTime(nextDate.getTime() + delay * multiplier);
-      baseDate = nextDate; // Update base for cumulative calculation
-
-      sequence.push({
-        id: `seq_${Date.now()}_${idx + 2}`,
-        step: idx + 2,
-        subject: `Re: ${campaignData.subject}`,
-        body: af.content,
-        scheduledFor: nextDate.toISOString(),
-        status: 'PENDING',
-        type: 'FOLLOW_UP',
+    try {
+      const data = await apiPost<{ campaign: Campaign }>('/api/campaigns', {
+        name: campaignData.name,
+        subject: campaignData.subject,
+        body: campaignData.body,
+        scheduledAt: campaignData.scheduledAt,
+        status,
+        distributionMethod: campaignData.distributionMethod,
+        autoFollowUps: campaignData.autoFollowUps,
+        sequence,
+        recipients: campaignData.recipients,
       });
-    });
 
-    // Create new campaign object
-    const newCampaign: Campaign = {
-      ...campaignData,
-      id: `camp_${Date.now()}`,
-      createdAt: new Date().toISOString(),
-      status: status,
-      progress: 0,
-      stats: { sent: 0, clicked: 0, replied: 0, opportunities: 0 },
-      sequence: sequence,
-    };
+      setCampaigns((prev) => [data.campaign, ...prev]);
 
-    setCampaigns((prev) => [newCampaign, ...prev]);
-
-    // Check if First Step needs immediate execution
-    if (!isScheduled) {
-      try {
-        let followupsAttempted = 0;
-        let followupsScheduled = 0;
-        const followupErrors: string[] = [];
-
-        for (const recipient of campaignData.recipients) {
-          const result = await sendNewEmail(
-            recipient,
-            campaignData.subject,
-            campaignData.body,
-            campaignData.autoFollowUps,
-            { campaignId: newCampaign.id }
-          );
-
-          if (result.followups.attempted) {
-            followupsAttempted += 1;
-            followupsScheduled += result.followups.scheduled;
-            if (result.followups.errors.length) {
-              followupErrors.push(
-                ...result.followups.errors.map((e) => `${recipient.email}: ${e}`)
-              );
-            }
-          }
-        }
-
-        // Update sequence status locally
-        if (newCampaign.sequence && newCampaign.sequence.length > 0) {
-          newCampaign.sequence[0].status = 'SENT';
-        }
-        setCampaigns((prev) => prev.map((c) => (c.id === newCampaign.id ? newCampaign : c)));
-
-        const hasAutoFollowUps = campaignData.autoFollowUps.length > 0;
-
-        // Backend follow-ups are supported only in Gateway mode, because we need { messageId }
-        const backendFollowupsEnabled = settings.useRealApi && settings.transportMode === 'gateway-imap-smtp' && hasAutoFollowUps;
-
-        if (backendFollowupsEnabled) {
-          if (followupErrors.length > 0) {
-            console.error('[Follow-up Scheduling Errors]', followupErrors);
-            showToast(
-              'ERROR',
-              `Campaign activated. Initial emails sent, but some follow-ups failed to schedule. First error: ${followupErrors[0]}`
-            );
-          } else {
-            showToast(
-              'SUCCESS',
-              `Campaign activated. Initial emails sent. Scheduled ${followupsScheduled} follow-up(s) on the backend.`
-            );
-          }
-        } else if (settings.useRealApi && hasAutoFollowUps) {
-          // Real API, but not in gateway mode
-          console.warn(
-            'Auto-followups require Gateway mode (server /api/mail/send) so we can capture messageId + schedule follow-ups reliably.'
-          );
-          showToast(
-            'SUCCESS',
-            'Campaign activated. Initial emails sent. Note: Auto-followups require Gateway mode to schedule on the backend.'
-          );
-        } else {
-          // Mock mode or no follow-ups
-          showToast('SUCCESS', `Campaign "${campaignData.name}" activated!`);
-        }
-      } catch (error: any) {
-        showToast('ERROR', `Failed to send campaign: ${error.message}`);
-      }
-    } else {
       showToast(
         'SUCCESS',
-        `Campaign "${campaignData.name}" scheduled for ${new Date(campaignData.scheduledAt).toLocaleString()} (EST).`
+        isScheduled
+          ? `Campaign "${campaignData.name}" scheduled for ${new Date(campaignData.scheduledAt).toLocaleString()}.`
+          : `Campaign "${campaignData.name}" activated. The outbound engine will begin dispatching shortly.`
       );
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to create campaign.';
+      showToast('ERROR', message);
+      throw err;
     }
   };
 
-  const deleteCampaign = (id: string) => {
+  const deleteCampaign = async (id: string) => {
+    const previous = campaigns;
     setCampaigns((prev) => prev.filter((c) => c.id !== id));
-    showToast('SUCCESS', 'Campaign deleted.');
+    try {
+      await apiDelete(`/api/campaigns/${id}`);
+      showToast('SUCCESS', 'Campaign deleted.');
+    } catch (err) {
+      setCampaigns(previous);
+      const message = err instanceof ApiError ? err.message : 'Failed to delete campaign.';
+      showToast('ERROR', message);
+    }
   };
 
-  const toggleCampaignStatus = (id: string) => {
-    setCampaigns((prev) =>
-      prev.map((c) => {
-        if (c.id === id) {
-          const newStatus = c.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
-          return { ...c, status: newStatus };
-        }
-        return c;
-      })
-    );
+  const toggleCampaignStatus = async (id: string) => {
+    const current = campaigns.find((c) => c.id === id);
+    if (!current) return;
+    const newStatus = current.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+
+    setCampaigns((prev) => prev.map((c) => (c.id === id ? { ...c, status: newStatus } : c)));
+    try {
+      await apiPatch(`/api/campaigns/${id}`, { status: newStatus });
+    } catch (err) {
+      setCampaigns((prev) => prev.map((c) => (c.id === id ? current : c)));
+      const message = err instanceof ApiError ? err.message : 'Failed to update campaign status.';
+      showToast('ERROR', message);
+    }
   };
 
-  const duplicateCampaign = (id: string) => {
+  const duplicateCampaign = async (id: string) => {
     const campaign = campaigns.find((c) => c.id === id);
     if (!campaign) return;
 
-    const copy: Campaign = {
-      ...campaign,
-      id: `camp_${Date.now()}`,
-      name: `Copy of ${campaign.name}`,
-      status: 'DRAFT',
-      progress: 0,
-      stats: { sent: 0, clicked: 0, replied: 0, opportunities: 0 },
-      createdAt: new Date().toISOString(),
-      sequence: campaign.sequence?.map((s) => ({ ...s, status: 'PENDING', scheduledFor: new Date().toISOString() })),
-    };
-
-    setCampaigns((prev) => [copy, ...prev]);
-    showToast('SUCCESS', 'Campaign duplicated as draft.');
+    try {
+      const data = await apiPost<{ campaign: Campaign }>('/api/campaigns', {
+        name: `Copy of ${campaign.name}`,
+        subject: campaign.subject,
+        body: campaign.body,
+        scheduledAt: campaign.scheduledAt,
+        status: 'DRAFT',
+        distributionMethod: campaign.distributionMethod,
+        autoFollowUps: campaign.autoFollowUps,
+        sequence: campaign.sequence?.map((s) => ({ ...s, status: 'PENDING', scheduledFor: new Date().toISOString() })),
+      });
+      setCampaigns((prev) => [data.campaign, ...prev]);
+      showToast('SUCCESS', 'Campaign duplicated as draft.');
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to duplicate campaign.';
+      showToast('ERROR', message);
+    }
   };
 
-  const renameCampaign = (id: string, newName: string) => {
+  const renameCampaign = async (id: string, newName: string) => {
+    const previous = campaigns;
     setCampaigns((prev) => prev.map((c) => (c.id === id ? { ...c, name: newName } : c)));
-    showToast('SUCCESS', 'Campaign renamed.');
+    try {
+      await apiPatch(`/api/campaigns/${id}`, { name: newName });
+      showToast('SUCCESS', 'Campaign renamed.');
+    } catch (err) {
+      setCampaigns(previous);
+      const message = err instanceof ApiError ? err.message : 'Failed to rename campaign.';
+      showToast('ERROR', message);
+    }
   };
 
   return (
     <CampaignContext.Provider
-      value={{ campaigns, addCampaign, deleteCampaign, toggleCampaignStatus, duplicateCampaign, renameCampaign }}
+      value={{ campaigns, isLoading, addCampaign, deleteCampaign, toggleCampaignStatus, duplicateCampaign, renameCampaign }}
     >
       {children}
     </CampaignContext.Provider>

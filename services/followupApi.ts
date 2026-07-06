@@ -1,6 +1,12 @@
 import { AppError, AppErrorCode } from '../types';
+import { getAccessToken } from './authStorage';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
+
+function authHeaders(): Record<string, string> {
+  const token = getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export type ProviderKeyDto = 'gmail' | 'zoho' | 'microsoft';
 
@@ -87,7 +93,7 @@ export async function scheduleFollowup(input: ScheduleFollowupInput): Promise<{ 
   try {
     const response = await fetch(`${API_URL}/api/followups/schedule`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(input),
     });
 
@@ -102,7 +108,7 @@ export async function scheduleFollowup(input: ScheduleFollowupInput): Promise<{ 
 
 export async function listFollowups(): Promise<{ jobs: FollowupJobDto[] }> {
   try {
-    const response = await fetch(`${API_URL}/api/followups`);
+    const response = await fetch(`${API_URL}/api/followups`, { headers: authHeaders() });
     const data = await parseJsonResponse(response, 'SYSTEM');
     return data as { jobs: FollowupJobDto[] };
   } catch (err) {
@@ -116,6 +122,7 @@ export async function cancelFollowup(id: string): Promise<{ ok: boolean }> {
   try {
     const response = await fetch(`${API_URL}/api/followups/${encodeURIComponent(id)}/cancel`, {
       method: 'POST',
+      headers: authHeaders(),
     });
 
     const data = await parseJsonResponse(response, 'SYSTEM');

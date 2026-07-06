@@ -8,9 +8,12 @@ export interface SimpleCredentials {
 export interface OAuth2Credentials {
   type: 'oauth2';
   user: string;
-  clientId: string;
-  clientSecret: string;
-  refreshToken: string;
+  // XOAUTH2 with a pre-fetched access token (tokens live/rotate in the DB).
+  accessToken?: string;
+  // Alternatively, let nodemailer mint tokens from an app registration.
+  clientId?: string;
+  clientSecret?: string;
+  refreshToken?: string;
 }
 
 export type Credentials = SimpleCredentials | OAuth2Credentials;

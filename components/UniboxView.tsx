@@ -1,8 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Filter, Circle, Send, Sparkles, MoreVertical, Archive, CheckCircle2, ChevronDown, User, MessageSquare } from 'lucide-react';
 import { Thread, ThreadStatus, ThreadLeadStatus } from '../types';
-import { fetchInboxThreads, sendReplyToThread, updateThreadStatus, updateThreadLeadStatus } from '../services/mockZoho';
+import { apiGet, apiPatch, apiPost, ApiError } from '../services/apiClient';
 import { useNotification } from '../context/NotificationContext';
+
+async function fetchInboxThreads(): Promise<Thread[]> {
+  const data = await apiGet<{ threads: Thread[] }>('/api/unibox/threads');
+  return data.threads;
+}
+
+async function sendReplyToThread(threadId: string, content: string): Promise<void> {
+  await apiPost(`/api/unibox/threads/${threadId}/reply`, { content });
+}
+
+async function updateThreadStatus(threadId: string, status: ThreadStatus): Promise<void> {
+  await apiPatch(`/api/unibox/threads/${threadId}/status`, { status });
+}
+
+async function updateThreadLeadStatus(threadId: string, leadStatus: ThreadLeadStatus): Promise<void> {
+  await apiPatch(`/api/unibox/threads/${threadId}/lead-status`, { leadStatus });
+}
 
 export const UniboxView: React.FC = () => {
   const { showToast } = useNotification();

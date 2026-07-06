@@ -51,6 +51,7 @@ function isValidJob(candidate: unknown): candidate is FollowupJob {
   const obj = candidate as Record<string, unknown>;
 
   if (!isNonEmptyString(obj.id)) return false;
+  if (!isNonEmptyString(obj.userId)) return false;
   if (!isNonEmptyString(obj.provider)) return false;
   if (!isNonEmptyString(obj.to)) return false;
   if (!isNonEmptyString(obj.subject)) return false;
@@ -153,6 +154,10 @@ export async function scheduleFollowup(input: FollowupJobInput): Promise<Followu
     const scheduledTime = new Date(input.scheduledAt);
     if (Number.isNaN(scheduledTime.getTime())) {
       throw new Error("scheduledAt must be a valid ISO timestamp");
+    }
+
+    if (!input.userId) {
+      throw new Error("userId is required");
     }
 
     if (!input.campaignId) {
@@ -278,6 +283,48 @@ export async function cancelRemainingFollowupsForRecipient(
     if (changed) {
       await persist();
     }
+  });
+}
+
+/**
+ * Cancel every still-scheduled followup a tenant has queued for a recipient,
+ * across all campaigns (used by the reply poller when an inbound reply is
+ * detected). Returns the distinct campaignIds whose sequences were touched.
+ */
+export async function cancelScheduledFollowupsForUserRecipient(
+  userId: string,
+  recipientEmail: string,
+  reason: string = "replied",
+): Promise<string[]> {
+  const normalizedRecipient = recipientEmail.trim().toLowerCase();
+  if (!userId || !normalizedRecipient) return [];
+
+  return withStoreLock(async () => {
+    await loadOnce();
+
+    const campaignIds = new Set<string>();
+    let changed = false;
+    for (const job of jobs.values()) {
+      if (
+        job.userId === userId &&
+        job.status === "scheduled" &&
+        ((job.recipientEmail ?? job.to ?? "").trim().toLowerCase()) === normalizedRecipient
+      ) {
+        job.cancelReason = reason;
+        job.lastError = reason;
+        job.failureReason = reason;
+        job.status = "cancelled";
+        job.updatedAt = new Date().toISOString();
+        if (job.campaignId) campaignIds.add(job.campaignId);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await persist();
+    }
+
+    return Array.from(campaignIds);
   });
 }
 

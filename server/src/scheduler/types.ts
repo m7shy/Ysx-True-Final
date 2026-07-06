@@ -8,6 +8,10 @@ export type FollowupStatus = "scheduled" | "sending" | "sent" | "failed" | "canc
 export interface FollowupJob {
   id: string; // UUID
 
+  // Owning tenant. Every job carries the userId of the account that scheduled
+  // it so the scheduler resolves that user's mailbox credentials from the DB.
+  userId: string;
+
   // Mail send data
   provider: ProviderKey;
   to: string;

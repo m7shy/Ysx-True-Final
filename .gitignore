@@ -11,6 +11,7 @@ server/dist/
 fly.secrets.env
 server/.env
 server/.env.*
+!server/.env.example
 
 server/data/tokens.json
 server/data/tokens.json.bak_pre

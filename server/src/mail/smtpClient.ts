@@ -41,9 +41,12 @@ export async function sendMail(options: SmtpSendOptions): Promise<string> {
   let transporterAuth: any;
 
   if (auth.type === 'oauth2') {
+    // When accessToken is present nodemailer authenticates via XOAUTH2 directly;
+    // clientId/secret/refreshToken remain optional for app-registration flows.
     transporterAuth = {
       type: 'OAuth2',
       user: auth.user,
+      accessToken: auth.accessToken,
       clientId: auth.clientId,
       clientSecret: auth.clientSecret,
       refreshToken: auth.refreshToken,
