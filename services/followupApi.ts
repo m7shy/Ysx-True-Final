@@ -16,21 +16,17 @@ export interface FollowupJobDto {
   to: string;
   subject: string;
   body: string;
-  replyTo?: string;
   scheduledAt: string;
-  createdAt: string;
-  sentAt?: string;
-  status: 'scheduled' | 'sent' | 'failed' | 'cancelled';
-  lastError?: string;
-  campaignId?: string;
-  recipientEmail?: string;
-  originalMessageId?: string;
-  initialSentAt?: string;
-  leadId?: string;
-  originalEmailId?: string;
+  campaignId: string;
+  recipientEmail: string;
+  originalMessageId: string;
+  initialSentAt: string;
   stepIndex?: number;
-  skipIfReplied?: boolean;
-  onlyIfNoReply?: boolean;
+  status?: 'scheduled' | 'sent' | 'cancelled' | 'failed';
+  lastError?: string;
+  createdAt?: string;
+  sentAt?: string;
+  cancelledAt?: string;
 }
 
 export interface ScheduleFollowupInput {
@@ -39,17 +35,10 @@ export interface ScheduleFollowupInput {
   subject: string;
   body: string;
   scheduledAt: string;
-
-  // Required by server/src/followups/routes.ts
   campaignId: string;
   recipientEmail: string;
   originalMessageId: string;
   initialSentAt: string;
-
-  // Optional metadata
-  replyTo?: string;
-  leadId?: string;
-  originalEmailId?: string;
   stepIndex?: number;
   skipIfReplied?: boolean;
   onlyIfNoReply?: boolean;
@@ -64,32 +53,21 @@ async function parseJsonResponse(
   response: Response,
   provider: 'ZOHO' | 'GOOGLE' | 'MICROSOFT' | 'SYSTEM'
 ) {
-  let data: any = null;
-
+  const text = await response.text();
   try {
-    data = await response.json();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unable to parse follow-up scheduler response.';
-    throw new AppError(AppErrorCode.NETWORK_ERROR, provider, message);
+    return text ? JSON.parse(text) : null;
+  } catch {
+    // Non-JSON response
+    throw new AppError(
+      AppErrorCode.UNKNOWN,
+      provider,
+      `Invalid server response format: ${text?.slice(0, 200) ?? ''}`
+    );
   }
-
-  if (!response.ok) {
-    const message =
-      data?.message ||
-      data?.error ||
-      (Array.isArray(data?.errors) ? data.errors.join(', ') : null) ||
-      response.statusText ||
-      'Failed to schedule follow-up';
-
-    throw new AppError(AppErrorCode.NETWORK_ERROR, provider, message);
-  }
-
-  return data;
 }
 
 export async function scheduleFollowup(input: ScheduleFollowupInput): Promise<{ job: FollowupJobDto }> {
   const provider = providerToAppErrorTarget(input.provider);
-
   try {
     const response = await fetch(`${API_URL}/api/followups/schedule`, {
       method: 'POST',
@@ -98,6 +76,9 @@ export async function scheduleFollowup(input: ScheduleFollowupInput): Promise<{ 
     });
 
     const data = await parseJsonResponse(response, provider);
+    if (!response.ok) {
+      throw new AppError(AppErrorCode.PROVIDER_ERROR, provider, data?.message || 'Failed to schedule follow-up.');
+    }
     return data as { job: FollowupJobDto };
   } catch (err) {
     if (err instanceof AppError) throw err;
@@ -110,6 +91,9 @@ export async function listFollowups(): Promise<{ jobs: FollowupJobDto[] }> {
   try {
     const response = await fetch(`${API_URL}/api/followups`, { headers: authHeaders() });
     const data = await parseJsonResponse(response, 'SYSTEM');
+    if (!response.ok) {
+      throw new AppError(AppErrorCode.PROVIDER_ERROR, 'SYSTEM', 'Failed to list follow-ups.');
+    }
     return data as { jobs: FollowupJobDto[] };
   } catch (err) {
     if (err instanceof AppError) throw err;
@@ -124,8 +108,10 @@ export async function cancelFollowup(id: string): Promise<{ ok: boolean }> {
       method: 'POST',
       headers: authHeaders(),
     });
-
     const data = await parseJsonResponse(response, 'SYSTEM');
+    if (!response.ok) {
+      throw new AppError(AppErrorCode.PROVIDER_ERROR, 'SYSTEM', 'Failed to cancel follow-up.');
+    }
     return data as { ok: boolean };
   } catch (err) {
     if (err instanceof AppError) throw err;

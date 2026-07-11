@@ -25,12 +25,23 @@ scraper/gcp_key.json
 scraper/.env
 scraper/fly.secrets.env
 scraper/profiles/
+scraper/__pycache__/
+scraper/leads.csv
+scraper/blacklist.csv
+scraper/insufficient_content.csv
+scraper/used_keywords.txt
+scraper/backlog_ids.txt
+scraper/.quota_state.json
 
 *.log
 server.log
 server.err
 server/server.log
 server/server.err
+server/service.err
+caddy.err
+
+.claude/
 
 * - Copy.*
 types.ts - original.ts
@@ -38,5 +49,4 @@ types.ts - original.ts
 .vscode/
 .idea/
 .DS_Store
-Thumbs.db"server/.env" 
-"fly.secrets.env" 
+Thumbs.db

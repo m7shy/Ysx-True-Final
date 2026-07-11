@@ -1,0 +1,11 @@
+# 'Big Fish' target channel IDs for process_lookalike.py
+# One channel ID per line. Lines starting with # are ignored.
+# The script fetches each target's 3 most recent videos, then runs
+# search.list(relatedToVideoId=...) to find algorithmically similar channels.
+#
+# ⚠  NOTE: relatedToVideoId was removed from the YouTube Data API v3 on
+#    7 Aug 2023. The script will handle HTTP 400 errors gracefully but may
+#    produce zero leads until/unless YouTube re-enables this endpoint.
+# Example:
+# UCxxxxxxxxxxxxxxxxxxxxxx
+

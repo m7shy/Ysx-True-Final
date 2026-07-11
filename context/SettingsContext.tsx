@@ -1,24 +1,10 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { UserSettings, FollowUpTone } from '../types';
+import { UserSettings, DEFAULT_SETTINGS } from '../types';
 
-export const DEFAULT_SETTINGS: UserSettings = {
-  zohoClientId: '',
-  zohoClientSecret: '',
-  zohoRegion: 'US',
-  defaultTone: FollowUpTone.PROFESSIONAL,
+const DEFAULT_SETTINGS_LOCAL: UserSettings = {
+  ...DEFAULT_SETTINGS,
   emailSignature: 'John Doe',
-  syncLookbackDays: 30,
-  autoSync: true,
-  useRealApi: false,
-  transportMode: 'gateway-imap-smtp', // Default to Gateway
-  activeProvider: 'ZOHO',
-  zohoAccessToken: '',
-  zohoRefreshToken: '',
-  googleClientId: '',
-  googleClientSecret: '',
-  googleAccessToken: '',
-  googleRefreshToken: ''
 };
 
 interface SettingsContextType {
@@ -37,14 +23,14 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
         const parsed = JSON.parse(saved);
         // Persist tokens so the user stays logged in across reloads in this client-side app
         return { 
-            ...DEFAULT_SETTINGS, 
+            ...DEFAULT_SETTINGS_LOCAL, 
             ...parsed
         };
       } catch (e) {
         console.error("Failed to parse saved settings", e);
       }
     }
-    return DEFAULT_SETTINGS;
+    return DEFAULT_SETTINGS_LOCAL;
   });
 
   useEffect(() => {

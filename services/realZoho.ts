@@ -130,6 +130,12 @@ const handleApiError = async (response: Response) => {
   return response.json();
 };
 
+const withSignature = (body: string, signature?: string): string => {
+  const sig = (signature || '').trim();
+  if (!sig) return body;
+  return `${body}\n\n${sig}`;
+};
+
 // --- CORE FUNCTIONS ---
 
 export const refreshZohoToken = async (
@@ -301,4 +307,58 @@ export const scheduleRealEmail = async (
 ): Promise<void> => {
   console.warn("Client-side scheduling is not supported for Real Zoho API.", { to, subject, scheduledTime });
   throw new AppError(AppErrorCode.UNKNOWN, 'ZOHO', "Scheduling is not supported in client-side demo mode for Real APIs.");
+};
+
+// ---------------------------------------------------------------------------
+// Canonical provider API (used by hooks/useEmailProvider.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * The UI expects provider modules to expose `fetchSentEmails`.
+ * If `accountId` is not provided, we resolve it via the accounts endpoint.
+ */
+export const fetchSentEmails = async (
+  accessToken: string,
+  accountId?: string,
+  region: string = 'US'
+): Promise<Email[]> => {
+  const resolvedAccountId = accountId || (await getZohoAccountId(accessToken, region));
+  const emails = await fetchRealSentEmails(accessToken, resolvedAccountId, region);
+
+  // Tag provider for UI consistency (DashboardView expects this in Real API mode).
+  return (emails as any[]).map((e) => ({ ...e, provider: 'ZOHO' })) as Email[];
+};
+
+/**
+ * The UI expects provider modules to expose `sendNewEmail`.
+ * We resolve the Zoho accountId automatically and append the optional signature.
+ */
+export const sendNewEmail = async (
+  accessToken: string,
+  to: string,
+  subject: string,
+  body: string,
+  region: string = 'US',
+  signature?: string
+): Promise<void> => {
+  const resolvedAccountId = await getZohoAccountId(accessToken, region);
+  const finalBody = withSignature(body, signature);
+  await sendRealEmail(accessToken, resolvedAccountId, region, to, subject, finalBody);
+};
+
+/**
+ * The UI expects provider modules to expose `sendFollowUpEmail`.
+ * Zoho threading would require message/thread APIs; for now we send as a normal email.
+ */
+export const sendFollowUpEmail = async (
+  accessToken: string,
+  to: string,
+  subject: string,
+  body: string,
+  _inReplyTo: string,
+  region: string = 'US',
+  signature?: string
+): Promise<void> => {
+  // _inReplyTo is intentionally unused in this client-only implementation.
+  await sendNewEmail(accessToken, to, subject, body, region, signature);
 };

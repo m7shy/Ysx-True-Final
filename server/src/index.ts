@@ -8,19 +8,25 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { logger } from './logger.js';
 
-import { authRouter, oauthRouter, requireAuth } from './auth/index.js';
+import { authRouter, oauthRouter, requireAuth, requireActiveTenant } from './auth/index.js';
+import { billingWebhookRouter, billingRouter } from './billing/index.js';
 import mailRouter from './mail/routes.js';
 import followupsRouter from './followups/routes.js';
 import geminiRouter from './gemini/routes.js';
 import campaignsRouter from './campaigns/routes.js';
 import leadsRouter from './leads/routes.js';
+import leadsImportRouter from './leads/importRoutes.js';
 import uniboxRouter from './unibox/routes.js';
+import scraperRouter from './scraper/routes.js';
+import analyticsRouter from './analytics/routes.js';
+import trackingRouter from './campaigns/trackingRoutes.js';
 
 import { startFollowupScheduler, cancelFollowup, cancelRemainingFollowupsForRecipient } from './scheduler/followupScheduler.js';
 import { sendSmtpMail, parseProvider } from './mail/smtpGateway.js';
 import { hasRecipientReplied } from './mail/replyCheck.js';
 import { startCampaignWorker } from './campaigns/worker.js';
 import { startReplyPoller } from './unibox/replyPoller.js';
+import { startAutoScraperScheduler } from './scraper/autoScheduler.js';
 
 export const app = express();
 
@@ -49,7 +55,7 @@ app.use(
 );
 app.use(
   cors({
-    origin: true,
+    origin: config.WEB_ORIGIN,
     credentials: true,
   })
 );
@@ -63,11 +69,23 @@ app.use(
   })
 );
 
+// Stripe webhook — MUST be mounted before express.json(): signature
+// verification hashes the raw request bytes, so this router uses its own
+// express.raw() parser. Authenticated exclusively by the Stripe-Signature
+// HMAC against STRIPE_WEBHOOK_SECRET (see src/billing/webhook.ts).
+app.use('/api/billing/webhook', billingWebhookRouter);
+
 app.use(express.json({ limit: '20mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
+
+// Campaign open/click tracking pixel + redirect — deliberately unauthenticated
+// (the recipient's mail client has no session); HMAC-signed tokens
+// (campaigns/trackingToken.ts) stand in for auth. Must be public, so it's
+// mounted before every requireAuth-gated router below.
+app.use('/t', trackingRouter);
 
 // OAuth connect/callback flow (multi-account mailbox consent). Mounted before
 // the auth router so its paths take precedence. The /start leg is gated by
@@ -80,12 +98,27 @@ app.use('/api/auth', authRouter);
 
 // Tenant-scoped routers: every request must carry a valid access token, and
 // each handler resolves credentials/data from the DB using req.auth.userId.
-app.use('/api/mail', requireAuth, mailRouter);
-app.use('/api/followups', requireAuth, followupsRouter);
-app.use('/api/gemini', requireAuth, geminiRouter);
-app.use('/api/campaigns', requireAuth, campaignsRouter);
-app.use('/api/leads', requireAuth, leadsRouter);
-app.use('/api/unibox', requireAuth, uniboxRouter);
+// requireActiveTenant additionally blocks all mutations (POST/PUT/PATCH/DELETE)
+// from tenants whose account status is UNPAID or INACTIVE.
+app.use('/api/mail', requireAuth, requireActiveTenant, mailRouter);
+app.use('/api/followups', requireAuth, requireActiveTenant, followupsRouter);
+app.use('/api/gemini', requireAuth, requireActiveTenant, geminiRouter);
+app.use('/api/campaigns', requireAuth, requireActiveTenant, campaignsRouter);
+// Server-to-server scraper feed. Mounted BEFORE the JWT /api/leads router so
+// this more-specific path matches first: it authenticates with the X-Import-Key
+// shared secret (see leads/importRoutes.ts) instead of a Bearer token.
+app.use('/api/leads/import', leadsImportRouter);
+app.use('/api/leads', requireAuth, requireActiveTenant, leadsRouter);
+app.use('/api/unibox', requireAuth, requireActiveTenant, uniboxRouter);
+// In-app YouTube scraper: a logged-in user launches the Python scraper and its
+// leads land in their own tenant (see scraper/service.ts).
+app.use('/api/scraper', requireAuth, requireActiveTenant, scraperRouter);
+app.use('/api/analytics', requireAuth, requireActiveTenant, analyticsRouter);
+
+// Billing reads (tier / status / metered usage). Auth-gated but deliberately
+// NOT behind requireActiveTenant: a lapsed tenant must still see its usage
+// and why mutations are blocked.
+app.use('/api/billing', requireAuth, billingRouter);
 
 // ---- Static Files (Frontend) ----
 const __filename = fileURLToPath(import.meta.url);
@@ -191,6 +224,10 @@ if (config.DATABASE_URL && config.NODE_ENV !== 'test') {
   startCampaignWorker({ tickMs: Number(process.env.CAMPAIGN_TICK_MS ?? 60_000) });
   startReplyPoller({ pollMs: Number(process.env.UNIBOX_POLL_MS ?? 300_000) });
 }
+
+// Auto-scraper: 3-5x/day per tenant, staggered across 24h (see autoScheduler.ts).
+// Separately gated on SCRAPER_DIR inside startAutoScraperScheduler itself.
+startAutoScraperScheduler({ tickMs: Number(process.env.SCRAPER_AUTO_TICK_MS ?? 300_000) });
 
 const port = Number((config as any).PORT ?? process.env.PORT ?? 3001);
 

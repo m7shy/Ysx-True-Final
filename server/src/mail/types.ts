@@ -1,4 +1,3 @@
-
 export interface SimpleCredentials {
   type: 'simple';
   user: string;

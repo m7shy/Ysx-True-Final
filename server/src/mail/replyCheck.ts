@@ -1,7 +1,7 @@
 import { ImapFlow } from 'imapflow';
 import { logger } from '../logger.js';
 import { getImapConfig } from './smtpGateway.js';
-import type { ProviderName } from './types.js';
+import type { WireProvider } from '../creds/mailboxStore.js';
 
 const DEBUG_REPLY_DETECT = String(process.env.DEBUG_REPLY_DETECT ?? '').trim() === '1';
 
@@ -43,7 +43,7 @@ function debugLog(msg: string, extra?: Record<string, unknown>): void {
  */
 export async function hasRecipientReplied(input: {
   userId: string;
-  provider: ProviderName;
+  provider: WireProvider;
   recipientEmail: string;
   initialSentAt: string;
   originalMessageId?: string;

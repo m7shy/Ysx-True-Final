@@ -1,0 +1,535 @@
+// YSX Flow — Phase 1 multi-tenant schema (PostgreSQL on Neon via Prisma).
+// Four models only: User, Mailbox, Lead, Campaign.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Pooled connection (PgBouncer) for the app runtime.
+  url       = env("DATABASE_URL")
+  // Direct (non-pooled) connection for migrations / introspection.
+  directUrl = env("DIRECT_URL")
+}
+
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+// Both providers are OAuth2 going forward (Gmail migrating off app-passwords).
+enum MailboxProvider {
+  GMAIL
+  MICROSOFT
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  REPLIED
+  CALL_BOOKED
+  TRIAL
+  CLIENT_CLOSED
+  LOST
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum TrackingEventType {
+  SENT
+  OPENED
+  CLICKED
+  REPLIED
+  BOUNCED
+}
+
+// Billing plan the tenant is on. Feature limits per tier live in app config,
+// not the DB, so adding a tier is a schema-only change.
+enum SubscriptionTier {
+  FREE
+  PRO
+  AGENCY
+}
+
+// Tenant account gate. Anything other than ACTIVE blocks all data mutations
+// (see src/auth/tenantGate.ts): UNPAID = Stripe payment failed / subscription
+// lapsed, INACTIVE = manually disabled or self-deactivated.
+enum AccountStatus {
+  ACTIVE
+  UNPAID
+  INACTIVE
+}
+
+enum FollowupJobStatus {
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+// Per-campaign recipient state. Introduced so a campaign dispatches only to
+// the leads it was created with, instead of the worker's original Phase 1
+// design (every ACTIVE campaign racing against the tenant's whole NEW-lead
+// pool — see CampaignRecipient model comment). PENDING = queued for the
+// current step; SENDING = claimed by the worker for this tick (an atomic
+// PENDING -> SENDING compare-and-set, exactly followupScheduler's idiom —
+// see campaigns/worker.ts), so a crash mid-send or a second worker instance
+// can never double-send it; IN_SEQUENCE = step 0 sent, waiting on a later
+// sequence step; terminal states: COMPLETED, REPLIED, FAILED (retries
+// exhausted), SKIPPED (bounced/invalid lead, or manually removed).
+enum RecipientStatus {
+  PENDING
+  SENDING
+  IN_SEQUENCE
+  COMPLETED
+  REPLIED
+  FAILED
+  SKIPPED
+}
+
+// IDLE = due for its next auto-run whenever nextRunAt arrives; RUNNING is the
+// scheduler's claim state (see src/scraper/autoScheduler.ts) — set via an
+// atomic compare-and-set update so two overlapping ticks never double-run
+// the same tenant.
+enum ScraperScheduleStatus {
+  IDLE
+  RUNNING
+}
+
+// ── Models ────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String @id @default(cuid())
+  email        String @unique
+  passwordHash String
+
+  // ── Billing / tenancy gate ────────────────────────────────────────────────
+  // stripeSubscriptionId / stripeCustomerId are set by the Stripe webhook when
+  // a subscription is created; both unique so a webhook event can be resolved
+  // back to its tenant either way.
+  // status is the mutation gate: only ACTIVE tenants may write data.
+  stripeSubscriptionId String?          @unique
+  stripeCustomerId     String?          @unique
+  tier                 SubscriptionTier @default(FREE)
+  status               AccountStatus    @default(ACTIVE)
+
+  // Stripe billing cycle anchor for the current period, kept in sync by the
+  // subscription webhooks. Usage tracking buckets emails-sent by
+  // currentPeriodStart; when null (FREE tenants) the UTC calendar month is used.
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+
+  // JWT session tracking. tokenVersion is bumped to invalidate all issued JWTs
+  // (logout-everywhere / password reset). lastLoginAt is informational.
+  tokenVersion Int       @default(0)
+  lastLoginAt  DateTime?
+
+  // Email signature(s) and user settings. JSON because these are variable,
+  // nested, UI-owned blobs (multiple named signatures, tone/prefs) that the app
+  // never filters or aggregates on in SQL. Matches existing UserSettings shape.
+  signatures Json? // e.g. [{ name, html, isDefault }]
+  settings   Json? // e.g. { defaultTone, syncLookbackDays, autoSync, ... }
+
+  mailboxes       Mailbox[]
+  leads           Lead[]
+  campaigns       Campaign[]
+  trackingEvents  TrackingEvent[]
+  followupJobs    FollowupJob[]
+  usageRecords    UsageRecord[]
+  scraperSchedule ScraperSchedule?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TrackingEvent {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  leadId String
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  type TrackingEventType
+
+  // Bounce-specific detail (SMTP code, diagnostic message) or click/open
+  // metadata (url, userAgent, ip). Variable per event type → JSON.
+  meta Json?
+
+  createdAt DateTime @default(now())
+
+  // Campaign dashboards read events for a campaign ordered by time.
+  @@index([campaignId, type])
+  // Lead-level history / bounce checks.
+  @@index([leadId, type])
+  @@index([userId, createdAt])
+}
+
+model Mailbox {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Sending identity.
+  email    String
+  provider MailboxProvider
+
+  // ── OAuth token record (mirrors the real persisted shape:
+  //    { tenant, scope, tokenType:'Bearer', accessToken, refreshToken,
+  //      obtainedAt, expiresAt } ).
+  //    SECRET: accessToken/refreshToken are secrets — encryption-at-rest is an
+  //    app concern (encrypt before write, decrypt on read); DB stores ciphertext.
+  accessToken  String? // ciphertext
+  refreshToken String? // ciphertext, may rotate on refresh
+  scope        String?
+  tokenType    String  @default("Bearer")
+  tenant       String? // MS tenant id ("common" or a GUID); null for Gmail
+
+  // Expiry timestamps. Stored as DateTime (Postgres timestamptz) rather than the
+  // legacy ms-epoch numbers so the rotation engine can compare/order in SQL.
+  // The 5-minute refresh buffer stays in app logic.
+  obtainedAt DateTime?
+  expiresAt  DateTime? // rotation engine treats null / <= now()+buffer as "needs refresh"
+
+  // ── Rotation & throttling: scalar columns so the rotation engine can filter,
+  //    order, and aggregate a healthy sending mailbox directly in SQL.
+  dailyLimit  Int       @default(0) // max sends per UTC day (0 = not yet warmed / disabled)
+  sentToday   Int       @default(0) // consumed today; app resets to 0 at UTC midnight
+  counterDate DateTime  @default(now()) @db.Date // UTC day sentToday belongs to; stale date => treat as reset
+  lastSentAt  DateTime? // for pacing / round-robin fairness across mailboxes
+
+  // Health gate for rotation: a disabled mailbox (auth failure, bounce spike,
+  // manual pause) is skipped without being deleted. A single boolean is enough
+  // for Phase 1; a reason/timestamp is deferred until there's a UI for it.
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Email is unique PER TENANT (per user), not globally: two users may both
+  // connect the same shared/alias inbox.
+  @@unique([userId, email])
+  // Rotation-engine hot path: "this user's active mailboxes".
+  @@index([userId, isActive])
+  // Lazy refresh-on-read: find a user's mailboxes with near-expiry tokens
+  // (matches the per-mailbox refresh in microsoftOauth.ts). A cross-tenant
+  // background sweep would instead want a standalone @@index([expiresAt]).
+  @@index([userId, expiresAt])
+}
+
+model Lead {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name    String
+  email   String
+  company String?
+  status  LeadStatus @default(NEW)
+
+  // Existing Lead scalars.
+  source        String?
+  notes         String?
+  score         Int? // filtered/sorted on for prioritization → scalar column
+  lastContacted DateTime?
+
+  // LeadIntelligence: variable nested blob
+  // ({ postingFrequency, hasPaidCommunity, offerType, targetKeywords[],
+  //   lastPostDate }). Not filtered/aggregated in SQL → JSON is the right fit.
+  intelligence Json?
+
+  // Raw CSV row (header -> value), keyed by normalized header, for
+  // {{variable}} interpolation in campaign emails (campaigns/variables.ts).
+  // Re-import shallow-merges new keys over old (see leads/importService.ts).
+  customFields Json?
+
+  // Bounce tracking: a hard/soft bounce marks the lead so send logic can skip
+  // it going forward without deleting history. bounceCount supports a
+  // soft-bounce threshold before isBounced is flipped.
+  isBounced    Boolean   @default(false)
+  bounceCount  Int       @default(0)
+  lastBounceAt DateTime?
+
+  trackingEvents TrackingEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Lead email is unique PER TENANT (per user), not globally: the same prospect
+  // may belong to multiple agency users independently.
+  @@unique([userId, email])
+  // Pipeline views filter by owner + status; score orders within.
+  @@index([userId, status])
+  @@index([userId, score])
+  @@index([userId, isBounced])
+}
+
+model Campaign {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name   String
+  status CampaignStatus @default(DRAFT)
+
+  // Base message + schedule (existing Campaign shape).
+  subject     String?
+  body        String?
+  scheduledAt DateTime?
+  progress    Int       @default(0) // 0-100
+
+  // Aggregate stats. Kept as flat scalar columns (not JSON) so dashboards can
+  // SUM/ORDER these in SQL. Matches existing stats{ sent, clicked, replied,
+  // opportunities }.
+  sentCount          Int @default(0)
+  clickedCount       Int @default(0)
+  repliedCount       Int @default(0)
+  opportunitiesCount Int @default(0)
+
+  distributionMethod String? // 'INDIVIDUAL' | 'GROUP' — now honored by pickMailbox() in campaigns/engine.ts
+
+  // Variable-length nested step arrays: SequenceStep[]
+  // ({ id, step, subject, body, scheduledFor, status, type }) and autoFollowUps[]
+  // ({ delay, unit, content }). Authored/consumed as whole documents by the
+  // scheduler, never filtered field-by-field in SQL → JSON.
+  sequence      Json?
+  autoFollowUps Json?
+
+  // ── Send window (all optional/nullable: unset = unrestricted, sends 24/7 as
+  //    Phase 1 always did — additive, no behavior change for existing rows).
+  sendWindowStart Int? // minutes from local midnight, 0-1439
+  sendWindowEnd   Int? // minutes from local midnight, 0-1439; may be < start (overnight window)
+  sendDays        Int? // bitmask Mon=1<<0 ... Sun=1<<6; null = every day
+  timezone        String? // IANA zone e.g. "America/New_York"; null = UTC
+
+  // ── Per-campaign pacing, mirrors Mailbox's dailyLimit/sentToday/counterDate.
+  dailyLimit  Int?
+  sentToday   Int      @default(0)
+  counterDate DateTime @default(now()) @db.Date
+
+  // ── Reply/tracking behavior (previously collected in the Compose UI but
+  //    never sent to the backend — see ComposeNewEmail.tsx campaignSettings).
+  stopOnReply   Boolean @default(true)
+  openTracking  Boolean @default(false)
+  linkTracking  Boolean @default(false)
+
+  // ── Campaign wizard additions ────────────────────────────────────────────
+  // Per-send pacing: null = legacy batch behavior (BATCH_SIZE/tick, no gap).
+  // When set, the worker sends at most 1 recipient per tick for this campaign
+  // and sets nextSendAt = now + interval + 30-60s random jitter.
+  sendIntervalMinutes Int?
+  nextSendAt          DateTime?
+
+  // Stop-on-event, alongside stopOnReply above.
+  stopOnClick Boolean @default(false)
+  stopOnOpen  Boolean @default(false)
+
+  // Plain-text-only sends (no HTML part -> no open pixel, see trackedHtml.ts).
+  plainTextMode Boolean @default(false)
+
+  // 0 = always prefer new leads over due follow-ups, 100 = always prefer
+  // follow-ups; see campaigns/worker.ts processCampaign.
+  followUpPercent Int @default(50)
+
+  // Bounce tracking + auto-pause (per-campaign scope, see engine.ts).
+  bouncedCount Int     @default(0)
+  pausedReason String? // e.g. 'BOUNCE_RATE'
+
+  trackingEvents TrackingEvent[]
+  recipients     CampaignRecipient[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Campaign list / scheduler sweep by owner + status.
+  @@index([userId, status])
+  @@index([userId, scheduledAt])
+}
+
+// Per-campaign recipient + sequence progress. Replaces the Phase 1 design
+// where a running campaign dispatched against ALL of the tenant's status:NEW
+// leads with no association to which campaign sent to whom — two concurrent
+// campaigns would race for the same lead pool and progress/COMPLETED was
+// computed tenant-wide instead of per campaign. leadId is a plain column (no
+// FK), matching FollowupJob's convention: a recipient row must keep its
+// grouping key even if the Lead row is later deleted.
+model CampaignRecipient {
+  id String @id @default(cuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  leadId String
+  userId String // denormalized for the reply-poller's cross-campaign sweep
+
+  status       RecipientStatus @default(PENDING)
+  currentStep  Int             @default(0)
+  nextSendAt   DateTime?
+  lastSentAt   DateTime?
+  attemptCount Int             @default(0)
+  lastError    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // A lead can only appear once per campaign.
+  @@unique([campaignId, leadId])
+  // Worker hot path: this campaign's due recipients.
+  @@index([campaignId, status, nextSendAt])
+  // Reply poller: all of a tenant's in-flight recipient rows for a lead,
+  // across every campaign.
+  @@index([userId, leadId])
+}
+
+// Metered usage: one row per tenant per billing cycle, keyed by the cycle's
+// start timestamp. emailsSent is bumped with a single atomic
+// INSERT ... ON CONFLICT DO UPDATE (see src/billing/usage.ts), so concurrent
+// sends from the campaign worker, followup scheduler, and API never race.
+model UsageRecord {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Start of the billing cycle this row aggregates (User.currentPeriodStart,
+  // or the UTC calendar-month start for tenants with no Stripe subscription).
+  periodStart DateTime
+
+  emailsSent Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // The atomic-increment conflict target and the billing read path.
+  @@unique([userId, periodStart])
+}
+
+// Durable follow-up queue (replaces the legacy server/data/followups.json
+// store, which did not survive redeploys and had no tenant enforcement).
+// campaignId/leadId are plain columns rather than FKs: jobs must keep their
+// campaign/lead grouping keys for reply-gating even if the campaign or lead
+// row is later deleted.
+model FollowupJob {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Mail send data.
+  provider String // 'gmail' | 'microsoft' (ProviderName in src/mail/types.ts)
+  to       String
+  subject  String
+  body     String
+  html     String?
+  replyTo  String?
+
+  // Scheduling + state.
+  scheduledAt DateTime
+  sentAt      DateTime?
+  status      FollowupJobStatus @default(SCHEDULED)
+
+  lastError     String?
+  failureReason String?
+  cancelReason  String?
+
+  // Retry/backoff: a transient send failure (SMTP hiccup) re-schedules the
+  // job instead of failing it permanently (see scheduler/followupScheduler.ts
+  // computeNextRetry). attemptCount caps retries; nextRetryAt is the backoff
+  // target, distinct from the original scheduledAt.
+  attemptCount Int       @default(0)
+  nextRetryAt  DateTime?
+
+  // Campaign / CRM metadata.
+  campaignId      String?
+  leadId          String?
+  originalEmailId String?
+  stepIndex       Int?
+
+  // Reply gating.
+  onlyIfNoReply Boolean @default(false)
+  skipIfReplied Boolean @default(false)
+
+  // Reply detection / threading.
+  originalMessageId String?
+  initialSentAt     DateTime?
+  recipientEmail    String? // stored lowercase
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Scheduler tick: due jobs across all tenants.
+  @@index([status, scheduledAt])
+  // Tenant job listing.
+  @@index([userId, status])
+  // Reply-gating cancellation sweeps.
+  @@index([campaignId, recipientEmail, status])
+  @@index([userId, recipientEmail, status])
+}
+
+// One row per tenant: config + state for the automatic YouTube scraper runs
+// (see src/scraper/autoScheduler.ts). Created for every new signup with
+// enabled=true so scraping starts without the user visiting the Scraper view.
+// lastRunSummary is the auto-run's only visibility that survives a backend
+// restart — the in-memory job log (scraper/service.ts) does not.
+model ScraperSchedule {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  enabled    Boolean               @default(true)
+  runsPerDay Int                   @default(3) // user-configurable: 3 or 5
+  status     ScraperScheduleStatus @default(IDLE)
+
+  nextRunAt DateTime
+  lastRunAt DateTime?
+  // Set when a run is claimed (status -> RUNNING). A boot/tick sweep treats a
+  // RUNNING row whose runStartedAt is older than the stale-run timeout as a
+  // crashed run and resets it to IDLE — otherwise a process crash mid-run
+  // strands the tenant in RUNNING forever with no recovery.
+  runStartedAt DateTime?
+
+  // { created, updated, skipped, error? } — the last run's importLeadRows()
+  // summary (or spawn/Gemini failure message), so the ScraperView can show
+  // "what happened last time" without needing the process that ran it.
+  lastRunSummary Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Scheduler tick: due tenants across all accounts.
+  @@index([enabled, status, nextRunAt])
+}
+
+// The YouTube cookie rotation pool the Python scraper reads (cookie_manager.py)
+// — one row per uploaded Netscape cookies.txt file. Postgres is the source of
+// truth so the pool survives redeploys/restarts on Fly's ephemeral rootfs;
+// cookieService.ts materializes these rows to SCRAPER_DIR/cookies/*.txt as a
+// disk scratch cache right before each scraper spawn (service.ts).
+//
+// userId is nullable and additive: legacy rows predate per-tenant scoping and
+// remain null (readable by any tenant, matching the original single-tenant
+// design); every new upload is scoped to its uploading tenant so one tenant
+// can no longer list/overwrite/delete another tenant's cookie files.
+model CookieFile {
+  id     String  @id @default(cuid())
+  name   String  @unique
+  userId String?
+
+  // Netscape cookie jar contents, encrypted at rest (AES-256-GCM, see
+  // src/creds/crypto.ts encryptSecret/decryptSecret) — an authenticated
+  // YouTube session is a secret equivalent to a password.
+  content   String
+  sizeBytes Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}

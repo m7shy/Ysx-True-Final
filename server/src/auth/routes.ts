@@ -20,7 +20,7 @@ const refreshSchema = z.object({
 
 function issueTokens(user: { id: string; email: string; tokenVersion: number }) {
   return {
-    accessToken: signAccessToken({ userId: user.id, email: user.email }),
+    accessToken: signAccessToken({ userId: user.id, email: user.email, tokenVersion: user.tokenVersion }),
     refreshToken: signRefreshToken({
       userId: user.id,
       email: user.email,

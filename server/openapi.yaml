@@ -1,11 +1,147 @@
-openapi: 3.1.0
+openapi: 3.0.0
 info:
-  title: Secure Mail Gateway API
-  description: A secure Node.js backend acting as a gateway for IMAP/SMTP operations with providers like Zoho and Gmail.
+  title: Email Gateway API
   version: 1.0.0
+  description: API for sending emails and checking for replies via SMTP/IMAP using Gmail or Zoho.
 servers:
   - url: http://localhost:3001
-    description: Local Development Server
+paths:
+  /api/mail/send:
+    post:
+      summary: Send email
+      description: Sends an email via configured SMTP provider.
+      parameters:
+        - in: query
+          name: provider
+          required: false
+          schema:
+            $ref: '#/components/schemas/Provider'
+          description: The email provider to use.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendEmailRequest'
+      responses:
+        '200':
+          description: Email sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendEmailResponse'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/mail/oauth/microsoft/device-code/start:
+    post:
+      summary: Start Microsoft OAuth2 Device Code flow (for IMAP XOAUTH2)
+      description: Returns user_code and verification_uri for user authorization (plus device_code for polling).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenantId:
+                  type: string
+                  description: Optional tenant ID (GUID). Overrides MICROSOFT_TENANT_ID.
+                includeSmtpSend:
+                  type: boolean
+                  description: Optional. If true, also requests SMTP.Send scope.
+      parameters:
+        - in: query
+          name: tenantId
+          required: false
+          schema:
+            type: string
+          description: Optional tenant ID (GUID). Overrides MICROSOFT_TENANT_ID.
+        - in: query
+          name: includeSmtpSend
+          required: false
+          schema:
+            type: boolean
+          description: Optional. If true, also requests SMTP.Send scope.
+      responses:
+        '200':
+          description: Device code created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftDeviceCodeStartResponse'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/mail/oauth/microsoft/device-code/poll:
+    post:
+      summary: Poll Microsoft OAuth2 Device Code flow until authorized
+      description: Polls the token endpoint and stores refresh token server-side when authorization completes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_code]
+              properties:
+                device_code:
+                  type: string
+                tenantId:
+                  type: string
+                includeSmtpSend:
+                  type: boolean
+      parameters:
+        - in: query
+          name: tenantId
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authorized (tokens stored)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftDeviceCodePollAuthorizedResponse'
+        '202':
+          description: Still pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MicrosoftDeviceCodePollPendingResponse'
+        '400':
+          description: Bad request / declined / expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   schemas:
@@ -14,161 +150,89 @@ components:
       enum:
         - gmail
         - zoho
+        - microsoft
       description: The email service provider.
 
-    SentItem:
+    SendEmailRequest:
       type: object
-      properties:
-        uid:
-          type: integer
-          description: IMAP UID of the message.
-        id:
-          type: string
-          description: Message-ID header.
-        subject:
-          type: string
-        from:
-          type: string
-        to:
-          type: array
-          items:
-            type: string
-        date:
-          type: string
-          format: date-time
-        snippet:
-          type: string
-          description: Short preview of the email content.
       required:
-        - uid
-        - subject
-        - from
-        - date
-        - snippet
-
-    SendRequest:
-      type: object
-      properties:
-        provider:
-          $ref: '#/components/schemas/Provider'
-        from:
-          type: string
-          format: email
-        to:
-          type: string
-          format: email
-        subject:
-          type: string
-        text:
-          type: string
-          description: Plain text content.
-        html:
-          type: string
-          description: HTML content.
-      required:
-        - provider
-        - from
         - to
         - subject
+        - body
+      properties:
+        to:
+          type: string
+          description: Recipient email address
+        subject:
+          type: string
+          description: Email subject
+        body:
+          type: string
+          description: Email body content
+
+    SendEmailResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        messageId:
+          type: string
 
     ErrorResponse:
       type: object
       properties:
         code:
           type: string
-          example: VALIDATION
         message:
           type: string
-          example: Invalid provider
         error:
           type: object
           nullable: true
 
-paths:
-  /api/health:
-    get:
-      summary: Health Check
-      description: Verifies that the server is running.
-      responses:
-        '200':
-          description: Server is healthy.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-                  env:
-                    type: string
-                    example: development
+    MicrosoftDeviceCodeStartResponse:
+      type: object
+      description: Response from device-code start endpoint (includes values needed for user authorization and polling).
+      properties:
+        user_code:
+          type: string
+        device_code:
+          type: string
+        verification_uri:
+          type: string
+        expires_in:
+          type: number
+        interval:
+          type: number
+        message:
+          type: string
+        tenant:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
 
-  /api/mail/sent:
-    get:
-      summary: Fetch Sent Emails
-      description: Retrieves a list of sent emails from the specified provider via IMAP.
-      parameters:
-        - in: query
-          name: provider
-          schema:
-            $ref: '#/components/schemas/Provider'
-          required: true
-          description: The email provider to fetch from.
-        - in: query
-          name: limit
-          schema:
-            type: integer
-            default: 20
-          required: false
-          description: Number of emails to retrieve.
-      responses:
-        '200':
-          description: List of sent emails.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/SentItem'
-        '400':
-          description: Validation error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Authentication failed with provider.
-        '504':
-          description: Operation timed out.
+    MicrosoftDeviceCodePollAuthorizedResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        mailboxUser:
+          type: string
+        tenant:
+          type: string
+        expiresAt:
+          type: number
 
-  /api/mail/send:
-    post:
-      summary: Send Email
-      description: Sends an email via SMTP using the specified provider.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SendRequest'
-      responses:
-        '200':
-          description: Email sent successfully.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  messageId:
-                    type: string
-                    description: The ID of the sent message.
-        '400':
-          description: Validation error.
-        '401':
-          description: Authentication failed.
-        '504':
-          description: Operation timed out.
+    MicrosoftDeviceCodePollPendingResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, slow_down]
+        error:
+          type: string
+        message:
+          type: string
+        interval:
+          type: number

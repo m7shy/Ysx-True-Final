@@ -22,80 +22,56 @@ export interface AutoFollowUp {
 export interface SequenceStep {
   id: string;
   step: number;
+  delayDays: number;
   subject: string;
   body: string;
-  scheduledFor: string; // ISO String
-  status: 'PENDING' | 'SENT' | 'SKIPPED';
-  type: 'INITIAL' | 'FOLLOW_UP';
+  autoFollowUps?: AutoFollowUp[];
 }
 
 export interface Email {
   id: string;
-  recipient: string;
-  recipientName: string;
   subject: string;
   body: string;
-  sentDate: string; // ISO string
+  date: string; // ISO string
   status: EmailStatus;
-  company?: string;
-  scheduledDate?: string; // ISO string for when the follow-up should be sent
-  followupHistory?: FollowUpHistoryItem[];
-  autoFollowUps?: AutoFollowUp[];
-  provider?: 'ZOHO' | 'GMAIL' | 'MICROSOFT';
+  followUpHistory: FollowUpHistoryItem[];
+  threadId?: string;
+  messageId?: string;
+  to: string;
+  from: string;
 }
 
-export interface Recipient {
-  email: string;
+export interface Lead {
+  id: string;
   name: string;
+  email: string;
   company: string;
+  status: 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'CONVERTED' | 'LOST';
+  lastContacted: string | null;
+  notes: string;
+  sequence?: SequenceStep[];
 }
 
 export interface Campaign {
   id: string;
-  name: string; // Usually subject
-  status: 'DRAFT' | 'SCHEDULED' | 'SENT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED';
-  recipients: Recipient[];
-  subject: string;
-  body: string;
-  scheduledAt: string; // ISO date string
+  name: string;
   createdAt: string;
-  progress: number; // 0-100
-  stats: {
-    sent: number;
-    clicked: number;
-    replied: number;
-    opportunities: number;
-  };
-  distributionMethod: 'INDIVIDUAL' | 'GROUP';
-  autoFollowUps: AutoFollowUp[];
-  sequence?: SequenceStep[];
+  status: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+  leads: Lead[];
+  templates: EmailTemplate[];
 }
 
-export enum FollowUpTone {
-  PROFESSIONAL = 'Professional',
-  FRIENDLY = 'Friendly',
-  URGENT = 'Urgent',
-  CASUAL = 'Casual'
-}
-
-export interface GeneratedDraft {
+export interface EmailTemplate {
+  id: string;
+  name: string;
   subject: string;
   body: string;
-  tone: FollowUpTone;
+  category?: 'OUTREACH' | 'FOLLOW_UP' | 'CLOSING';
 }
 
-export interface SmartCampaignResult {
-  recipientEmail?: string;
-  recipientName?: string;
-  subject?: string;
-  body?: string;
-  scheduledDate?: string;
-  followUps?: {
-    content: string;
-    targetDate?: string; 
-    delay?: number;
-    unit?: 'MINUTES' | 'HOURS' | 'DAYS' | 'WEEKS';
-  }[];
+export interface Recipient {
+  name: string;
+  email: string;
 }
 
 export interface EmailAnalysisResult {
@@ -104,6 +80,13 @@ export interface EmailAnalysisResult {
   triggerWords: string[];
   suggestions: string[];
   toneAudit: string;
+}
+
+export enum FollowUpTone {
+  CASUAL = 'Casual',
+  PROFESSIONAL = 'Professional',
+  FRIENDLY = 'Friendly',
+  URGENT = 'Urgent'
 }
 
 export interface PublicSettings {
@@ -120,6 +103,10 @@ export interface PublicSettings {
   zohoAccountId?: string; // Cached account ID
   googleClientId: string;
 }
+
+export type ActiveProvider = PublicSettings['activeProvider'];
+
+export type MailGatewayProviderKey = 'gmail' | 'zoho' | 'microsoft';
 
 export interface SecureState {
   zohoAccessToken: string;
@@ -142,132 +129,158 @@ export const DEFAULT_SETTINGS: UserSettings = {
   autoSync: true,
   useRealApi: false,
   transportMode: 'gateway-imap-smtp',
-  activeProvider: 'GMAIL', 
+  activeProvider: 'GMAIL',
+  zohoAccountId: undefined,
   googleClientId: '',
   zohoAccessToken: '',
   zohoRefreshToken: '',
   googleAccessToken: '',
   googleRefreshToken: '',
   zohoClientSecret: '',
-  googleClientSecret: ''
+  googleClientSecret: '',
 };
 
-export type LeadStatus = 'NEW' | 'CONTACTED' | 'REPLIED' | 'CALL_BOOKED' | 'TRIAL' | 'CLIENT_CLOSED' | 'LOST';
-
-export interface LeadIntelligence {
-  postingFrequency: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'SPORADIC';
-  hasPaidCommunity: boolean;
-  offerType: 'HIGH_TICKET' | 'COURSE' | 'CONSULTING' | 'SAAS';
-  targetKeywords: string[];
-  lastPostDate: string;
-}
-
-export interface OfferFitAnalysis {
-  product: string;
-  maturity: 'Beginner' | 'Mid' | 'Pro';
-  score: number;
-  angle: string;
-}
-
-export interface Lead {
-  id: string;
-  name: string;
-  email: string;
-  company: string;
-  status: LeadStatus;
-  source: string;
-  lastContacted?: string;
-  notes?: string;
-  score?: number;
-  intelligence?: LeadIntelligence;
-}
-
-export interface BrandBible {
-  voiceProfile: {
-    archetype: string;
-    keywords: string[];
-    description: string;
-  };
-  visualRules: {
-    colorPalette: string[]; // Hex codes
-    typography: string;
-    vibeDescription: string;
-  };
-  doAndDonts: {
-    dos: string[];
-    donts: string[];
-  };
-  exampleScriptPrompts: string[];
-}
-
-export interface StoryIdea {
-  id: string; // generated locally
-  hook: string;
-  coreStory: string;
-  emotion: 'Funny' | 'Painful' | 'Inspiring' | 'Educational' | 'Controversial';
-  format: 'Reel' | 'Long-form' | 'Carousel' | 'Story';
-}
-
-export interface CampaignSettings {
-  accounts: string[];
-  stopOnReply: boolean;
-  openTracking: boolean;
-  linkTracking: boolean;
-  textOnly: boolean;
-  firstEmailTextOnly: boolean;
-  dailyLimit: number;
-  stopOnAutoReply: boolean;
-  unsubscribeHeader: boolean;
-  allowRisky: boolean;
-  disableBounceProtect: boolean;
-  prioritizeNewLeads: boolean;
-}
-
-// --- UNIBOX TYPES ---
-
-export interface ThreadMessage {
-  id: string;
-  sender: 'ME' | 'LEAD';
-  content: string;
-  date: string; // ISO string
-}
-
-export type ThreadStatus = 'UNREAD' | 'READ' | 'ARCHIVED';
-export type ThreadLeadStatus = 'INTERESTED' | 'NOT_INTERESTED' | 'MEETING_BOOKED' | 'LEFT_HANGING';
-
-export interface Thread {
-  id: string;
-  leadId: string;
-  leadName: string;
-  leadEmail: string;
-  leadCompany: string;
-  subject: string;
-  status: ThreadStatus;
-  leadStatus: ThreadLeadStatus;
-  lastMessageDate: string; // ISO string
-  messages: ThreadMessage[];
-}
-
-// --- ERROR TYPES ---
-
 export enum AppErrorCode {
-  AUTH_EXPIRED = 'AUTH_EXPIRED',
   NETWORK_ERROR = 'NETWORK_ERROR',
+  AUTH_ERROR = 'AUTH_ERROR',
   RATE_LIMIT = 'RATE_LIMIT',
-  UNKNOWN = 'UNKNOWN',
-  ACCESS_DENIED = 'ACCESS_DENIED',
+  PROVIDER_ERROR = 'PROVIDER_ERROR',
+  INVALID_INPUT = 'INVALID_INPUT',
   NOT_FOUND = 'NOT_FOUND',
-  VALIDATION = 'VALIDATION'
+  ACCESS_DENIED = 'ACCESS_DENIED',
+  UNKNOWN = 'UNKNOWN'
 }
+
+export type ProviderId = 'ZOHO' | 'GOOGLE' | 'MICROSOFT' | 'SYSTEM';
 
 export class AppError extends Error {
   code: AppErrorCode;
-  provider: 'ZOHO' | 'GOOGLE' | 'MICROSOFT' | 'SYSTEM';
+  provider: ProviderId;
 
-  constructor(code: AppErrorCode, provider: 'ZOHO' | 'GOOGLE' | 'MICROSOFT' | 'SYSTEM', message: string) {
+  constructor(code: AppErrorCode, provider: ProviderId, message: string) {
     super(message);
     this.code = code;
     this.provider = provider;
     Object.setPrototypeOf(this, AppError.prototype);
   }
+}
+
+export interface EmailFormData {
+  to: string;
+  subject: string;
+  body: string;
+  followUpDays?: number;
+  followUpTone?: FollowUpTone;
+}
+
+export interface CampaignStats {
+  totalEmails: number;
+  sent: number;
+  opened: number;
+  replied: number;
+  bounced: number;
+  unsubscribed: number;
+}
+
+export interface AnalyticsData {
+  campaignId: string;
+  stats: CampaignStats;
+}
+
+export interface FollowUpSuggestion {
+  subject: string;
+  body: string;
+  tone: FollowUpTone;
+}
+
+export interface AIConfig {
+  tone: FollowUpTone;
+  maxFollowUps: number;
+  autoAnalyze: boolean;
+}
+
+export type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS';
+
+export interface TemplateCategory {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface MailboxHealth {
+  score: number; // 0-100
+  deliverability: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR';
+  spamTraps: number;
+  blocklists: string[];
+  recommendations: string[];
+}
+
+export interface SentEmail {
+  id: string;
+  subject: string;
+  body: string;
+  to: Recipient;
+  from: Recipient;
+  sentAt: string; // ISO string
+  status: EmailStatus;
+}
+
+export interface SyncStatus {
+  lastSyncedAt: string | null;
+  inProgress: boolean;
+  error?: string;
+}
+
+export interface ApiErrorResponse {
+  code: string;
+  message: string;
+}
+
+export interface OAuthTokenResponse {
+  access_token: string;
+  refresh_token?: string;
+  expires_in: number;
+  token_type: string;
+}
+
+export interface ZohoAuthConfig {
+  clientId: string;
+  redirectUri: string;
+  scope: string;
+  responseType: 'code' | 'token';
+  accessType?: 'offline' | 'online';
+  prompt?: 'consent' | 'none';
+}
+
+export interface GoogleAuthConfig {
+  clientId: string;
+  redirectUri: string;
+  scope: string;
+  responseType: 'code' | 'token';
+  accessType?: 'offline' | 'online';
+  prompt?: 'consent' | 'none';
+}
+
+export interface EmailProviderStatus {
+  zohoConnected: boolean;
+  googleConnected: boolean;
+  gatewayConfigured: boolean;
+  activeProvider: 'ZOHO' | 'GMAIL' | 'MICROSOFT';
+}
+
+export interface HealthCheckResponse {
+  ok: boolean;
+  gmailConfigured: boolean;
+  zohoConfigured: boolean;
+  microsoftConfigured: boolean;
+}
+
+export interface GatewaySentItem {
+  uid: number;
+  id: string;
+  subject: string;
+  from: string;
+  to: string[];
+  date: string;
+  snippet: string;
 }

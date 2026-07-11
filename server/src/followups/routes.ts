@@ -1,15 +1,11 @@
 // FILE: server/src/followups/routes.ts
 
-import express from "express";
-import { z } from "zod";
-import {
-  scheduleFollowup,
-  getScheduledFollowups,
-  cancelFollowup,
-} from "../scheduler/followupScheduler.js";
-import { parseProvider } from "../mail/smtpGateway.js";
-import { requireUserId } from "../auth/middleware.js";
-import type { FollowupJobInput } from "../scheduler/types.js";
+import express, { Request, Response } from 'express';
+import { z } from 'zod';
+
+import { scheduleFollowup, getScheduledFollowups, cancelFollowup } from '../scheduler/followupScheduler.js';
+import { parseProvider } from '../mail/smtpGateway.js';
+import { requireUserId } from '../auth/middleware.js';
 
 const router = express.Router();
 
@@ -26,19 +22,16 @@ const router = express.Router();
  */
 const scheduleSchema = z.object({
   provider: z.string().optional(), // default handled by parseProvider
-  to: z.string().min(1, "to is required"),
-  subject: z.string().min(1, "subject is required"),
-  body: z.string().min(1, "body is required"),
+  to: z.string().min(1, 'to is required'),
+  subject: z.string().min(1, 'subject is required'),
+  body: z.string().min(1, 'body is required'),
   replyTo: z.string().trim().optional(),
-
-  scheduledAt: z.string().min(1, "scheduledAt is required"),
-
+  scheduledAt: z.string().min(1, 'scheduledAt is required'),
   // Required metadata for reply-gating / grouping
-  campaignId: z.string().min(1, "campaignId is required"),
-  recipientEmail: z.string().min(1, "recipientEmail is required"),
-  originalMessageId: z.string().min(1, "originalMessageId is required"),
-  initialSentAt: z.string().min(1, "initialSentAt is required"),
-
+  campaignId: z.string().min(1, 'campaignId is required'),
+  recipientEmail: z.string().min(1, 'recipientEmail is required'),
+  originalMessageId: z.string().min(1, 'originalMessageId is required'),
+  initialSentAt: z.string().min(1, 'initialSentAt is required'),
   // Optional metadata used by UI / analytics
   leadId: z.string().optional(),
   originalEmailId: z.string().optional(),
@@ -51,41 +44,36 @@ function toErrorPayload(err: unknown): { status: number; code: string; message: 
   if (err instanceof z.ZodError) {
     return {
       status: 400,
-      code: "INVALID_INPUT",
-      message: err.issues.map((i) => i.message).join("; "),
+      code: 'INVALID_INPUT',
+      message: err.issues.map((i) => i.message).join('; '),
     };
   }
 
-  if (err && typeof err === "object") {
+  if (err && typeof err === 'object') {
     const e = err as any;
-    if (
-      typeof e.status === "number" &&
-      typeof e.code === "string" &&
-      typeof e.message === "string"
-    ) {
+    if (typeof e.status === 'number' && typeof e.code === 'string' && typeof e.message === 'string') {
       return { status: e.status, code: e.code, message: e.message };
     }
   }
 
-  const message = err instanceof Error ? err.message : "Internal Server Error";
-  return { status: 500, code: "UNKNOWN", message };
+  const message = err instanceof Error ? err.message : 'Internal Server Error';
+  return { status: 500, code: 'UNKNOWN', message };
 }
 
-router.get("/", async (req, res) => {
+router.get('/', async (req: Request, res: Response) => {
   const userId = requireUserId(req);
-  const jobs = (await getScheduledFollowups()).filter((j) => j.userId === userId);
+  const jobs = await getScheduledFollowups(userId);
   res.json({ jobs });
 });
 
-router.post("/schedule", async (req, res) => {
+router.post('/schedule', async (req: Request, res: Response) => {
   try {
     const userId = requireUserId(req);
     const parsed = scheduleSchema.parse(req.body);
-
-    const provider = parseProvider(parsed.provider, "gmail");
+    const provider = parseProvider(parsed.provider, 'gmail');
     const replyGate = parsed.skipIfReplied ?? parsed.onlyIfNoReply ?? false;
 
-    const input: FollowupJobInput = {
+    const input = {
       userId,
       provider,
       to: parsed.to,
@@ -93,15 +81,12 @@ router.post("/schedule", async (req, res) => {
       body: parsed.body,
       replyTo: parsed.replyTo,
       scheduledAt: parsed.scheduledAt,
-
       campaignId: parsed.campaignId,
       leadId: parsed.leadId,
       originalEmailId: parsed.originalEmailId,
       stepIndex: parsed.stepIndex,
-
       onlyIfNoReply: replyGate,
       skipIfReplied: replyGate,
-
       originalMessageId: parsed.originalMessageId,
       initialSentAt: parsed.initialSentAt,
       recipientEmail: parsed.recipientEmail,
@@ -115,18 +100,15 @@ router.post("/schedule", async (req, res) => {
   }
 });
 
-router.post("/:id/cancel", async (req, res) => {
+router.post('/:id/cancel', async (req: Request, res: Response) => {
   const userId = requireUserId(req);
-
-  // Ownership check: a tenant may only cancel its own jobs.
-  const jobs = await getScheduledFollowups();
-  const job = jobs.find((j) => j.id === req.params.id);
-  if (!job || job.userId !== userId) {
-    res.status(404).json({ code: "NOT_FOUND", message: "Follow-up not found" });
+  // Tenant-bounded cancel: another tenant's job is indistinguishable from a
+  // missing one.
+  const ok = await cancelFollowup(req.params.id, 'cancelled', userId);
+  if (!ok) {
+    res.status(404).json({ code: 'NOT_FOUND', message: 'Follow-up not found' });
     return;
   }
-
-  const ok = await cancelFollowup(req.params.id);
   res.json({ ok });
 });
 

@@ -4,6 +4,7 @@ import { verifyAccessToken } from './jwt.js';
 export interface AuthContext {
   userId: string;
   email: string;
+  tokenVersion?: number;
 }
 
 declare global {
@@ -38,7 +39,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
   try {
     const claims = verifyAccessToken(token);
-    req.auth = { userId: claims.sub, email: claims.email };
+    req.auth = { userId: claims.sub, email: claims.email, tokenVersion: claims.ver };
     next();
   } catch {
     res.status(401).json({ code: 'AUTH', message: 'Invalid or expired access token' });

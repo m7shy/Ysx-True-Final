@@ -1,14 +1,11 @@
-import express, { Request, Response } from "express";
-import { z } from "zod";
-import { ImapFlow } from "imapflow";
-import nodemailer from "nodemailer";
+import express, { Request, Response } from 'express';
+import { z } from 'zod';
+import { ImapFlow } from 'imapflow';
 
-import { requireUserId } from "../auth/middleware.js";
-import { MailError } from "../httpErrors.js";
-import {
-  getMailboxConnection,
-  listMailboxes as listUserMailboxes,
-} from "../creds/mailboxStore.js";
+import { requireUserId } from '../auth/middleware.js';
+import { MailError } from '../httpErrors.js';
+import { getMailboxConnection, listMailboxes as listUserMailboxes, deleteMailbox, type WireProvider } from '../creds/mailboxStore.js';
+import { sendSmtpMail } from './smtpGateway.js';
 
 /**
  * Mail router (tenant-scoped).
@@ -22,58 +19,26 @@ import {
 
 const router = express.Router();
 
-type Provider = "gmail" | "zoho" | "microsoft";
+const providerSchema = z.enum(['gmail', 'microsoft']);
 
-type SentItem = {
-  uid: number;
-  id?: string;
-  subject: string;
-  from: string;
-  to: string[];
-  date: string; // ISO
-  snippet: string;
-  attachments: {
-    id: string;
-    filename: string;
-    size: number;
-    contentType: string;
-  }[];
-};
-
-// Resolved IMAP connection for a tenant's mailbox (XOAUTH2).
-type ImapConn = {
-  host: string;
-  port: number;
-  secure: boolean;
-  user: string;
-  accessToken: string;
-};
-
-const providerSchema = z.enum(["gmail", "zoho", "microsoft"]);
-
-function parseProvider(raw: unknown): Provider {
+function parseProvider(raw: unknown): WireProvider {
   // Default to gmail when missing. Also accept common aliases.
-  const rawVal = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!rawVal) return "gmail";
+  const rawVal = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!rawVal) return 'gmail';
 
   const normalized = (() => {
     switch (rawVal) {
-      case "outlook":
-      case "office365":
-      case "o365":
-      case "microsoft365":
-      case "ms365":
-        return "microsoft";
-
-      case "google":
-      case "workspace":
-      case "googleworkspace":
-      case "google_workspace":
-        return "gmail";
-
-      case "zoho_mail":
-        return "zoho";
-
+      case 'outlook':
+      case 'office365':
+      case 'o365':
+      case 'microsoft365':
+      case 'ms365':
+        return 'microsoft';
+      case 'google':
+      case 'workspace':
+      case 'googleworkspace':
+      case 'google_workspace':
+        return 'gmail';
       default:
         return rawVal;
     }
@@ -81,21 +46,29 @@ function parseProvider(raw: unknown): Provider {
 
   const parsed = providerSchema.safeParse(normalized);
   if (!parsed.success) {
-    throw makeHttpError(400, "INVALID_PROVIDER", "provider must be 'gmail', 'zoho', or 'microsoft'");
+    throw makeHttpError(400, 'INVALID_PROVIDER', "provider must be 'gmail' or 'microsoft'");
   }
   return parsed.data;
 }
 
 function parseLimit(raw: unknown): number {
-  if (typeof raw !== "string") return 20;
+  if (typeof raw !== 'string') return 20;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 20;
   if (n > 100) return 100;
   return Math.floor(n);
 }
 
+interface ImapConn {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  accessToken: string;
+}
+
 /** Resolve a tenant's mailbox IMAP connection (with a fresh access token). */
-async function resolveImapConn(userId: string, provider: Provider): Promise<ImapConn> {
+async function resolveImapConn(userId: string, provider: WireProvider): Promise<ImapConn> {
   const conn = await getMailboxConnection(userId, provider);
   return {
     host: conn.imapHost,
@@ -106,19 +79,14 @@ async function resolveImapConn(userId: string, provider: Provider): Promise<Imap
   };
 }
 
-type HttpError = Error & {
-  status?: number;
-  code?: string;
-};
-
-function makeHttpError(status: number, code: string, message: string): HttpError {
-  const err = new Error(message) as HttpError;
+function makeHttpError(status: number, code: string, message: string) {
+  const err: any = new Error(message);
   err.status = status;
   err.code = code;
   return err;
 }
 
-const MAIL_ERROR_STATUS: Record<MailError["code"], number> = {
+const MAIL_ERROR_STATUS: Record<string, number> = {
   AUTH: 401,
   DENIED: 403,
   TIMEOUT: 504,
@@ -126,10 +94,10 @@ const MAIL_ERROR_STATUS: Record<MailError["code"], number> = {
   UNKNOWN: 500,
 };
 
-function sendError(res: Response, err: unknown) {
+function sendError(res: Response, err: unknown): void {
   let status = 500;
-  let code = "UNEXPECTED";
-  let message = "Unexpected error";
+  let code = 'UNEXPECTED';
+  let message = 'Unexpected error';
 
   // Credential-resolution errors carry a semantic code but no HTTP status.
   if (err instanceof MailError) {
@@ -137,25 +105,24 @@ function sendError(res: Response, err: unknown) {
     return;
   }
 
-  if (err && typeof err === "object") {
-    const e = err as Record<string, unknown>;
-    if (typeof e.status === "number") status = e.status;
-    if (typeof e.code === "string") code = e.code;
-    if (typeof e.message === "string") message = e.message;
+  if (err && typeof err === 'object') {
+    const e = err as any;
+    if (typeof e.status === 'number') status = e.status;
+    if (typeof e.code === 'string') code = e.code;
+    if (typeof e.message === 'string') message = e.message;
 
     // Nodemailer relay errors
-    if (e.code === "EMESSAGE" && typeof (e as any).responseCode === "number") {
-      if ((e as any).responseCode === 553) {
+    if (e.code === 'EMESSAGE' && typeof e.responseCode === 'number') {
+      if (e.responseCode === 553) {
         status = 403;
-        code = "DENIED";
-        message =
-          "Sender is not allowed to relay emails. The SMTP user address must match the From: address.";
+        code = 'DENIED';
+        message = 'Sender is not allowed to relay emails. The SMTP user address must match the From: address.';
       }
     }
 
     // ImapFlow sometimes includes a raw server response
-    if (status === 500 && typeof (e as any).response === "string" && ((e as any).response as string).trim()) {
-      message = `${message} (${((e as any).response as string).trim()})`;
+    if (status === 500 && typeof e.response === 'string' && e.response.trim()) {
+      message = `${message} (${e.response.trim()})`;
     }
   }
 
@@ -167,7 +134,7 @@ function sendError(res: Response, err: unknown) {
  * resolved from the database (no global env configuration).
  * GET /api/mail/health
  */
-router.get("/health", async (req: Request, res: Response) => {
+router.get('/health', async (req: Request, res: Response) => {
   try {
     const userId = requireUserId(req);
     const mailboxes = await listUserMailboxes(userId);
@@ -187,21 +154,40 @@ router.get("/health", async (req: Request, res: Response) => {
 });
 
 /**
+ * Disconnect a mailbox — deletes the row (and its encrypted OAuth tokens).
+ * DELETE /api/mail/mailboxes/:id
+ */
+router.delete('/mailboxes/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = requireUserId(req);
+    const mailboxId = String(req.params.id || '').trim();
+    if (!mailboxId) {
+      throw makeHttpError(400, 'INVALID_INPUT', 'mailbox id is required');
+    }
+    const email = await deleteMailbox(userId, mailboxId);
+    if (!email) {
+      throw makeHttpError(404, 'NOT_FOUND', 'No such mailbox is connected for this account');
+    }
+    res.json({ ok: true, email });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
  * Fetch recent messages from the Sent folder.
  * GET /api/mail/sent?provider=gmail&limit=20
  */
-router.get("/sent", async (req: Request, res: Response) => {
+router.get('/sent', async (req: Request, res: Response) => {
   try {
     const userId = requireUserId(req);
     const provider = parseProvider(req.query.provider);
     const limit = parseLimit(req.query.limit);
-
     const cfg = await resolveImapConn(userId, provider);
     const items = await fetchSentViaImap(provider, cfg, limit);
-
     res.json({ items });
   } catch (err) {
-    console.error("[/sent] error", err);
+    console.error('[/sent] error', err);
     sendError(res, err);
   }
 });
@@ -210,147 +196,116 @@ router.get("/sent", async (req: Request, res: Response) => {
  * Fetch a single message by UID.
  * GET /api/mail/sent/:uid?provider=gmail
  */
-router.get("/sent/:uid", async (req: Request, res: Response) => {
+router.get('/sent/:uid', async (req: Request, res: Response) => {
   try {
     const userId = requireUserId(req);
     const provider = parseProvider(req.query.provider);
     const uid = Number(req.params.uid);
     if (!Number.isFinite(uid) || uid <= 0) {
-      throw makeHttpError(400, "INVALID_UID", "uid must be a positive number");
+      throw makeHttpError(400, 'INVALID_UID', 'uid must be a positive number');
     }
-
     const cfg = await resolveImapConn(userId, provider);
     const items = await fetchSentViaImap(provider, cfg, 200);
     const found = items.find((m) => m.uid === uid);
     if (!found) {
-      throw makeHttpError(404, "NOT_FOUND", "Message not found in Sent mailbox");
+      throw makeHttpError(404, 'NOT_FOUND', 'Message not found in Sent mailbox');
     }
-
     res.json(found);
   } catch (err) {
-    console.error("[/sent/:uid] error", err);
+    console.error('[/sent/:uid] error', err);
     sendError(res, err);
   }
 });
 
 /**
  * Send a message using SMTP (XOAUTH2 with the tenant's stored mailbox token).
+ * Routed through smtpGateway.sendSmtpMail so this path is metered
+ * (recordEmailSent) exactly like the campaign worker and follow-up scheduler —
+ * previously this handler hand-rolled its own transport and usage went uncounted.
  */
-router.post("/send", express.json({ limit: "1mb" }), async (req: Request, res: Response) => {
+router.post('/send', express.json({ limit: '1mb' }), async (req: Request, res: Response) => {
   try {
     const userId = requireUserId(req);
     const raw: any = req.body ?? {};
-    const provider = parseProvider(
-      (req.query.provider as string | undefined) ?? (raw.provider as string | undefined) ?? "gmail"
-    );
-
-    const conn = await getMailboxConnection(userId, provider);
+    const provider = parseProvider(req.query.provider ?? raw.provider ?? 'gmail');
 
     const toRaw = raw.to;
-    const subject: string | undefined = raw.subject;
-
-    const bodyText: string | undefined =
-      (typeof raw.body === "string" && raw.body.trim()) ||
-      (typeof raw.text === "string" && raw.text.trim()) ||
-      (typeof raw.html === "string" && raw.html.trim()) ||
+    const subject = raw.subject;
+    const bodyText =
+      (typeof raw.body === 'string' && raw.body.trim()) ||
+      (typeof raw.text === 'string' && raw.text.trim()) ||
       undefined;
+    const bodyHtml = typeof raw.html === 'string' && raw.html.trim() ? raw.html.trim() : undefined;
 
     let toList: string[] = [];
     if (Array.isArray(toRaw)) {
       toList = toRaw
-        .filter((v: unknown): v is string => typeof v === "string")
+        .filter((v: unknown) => typeof v === 'string')
         .map((s: string) => s.trim())
         .filter(Boolean);
-    } else if (typeof toRaw === "string") {
+    } else if (typeof toRaw === 'string') {
       toList = toRaw
         .split(/[;,]+/)
-        .map((s: string) => s.trim())
+        .map((s) => s.trim())
         .filter(Boolean);
     }
 
-    if (!toList.length || !subject || !bodyText) {
-      throw makeHttpError(400, "INVALID_INPUT", "to, subject and body are required");
+    if (!toList.length || !subject || !(bodyText || bodyHtml)) {
+      throw makeHttpError(400, 'INVALID_INPUT', 'to, subject and body are required');
     }
 
     // From MUST be the authenticated mailbox. A client-supplied "from" becomes Reply-To.
-    const fromAddress = conn.email;
-    const fromName = process.env.MAIL_FROM_NAME;
-    const fromHeader = fromName ? `"${fromName}" <${fromAddress}>` : fromAddress;
-    const replyToValue = typeof raw.from === "string" && raw.from.includes("@") ? raw.from : undefined;
+    const replyToValue = typeof raw.from === 'string' && raw.from.includes('@') ? raw.from : undefined;
 
-    const transporter = nodemailer.createTransport({
-      host: conn.smtpHost,
-      port: conn.smtpPort,
-      secure: conn.smtpSecure,
-      // When using port 587 (STARTTLS), enforce TLS upgrade.
-      requireTLS: !conn.smtpSecure,
-      auth: {
-        type: "OAuth2",
-        user: conn.email,
-        accessToken: conn.accessToken,
-      },
-      tls: {
-        rejectUnauthorized: true,
-        minVersion: "TLSv1.2",
-      },
-    } as any);
-
-    const mailOptions: any = {
-      from: fromHeader,
-      to: toList.join(", "),
+    const messageId = await sendSmtpMail(userId, provider, {
+      to: toList.join(', '),
       subject,
       text: bodyText,
-    };
-
-    if (replyToValue) {
-      mailOptions.replyTo = replyToValue;
-    }
-
-    const info = await transporter.sendMail(mailOptions);
+      html: bodyHtml,
+      replyTo: replyToValue,
+    });
 
     res.json({
       ok: true,
-      messageId: info.messageId,
+      messageId,
     });
   } catch (err) {
-    console.error("[/send] error", err);
+    console.error('[/send] error', err);
     sendError(res, err);
   }
 });
 
-function getSpecialUseHints(provider: Provider): Record<string, string> {
+function getSpecialUseHints(provider: WireProvider): Record<string, string> {
   // ImapFlow ListOptions.specialUseHints supports these keys: all, archive, drafts, flagged, junk, sent, trash
-  if (provider === "gmail") {
+  if (provider === 'gmail') {
     return {
-      sent: "[Gmail]/Sent Mail",
-      drafts: "[Gmail]/Drafts",
-      trash: "[Gmail]/Trash",
-      junk: "[Gmail]/Spam",
-      all: "[Gmail]/All Mail",
-      archive: "[Gmail]/All Mail",
+      sent: '[Gmail]/Sent Mail',
+      drafts: '[Gmail]/Drafts',
+      trash: '[Gmail]/Trash',
+      junk: '[Gmail]/Spam',
+      all: '[Gmail]/All Mail',
+      archive: '[Gmail]/All Mail',
     };
   }
-
-  if (provider === "microsoft") {
+  if (provider === 'microsoft') {
     return {
-      sent: "Sent Items",
-      drafts: "Drafts",
-      trash: "Deleted Items",
-      junk: "Junk Email",
+      sent: 'Sent Items',
+      drafts: 'Drafts',
+      trash: 'Deleted Items',
+      junk: 'Junk Email',
     };
   }
-
-  // Zoho
+  // Fallback (generic IMAP folder names)
   return {
-    sent: "Sent",
-    drafts: "Drafts",
-    trash: "Trash",
-    junk: "Spam",
+    sent: 'Sent',
+    drafts: 'Drafts',
+    trash: 'Trash',
+    junk: 'Spam',
   };
 }
 
-async function listMailboxes(client: ImapFlow, provider: Provider): Promise<any[]> {
-  return await client.list({ specialUseHints: getSpecialUseHints(provider) });
+async function listMailboxes(client: ImapFlow, provider: WireProvider) {
+  return await client.list({ specialUseHints: getSpecialUseHints(provider) } as any);
 }
 
 /**
@@ -359,91 +314,84 @@ async function listMailboxes(client: ImapFlow, provider: Provider): Promise<any[
  * 2. Checks for common names
  * 3. Fallback to fuzzy match
  */
-async function findSentBoxPath(client: ImapFlow, provider: Provider): Promise<string> {
+async function findSentBoxPath(client: ImapFlow, provider: WireProvider): Promise<string> {
   const list = await listMailboxes(client, provider);
 
   const sentByFlag = list.find((box: any) => {
-    const su = typeof box.specialUse === "string" ? box.specialUse.toLowerCase() : "";
-    return su === "\\sent";
+    const su = typeof box.specialUse === 'string' ? box.specialUse.toLowerCase() : '';
+    return su === '\\sent';
   });
   if (sentByFlag) return sentByFlag.path;
 
-  const baseCandidates = ["Sent", "Sent Messages", "Sent Mail", "Sent Items"];
+  const baseCandidates = ['Sent', 'Sent Messages', 'Sent Mail', 'Sent Items'];
   const providerCandidates =
-    provider === "gmail"
-      ? ["[Gmail]/Sent Mail", "[Google Mail]/Sent Mail"]
-      : provider === "microsoft"
-        ? ["Sent Items"]
-        : ["Sent"];
-
+    provider === 'gmail'
+      ? ['[Gmail]/Sent Mail', '[Google Mail]/Sent Mail']
+      : provider === 'microsoft'
+        ? ['Sent Items']
+        : ['Sent'];
   const candidates = [...providerCandidates, ...baseCandidates];
 
   const normalize = (s: string) => s.trim().toLowerCase();
   for (const candidate of candidates) {
     const target = normalize(candidate);
-    const found = list.find((box: any) => normalize(String(box.path || "")) === target);
+    const found = list.find((box: any) => normalize(String(box.path || '')) === target);
     if (found) return found.path;
   }
 
-  const fuzzy = list.find((box: any) => normalize(String(box.path || "")).includes("sent"));
+  const fuzzy = list.find((box: any) => normalize(String(box.path || '')).includes('sent'));
   if (fuzzy) return fuzzy.path;
 
-  console.error("---------------------------------------------------");
+  console.error('---------------------------------------------------');
   console.error(`ERROR: Could not auto-discover a 'Sent' folder for provider: ${provider}`);
-  console.error("Available folders:");
+  console.error('Available folders:');
   list.forEach((box: any) =>
-    console.error(` - ${box.path} (specialUse: ${box.specialUse}, subscribed: ${box.subscribed})`)
+    console.error(` - ${box.path} (specialUse: ${box.specialUse}, subscribed: ${box.subscribed})`),
   );
-  console.error("---------------------------------------------------");
+  console.error('---------------------------------------------------');
 
-  throw makeHttpError(404, "MAILBOX_NOT_FOUND", "Could not auto-discover Sent mailbox.");
+  throw makeHttpError(404, 'MAILBOX_NOT_FOUND', 'Could not auto-discover Sent mailbox.');
 }
 
 async function findGmailAllMailBoxPath(client: ImapFlow): Promise<string | null> {
-  const list = await listMailboxes(client, "gmail");
+  const list = await listMailboxes(client, 'gmail');
   const normalize = (s: string) => s.trim().toLowerCase();
 
   const allByFlag = list.find((box: any) => {
-    const su = typeof box.specialUse === "string" ? box.specialUse.toLowerCase() : "";
-    return su === "\\all" || su === "\\archive";
+    const su = typeof box.specialUse === 'string' ? box.specialUse.toLowerCase() : '';
+    return su === '\\all' || su === '\\archive';
   });
   if (allByFlag) return allByFlag.path;
 
-  const candidates = ["[Gmail]/All Mail", "[Google Mail]/All Mail", "All Mail", "[Gmail]/Archive", "Archive"];
-
+  const candidates = ['[Gmail]/All Mail', '[Google Mail]/All Mail', 'All Mail', '[Gmail]/Archive', 'Archive'];
   for (const candidate of candidates) {
     const target = normalize(candidate);
-    const found = list.find((box: any) => normalize(String(box.path || "")) === target);
+    const found = list.find((box: any) => normalize(String(box.path || '')) === target);
     if (found) return found.path;
   }
 
   const fuzzy = list.find((box: any) => {
-    const p = normalize(String(box.path || ""));
-    return p.includes("all mail") || p.includes("archive");
+    const p = normalize(String(box.path || ''));
+    return p.includes('all mail') || p.includes('archive');
   });
   return fuzzy ? fuzzy.path : null;
 }
 
 function isMailboxNotFoundError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
+  if (!err || typeof err !== 'object') return false;
   const e = err as any;
-  return e.code === "MAILBOX_NOT_FOUND";
+  return e.code === 'MAILBOX_NOT_FOUND';
 }
 
-function toSentItem(msg: any, cfg: ImapConn): SentItem {
-  const envelope: any = msg?.envelope;
-
-  const subject = envelope?.subject || "(no subject)";
+function toSentItem(msg: any, cfg: ImapConn) {
+  const envelope = msg?.envelope;
+  const subject = envelope?.subject || '(no subject)';
   const fromAddress = envelope?.from?.[0]?.address || envelope?.from?.[0]?.name || cfg.user;
-
-  const tos: string[] =
+  const tos =
     (envelope?.to || [])
       .map((addr: any) => addr.address || addr.name)
-      .filter((v: any): v is string => !!v) || [];
-
-  const date = (
-    envelope?.date instanceof Date ? envelope.date : new Date(envelope?.date || Date.now())
-  ).toISOString();
+      .filter((v: unknown) => !!v) || [];
+  const date = (envelope?.date instanceof Date ? envelope.date : new Date(envelope?.date || Date.now())).toISOString();
 
   return {
     uid: msg?.uid || 0,
@@ -452,61 +400,55 @@ function toSentItem(msg: any, cfg: ImapConn): SentItem {
     from: fromAddress,
     to: tos,
     date,
-    snippet: "",
+    snippet: '',
     attachments: [],
   };
 }
 
-async function fetchLastFromCurrentMailbox(client: ImapFlow, cfg: ImapConn, limit: number): Promise<SentItem[]> {
+async function fetchLastFromCurrentMailbox(client: ImapFlow, cfg: ImapConn, limit: number) {
   let exists = 0;
-  const mailbox: any = (client as any).mailbox;
-  if (mailbox && typeof mailbox === "object" && typeof mailbox.exists === "number") {
-    exists = mailbox.exists;
+  const mailbox = client.mailbox;
+  if (mailbox && typeof mailbox === 'object' && typeof (mailbox as any).exists === 'number') {
+    exists = (mailbox as any).exists;
   }
-
   if (!exists) return [];
 
   const startSeq = Math.max(1, exists - limit + 1);
   const range = `${startSeq}:*`;
 
-  const items: SentItem[] = [];
-
-  for await (const msg of client.fetch(range, { uid: true, envelope: true })) {
+  const items: ReturnType<typeof toSentItem>[] = [];
+  for await (const msg of client.fetch(range, { uid: true, envelope: true } as any)) {
     items.push(toSentItem(msg, cfg));
   }
-
-  items.sort((a: SentItem, b: SentItem) => b.uid - a.uid);
+  items.sort((a, b) => b.uid - a.uid);
   return items.slice(0, limit);
 }
 
-async function fetchGmailSentFallback(client: ImapFlow, cfg: ImapConn, limit: number): Promise<SentItem[]> {
+async function fetchGmailSentFallback(client: ImapFlow, cfg: ImapConn, limit: number) {
   const allMailPath = await findGmailAllMailBoxPath(client);
-
-  const mailboxToOpen = allMailPath || "INBOX";
+  const mailboxToOpen = allMailPath || 'INBOX';
   await client.mailboxOpen(mailboxToOpen, { readOnly: true });
 
-  const searchResult = await client.search({ gmraw: "in:sent" }, { uid: true });
+  const searchResult = await client.search({ gmraw: 'in:sent' } as any, { uid: true } as any);
   if (!searchResult || !Array.isArray(searchResult) || searchResult.length === 0) {
     return [];
   }
 
   const uids = searchResult.slice(-limit);
-  const items: SentItem[] = [];
-
-  for await (const msg of client.fetch(uids, { uid: true, envelope: true }, { uid: true })) {
+  const items: ReturnType<typeof toSentItem>[] = [];
+  for await (const msg of client.fetch(uids, { uid: true, envelope: true } as any, { uid: true } as any)) {
     items.push(toSentItem(msg, cfg));
   }
-
-  items.sort((a: SentItem, b: SentItem) => b.uid - a.uid);
+  items.sort((a, b) => b.uid - a.uid);
   return items.slice(0, limit);
 }
 
 function isImapAuthError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
+  if (!err || typeof err !== 'object') return false;
   const e = err as any;
-  if (e.code === "EAUTH" || e.authenticationFailed === true) return true;
-  const msg = typeof e.message === "string" ? e.message : "";
-  const resp = typeof e.response === "string" ? e.response : "";
+  if (e.code === 'EAUTH' || e.authenticationFailed === true) return true;
+  const msg = typeof e.message === 'string' ? e.message : '';
+  const resp = typeof e.response === 'string' ? e.response : '';
   return (
     /authenticate failed/i.test(msg) ||
     /authenticate failed/i.test(resp) ||
@@ -518,27 +460,27 @@ function isImapAuthError(err: unknown): boolean {
 }
 
 function safeShortImapDetail(err: unknown): string {
-  if (!err || typeof err !== "object") return "";
+  if (!err || typeof err !== 'object') return '';
   const e = err as any;
   const parts: string[] = [];
-  if (typeof e.response === "string" && e.response.trim()) parts.push(e.response.trim());
-  if (typeof e.message === "string" && e.message.trim()) parts.push(e.message.trim());
-  const joined = parts.filter(Boolean).join(" | ");
+  if (typeof e.response === 'string' && e.response.trim()) parts.push(e.response.trim());
+  if (typeof e.message === 'string' && e.message.trim()) parts.push(e.message.trim());
+  const joined = parts.filter(Boolean).join(' | ');
   return joined.length > 240 ? `${joined.slice(0, 240)}…` : joined;
 }
 
-function authErrorMessage(provider: Provider, err?: unknown): string {
+function authErrorMessage(provider: WireProvider, err: unknown): string {
   const detail = safeShortImapDetail(err);
-  if (provider === "microsoft") {
+  if (provider === 'microsoft') {
     const base =
-      "IMAP authentication failed. Reconnect the Microsoft mailbox (the stored OAuth token may be expired or revoked).";
+      'IMAP authentication failed. Reconnect the Microsoft mailbox (the stored OAuth token may be expired or revoked).';
     return detail ? `${base} Server said: ${detail}` : base;
   }
-  return detail ? `IMAP authentication failed. Server said: ${detail}` : "IMAP authentication failed";
+  return detail ? `IMAP authentication failed. Server said: ${detail}` : 'IMAP authentication failed';
 }
 
 /** Connect to IMAP using XOAUTH2 with the mailbox's stored access token. */
-async function connectImap(provider: Provider, cfg: ImapConn): Promise<ImapFlow> {
+async function connectImap(provider: WireProvider, cfg: ImapConn): Promise<ImapFlow> {
   const client = new ImapFlow({
     host: cfg.host,
     port: cfg.port,
@@ -548,16 +490,15 @@ async function connectImap(provider: Provider, cfg: ImapConn): Promise<ImapFlow>
       user: cfg.user,
       accessToken: cfg.accessToken,
     },
-    connectionTimeout: provider === "microsoft" ? 60_000 : 15_000,
-    greetingTimeout: provider === "microsoft" ? 60_000 : 15_000,
-    socketTimeout: provider === "microsoft" ? 120_000 : 30_000,
+    connectionTimeout: provider === 'microsoft' ? 60_000 : 15_000,
+    greetingTimeout: provider === 'microsoft' ? 60_000 : 15_000,
+    socketTimeout: provider === 'microsoft' ? 120_000 : 30_000,
     logger: false,
     tls: {
       rejectUnauthorized: true,
-      minVersion: "TLSv1.2",
+      minVersion: 'TLSv1.2',
     },
-  });
-
+  } as any);
   await client.connect();
   return client;
 }
@@ -566,25 +507,23 @@ async function connectImap(provider: Provider, cfg: ImapConn): Promise<ImapFlow>
  * Helper: fetch last `limit` messages from the Sent mailbox using ImapFlow.
  * Gmail falls back to All Mail + X-GM-RAW in:sent when Sent isn't discoverable.
  */
-async function fetchSentViaImap(provider: Provider, cfg: ImapConn, limit: number): Promise<SentItem[]> {
+async function fetchSentViaImap(provider: WireProvider, cfg: ImapConn, limit: number) {
   let client: ImapFlow | null = null;
-
   try {
     client = await connectImap(provider, cfg);
-
     try {
       const sentPath = await findSentBoxPath(client, provider);
       await client.mailboxOpen(sentPath, { readOnly: true });
       return await fetchLastFromCurrentMailbox(client, cfg, limit);
-    } catch (err: unknown) {
-      if (provider === "gmail" && isMailboxNotFoundError(err)) {
+    } catch (err) {
+      if (provider === 'gmail' && isMailboxNotFoundError(err)) {
         return await fetchGmailSentFallback(client, cfg, limit);
       }
       throw err;
     }
-  } catch (err: unknown) {
+  } catch (err) {
     if (isImapAuthError(err)) {
-      throw makeHttpError(401, "AUTH", authErrorMessage(provider, err));
+      throw makeHttpError(401, 'AUTH', authErrorMessage(provider, err));
     }
     throw err;
   } finally {

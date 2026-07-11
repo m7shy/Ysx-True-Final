@@ -23,12 +23,10 @@ need GMAIL_APP_PASSWORD
 case ",$ALLOWLIST_HOSTS," in
   *",imap.gmail.com,"*) : ;;
   *) fail "imap.gmail.com missing from ALLOWLIST_HOSTS";;
-
 esac
 case ",$ALLOWLIST_HOSTS," in
   *",smtp.gmail.com,"*) : ;;
   *) fail "smtp.gmail.com missing from ALLOWLIST_HOSTS";;
-
 esac
 
 # Optional Zoho check
@@ -43,6 +41,20 @@ if [ -n "${ZOHO_USER:-}" ] && [ -n "${ZOHO_APP_PASSWORD:-}" ]; then
     *) log "WARN: Zoho creds set but zoho smtp host not allowlisted";;
   esac
   HAS_ZOHO=1
+fi
+
+# Optional Microsoft check
+HAS_MICROSOFT=0
+if [ -n "${MICROSOFT_USER:-}" ] && [ -n "${MICROSOFT_APP_PASSWORD:-}" ] ; then
+  case ",$ALLOWLIST_HOSTS," in
+    *",outlook.office365.com,"* ) : ;;
+    *) log "WARN: Microsoft creds set but outlook.office365.com not allowlisted";;
+  esac
+  case ",$ALLOWLIST_HOSTS," in
+    *",smtp.office365.com,"*|*",smtp-mail.outlook.com,"* ) : ;;
+    *) log "WARN: Microsoft creds set but smtp host not allowlisted";;
+  esac
+  HAS_MICROSOFT=1
 fi
 
 # Curl helper: return non-zero on HTTP error
@@ -84,6 +96,20 @@ if [ "$HAS_ZOHO" -eq 1 ]; then
   log "Fetch last 2 from Zoho Sent..."
   respz=$(curl_json GET "/api/mail/sent?provider=zoho&limit=2") || fail "fetch zoho sent failed"
   echo "$respz" | grep -q '"items"' || fail "zoho response missing items"
+fi
+
+if [ "$HAS_MICROSOFT" -eq 1 ]; then
+  log "Fetch last 2 from Microsoft/Outlook Sent..."
+  respm=$(curl_json GET "/api/mail/sent?provider=microsoft&limit=2") || fail "fetch microsoft sent failed"
+  echo "$respm" | grep -q '"items"' || fail "microsoft response missing items"
+
+  SUBJECT_MS="SMOKE-MS $(date -u +%FT%TZ)"
+  payload_ms=$(printf '{"provider":"microsoft","to":"%s","subject":"%s","text":"hello from microsoft smoke"}' \
+    "$MICROSOFT_USER" "$SUBJECT_MS")
+
+  log "Send Microsoft/Outlook test message to self..."
+  sendm=$(curl_json POST "/api/mail/send" "$payload_ms") || fail "microsoft send failed"
+  echo "$sendm" | grep -q '"messageId"' || fail "no messageId in microsoft send response"
 fi
 
 log "SMOKE OK"

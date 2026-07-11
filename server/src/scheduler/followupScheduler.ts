@@ -1,250 +1,181 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { FollowupJobStatus, type FollowupJob as DbFollowupJob } from "@prisma/client";
 
+import { prisma } from "../db/prisma.js";
+import { config } from "../config.js";
 import { logger } from "../logger.js";
-import type { FollowupJob, FollowupJobInput, FollowupStatus } from "./types.js";
+import { MailError } from "../httpErrors.js";
+import { computeNextRetryDelayMs } from "../campaigns/engine.js";
+import type { FollowupJob, FollowupJobInput, FollowupStatus, ProviderKey } from "./types.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * Follow-up scheduler, backed by the Prisma `FollowupJob` table.
+ *
+ * Replaces the legacy server/data/followups.json store: jobs are now durable
+ * across deploys, tenant-owned (userId FK with cascade delete), and every
+ * read/cancel path is bounded by the owning tenant.
+ *
+ * The exported API and the ISO-string `FollowupJob` shape (scheduler/types.ts)
+ * are unchanged, so routes, the campaign worker, and the reply poller keep
+ * working as before.
+ */
 
-// server/src/scheduler -> ../../data = server/data
-// server/dist/scheduler -> ../../data = server/data
-const DATA_DIR = path.resolve(__dirname, "../../data");
-const STORE_FILE = path.join(DATA_DIR, "followups.json");
-const TEMP_FILE = path.join(DATA_DIR, "followups.tmp.json");
+// ── DB row <-> API shape mapping ─────────────────────────────────────────────
 
-const jobs = new Map<string, FollowupJob>();
+const STATUS_TO_API: Record<FollowupJobStatus, FollowupStatus> = {
+  [FollowupJobStatus.SCHEDULED]: "scheduled",
+  [FollowupJobStatus.SENDING]: "sending",
+  [FollowupJobStatus.SENT]: "sent",
+  [FollowupJobStatus.FAILED]: "failed",
+  [FollowupJobStatus.CANCELLED]: "cancelled",
+};
 
-let loaded = false;
-let started = false;
-let ticking = false;
-
-// serialize all store mutations + persists (prevents API vs tick races)
-let storeLock: Promise<void> = Promise.resolve();
-
-function withStoreLock<T>(fn: () => Promise<T>): Promise<T> {
-  const next = storeLock.then(fn, fn);
-  storeLock = next.then(
-    () => undefined,
-    () => undefined,
-  );
-  return next;
+function toApiJob(row: DbFollowupJob): FollowupJob {
+  return {
+    id: row.id,
+    userId: row.userId,
+    provider: row.provider as ProviderKey,
+    to: row.to,
+    subject: row.subject,
+    body: row.body,
+    html: row.html ?? undefined,
+    replyTo: row.replyTo ?? undefined,
+    scheduledAt: row.scheduledAt.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    sentAt: row.sentAt?.toISOString(),
+    status: STATUS_TO_API[row.status],
+    lastError: row.lastError ?? undefined,
+    failureReason: row.failureReason ?? undefined,
+    cancelReason: row.cancelReason ?? undefined,
+    campaignId: row.campaignId ?? undefined,
+    leadId: row.leadId ?? undefined,
+    originalEmailId: row.originalEmailId ?? undefined,
+    stepIndex: row.stepIndex ?? undefined,
+    onlyIfNoReply: row.onlyIfNoReply,
+    skipIfReplied: row.skipIfReplied,
+    originalMessageId: row.originalMessageId ?? undefined,
+    initialSentAt: row.initialSentAt?.toISOString(),
+    recipientEmail: row.recipientEmail ?? undefined,
+  };
 }
 
-function isValidStatus(value: unknown): value is FollowupStatus {
-  return (
-    value === "scheduled" ||
-    value === "sending" ||
-    value === "sent" ||
-    value === "failed" ||
-    value === "cancelled"
-  );
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isValidJob(candidate: unknown): candidate is FollowupJob {
-  if (!candidate || typeof candidate !== "object") return false;
-  const obj = candidate as Record<string, unknown>;
-
-  if (!isNonEmptyString(obj.id)) return false;
-  if (!isNonEmptyString(obj.userId)) return false;
-  if (!isNonEmptyString(obj.provider)) return false;
-  if (!isNonEmptyString(obj.to)) return false;
-  if (!isNonEmptyString(obj.subject)) return false;
-  if (!isNonEmptyString(obj.body)) return false;
-  if (!isNonEmptyString(obj.scheduledAt)) return false;
-  if (!isNonEmptyString(obj.createdAt)) return false;
-  if (!isValidStatus(obj.status)) return false;
-
-  // Optional string fields – when present must be strings
-  const maybeStringKeys: (keyof FollowupJob)[] = [
-    "replyTo",
-    "html",
-    "lastError",
-    "failureReason",
-    "cancelReason",
-    "campaignId",
-    "leadId",
-    "originalEmailId",
-    "originalMessageId",
-    "initialSentAt",
-    "recipientEmail",
-    "updatedAt",
-    "sentAt",
-  ];
-
-  for (const key of maybeStringKeys) {
-    const value = (obj as any)[key];
-    if (value != null && typeof value !== "string") {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-async function ensureDataDir(): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-}
-
-async function persist(): Promise<void> {
-  await ensureDataDir();
-  const payload = JSON.stringify(Array.from(jobs.values()), null, 2);
-  await fs.writeFile(TEMP_FILE, payload, "utf8");
-  await fs.rename(TEMP_FILE, STORE_FILE);
-}
-
-async function loadOnce(): Promise<void> {
-  if (loaded) return;
-  loaded = true;
-
-  try {
-    const raw = await fs.readFile(STORE_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-
-    if (Array.isArray(parsed)) {
-      let kept = 0;
-      for (const item of parsed) {
-        if (isValidJob(item)) {
-          const job = item as FollowupJob;
-          jobs.set(job.id, job);
-          kept += 1;
-        }
-      }
-
-      if (kept !== parsed.length) {
-        logger.warn({ parsed: parsed.length, kept }, "Filtered invalid follow-up jobs on load");
-      }
-    } else {
-      logger.warn("followups.json was not an array; starting with empty store");
-    }
-  } catch (err: any) {
-    if (err?.code !== "ENOENT") {
-      logger.warn({ err }, "Failed to load followups.json, starting with empty store");
-    }
-  }
-}
-
-function isDue(job: FollowupJob, nowMs: number): boolean {
-  if (job.status !== "scheduled") return false;
-  const when = new Date(job.scheduledAt).getTime();
-  if (Number.isNaN(when)) return false;
-  return when <= nowMs;
-}
-
-async function setStatus(
-  job: FollowupJob,
-  status: FollowupStatus,
-  extra: Partial<FollowupJob> = {},
-): Promise<void> {
-  job.status = status;
-  Object.assign(job, extra);
-  job.updatedAt = new Date().toISOString();
-  await persist();
-}
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export async function scheduleFollowup(input: FollowupJobInput): Promise<FollowupJob> {
-  return withStoreLock(async () => {
-    await loadOnce();
+  const scheduledTime = new Date(input.scheduledAt);
+  if (Number.isNaN(scheduledTime.getTime())) {
+    throw new Error("scheduledAt must be a valid ISO timestamp");
+  }
 
-    const scheduledTime = new Date(input.scheduledAt);
-    if (Number.isNaN(scheduledTime.getTime())) {
-      throw new Error("scheduledAt must be a valid ISO timestamp");
-    }
+  if (!input.userId) {
+    throw new Error("userId is required");
+  }
 
-    if (!input.userId) {
-      throw new Error("userId is required");
-    }
+  if (!input.campaignId) {
+    throw new Error("campaignId is required");
+  }
 
-    if (!input.campaignId) {
-      throw new Error("campaignId is required");
-    }
+  const recipientRaw = (input.recipientEmail ?? input.to ?? "").trim();
+  if (!recipientRaw) {
+    throw new Error("recipientEmail is required");
+  }
+  const recipientEmail = recipientRaw.toLowerCase();
 
-    const recipientRaw = (input.recipientEmail ?? input.to ?? "").trim();
-    if (!recipientRaw) {
-      throw new Error("recipientEmail is required");
-    }
-    const recipientEmail = recipientRaw.toLowerCase();
+  if (!input.initialSentAt) {
+    throw new Error("initialSentAt is required");
+  }
+  const initialSent = new Date(input.initialSentAt);
+  if (Number.isNaN(initialSent.getTime())) {
+    throw new Error("initialSentAt must be a valid ISO timestamp");
+  }
 
-    if (!input.initialSentAt) {
-      throw new Error("initialSentAt is required");
-    }
-    const initialSent = new Date(input.initialSentAt);
-    if (Number.isNaN(initialSent.getTime())) {
-      throw new Error("initialSentAt must be a valid ISO timestamp");
-    }
-
-    const nowIso = new Date().toISOString();
-
-    const job: FollowupJob = {
-      ...input,
-      id: randomUUID(),
+  const row = await prisma.followupJob.create({
+    data: {
+      userId: input.userId,
+      provider: input.provider,
+      to: input.to,
+      subject: input.subject,
+      body: input.body,
+      html: input.html,
+      replyTo: input.replyTo,
+      scheduledAt: scheduledTime,
+      status: FollowupJobStatus.SCHEDULED,
+      campaignId: input.campaignId,
+      leadId: input.leadId,
+      originalEmailId: input.originalEmailId,
+      stepIndex: input.stepIndex,
+      onlyIfNoReply: input.onlyIfNoReply ?? false,
+      skipIfReplied: input.skipIfReplied ?? false,
+      originalMessageId: input.originalMessageId,
+      initialSentAt: initialSent,
       recipientEmail,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      status: "scheduled",
-      lastError: undefined,
-      failureReason: undefined,
-      cancelReason: undefined,
-    };
-
-    jobs.set(job.id, job);
-    await persist();
-
-    logger.info(
-      {
-        id: job.id,
-        to: job.to,
-        subject: job.subject,
-        campaignId: job.campaignId,
-        recipientEmail: job.recipientEmail,
-        scheduledAt: job.scheduledAt,
-        skipIfReplied: job.skipIfReplied,
-      },
-      "Scheduled follow-up job",
-    );
-
-    return job;
+    },
   });
+
+  logger.info(
+    {
+      id: row.id,
+      userId: row.userId,
+      to: row.to,
+      subject: row.subject,
+      campaignId: row.campaignId,
+      recipientEmail: row.recipientEmail,
+      scheduledAt: row.scheduledAt.toISOString(),
+      skipIfReplied: row.skipIfReplied,
+    },
+    "Scheduled follow-up job",
+  );
+
+  return toApiJob(row);
 }
 
-export async function getScheduledFollowups(): Promise<FollowupJob[]> {
-  return withStoreLock(async () => {
-    await loadOnce();
-    return Array.from(jobs.values());
+/**
+ * List follow-up jobs. Pass the authenticated tenant's userId to get only that
+ * tenant's jobs; calling without a userId returns all jobs and is reserved for
+ * internal/diagnostic use.
+ */
+export async function getScheduledFollowups(userId?: string): Promise<FollowupJob[]> {
+  const rows = await prisma.followupJob.findMany({
+    where: userId ? { userId } : undefined,
+    orderBy: { scheduledAt: "asc" },
   });
+  return rows.map(toApiJob);
 }
 
+/**
+ * Cancel a job. When `userId` is provided the cancel is tenant-bounded: a job
+ * belonging to another tenant is treated as not found.
+ */
 export async function cancelFollowup(
   id: string,
   reason: string = "cancelled",
+  userId?: string,
 ): Promise<boolean> {
-  return withStoreLock(async () => {
-    await loadOnce();
-
-    const job = jobs.get(id);
-    if (!job) return false;
-
-    if (job.status === "sent" || job.status === "cancelled") {
-      return true;
-    }
-
-    job.cancelReason = reason;
-    job.lastError = reason;
-    job.failureReason = reason;
-    await setStatus(job, "cancelled");
-
-    logger.info(
-      { id: job.id, to: job.to, subject: job.subject, cancelReason: reason },
-      "Cancelled follow-up job",
-    );
-
-    return true;
+  const job = await prisma.followupJob.findFirst({
+    where: { id, ...(userId ? { userId } : {}) },
   });
+  if (!job) return false;
+
+  if (job.status === FollowupJobStatus.SENT || job.status === FollowupJobStatus.CANCELLED) {
+    return true;
+  }
+
+  await prisma.followupJob.update({
+    where: { id: job.id },
+    data: {
+      status: FollowupJobStatus.CANCELLED,
+      cancelReason: reason,
+      lastError: reason,
+      failureReason: reason,
+    },
+  });
+
+  logger.info(
+    { id: job.id, to: job.to, subject: job.subject, cancelReason: reason },
+    "Cancelled follow-up job",
+  );
+
+  return true;
 }
 
 /**
@@ -260,29 +191,19 @@ export async function cancelRemainingFollowupsForRecipient(
   const normalizedRecipient = recipientEmail.trim().toLowerCase();
   if (!campaignId || !normalizedRecipient) return;
 
-  await withStoreLock(async () => {
-    await loadOnce();
-
-    let changed = false;
-    for (const job of jobs.values()) {
-      if (
-        job.id !== excludeJobId &&
-        job.campaignId === campaignId &&
-        (job.recipientEmail ?? "").trim().toLowerCase() === normalizedRecipient &&
-        job.status === "scheduled"
-      ) {
-        job.cancelReason = reason;
-        job.lastError = reason;
-        job.failureReason = reason;
-        job.status = "cancelled";
-        job.updatedAt = new Date().toISOString();
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      await persist();
-    }
+  await prisma.followupJob.updateMany({
+    where: {
+      campaignId,
+      recipientEmail: normalizedRecipient,
+      status: FollowupJobStatus.SCHEDULED,
+      ...(excludeJobId ? { id: { not: excludeJobId } } : {}),
+    },
+    data: {
+      status: FollowupJobStatus.CANCELLED,
+      cancelReason: reason,
+      lastError: reason,
+      failureReason: reason,
+    },
   });
 }
 
@@ -299,39 +220,78 @@ export async function cancelScheduledFollowupsForUserRecipient(
   const normalizedRecipient = recipientEmail.trim().toLowerCase();
   if (!userId || !normalizedRecipient) return [];
 
-  return withStoreLock(async () => {
-    await loadOnce();
+  const where = {
+    userId,
+    recipientEmail: normalizedRecipient,
+    status: FollowupJobStatus.SCHEDULED,
+  };
 
-    const campaignIds = new Set<string>();
-    let changed = false;
-    for (const job of jobs.values()) {
-      if (
-        job.userId === userId &&
-        job.status === "scheduled" &&
-        ((job.recipientEmail ?? job.to ?? "").trim().toLowerCase()) === normalizedRecipient
-      ) {
-        job.cancelReason = reason;
-        job.lastError = reason;
-        job.failureReason = reason;
-        job.status = "cancelled";
-        job.updatedAt = new Date().toISOString();
-        if (job.campaignId) campaignIds.add(job.campaignId);
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      await persist();
-    }
-
-    return Array.from(campaignIds);
+  const affected = await prisma.followupJob.findMany({
+    where,
+    select: { campaignId: true },
   });
+  if (affected.length === 0) return [];
+
+  await prisma.followupJob.updateMany({
+    where,
+    data: {
+      status: FollowupJobStatus.CANCELLED,
+      cancelReason: reason,
+      lastError: reason,
+      failureReason: reason,
+    },
+  });
+
+  const campaignIds = new Set<string>();
+  for (const row of affected) {
+    if (row.campaignId) campaignIds.add(row.campaignId);
+  }
+  return Array.from(campaignIds);
+}
+
+// ── Scheduler tick ────────────────────────────────────────────────────────────
+
+let started = false;
+let ticking = false;
+
+// A job claimed to SENDING (see the compare-and-set below) has no in-process
+// finally{} left to release it if the process dies mid-send — it would
+// otherwise stay SENDING forever, which reads to the tenant as a silently
+// dropped follow-up. `updatedAt` is bumped by the claim itself (SCHEDULED ->
+// SENDING), so a SENDING row whose updatedAt is older than this timeout is
+// treated as stranded and put back to SCHEDULED for the next tick to reclaim.
+// Mirrors scraper/autoScheduler.ts's recoverStaleRuns() for the same failure
+// mode, sized down since a mail send should resolve in seconds, not minutes.
+const STALE_SENDING_TIMEOUT_MS = 10 * 60_000;
+
+/** Reset any SENDING job stuck past the stale-claim timeout back to SCHEDULED. */
+async function recoverStaleSendingJobs(): Promise<void> {
+  const staleBefore = new Date(Date.now() - STALE_SENDING_TIMEOUT_MS);
+  const stale = await prisma.followupJob.findMany({
+    where: { status: FollowupJobStatus.SENDING, updatedAt: { lte: staleBefore } },
+    select: { id: true, to: true, subject: true },
+  });
+  if (stale.length === 0) return;
+
+  for (const job of stale) {
+    const claimed = await prisma.followupJob.updateMany({
+      where: { id: job.id, status: FollowupJobStatus.SENDING },
+      data: {
+        status: FollowupJobStatus.SCHEDULED,
+        scheduledAt: new Date(),
+        lastError: "Stranded in SENDING past timeout (process restart); recovered automatically.",
+      },
+    });
+    if (claimed.count === 1) {
+      logger.warn({ id: job.id, to: job.to, subject: job.subject }, "Recovered a stale SENDING follow-up job");
+    }
+  }
 }
 
 /**
- * Single scheduler tick: marks due jobs as "sending" and persists BEFORE
- * actually calling `onSend`. Sending and final status updates happen outside
- * the store lock to avoid deadlocks.
+ * Single scheduler tick: atomically claims due jobs (SCHEDULED -> SENDING) so
+ * concurrent ticks / multiple instances never double-send, then runs `onSend`
+ * for each claimed job outside any lock.
  */
 export async function tickOnce(
   onSend: (job: FollowupJob) => Promise<void>,
@@ -340,66 +300,90 @@ export async function tickOnce(
   ticking = true;
 
   try {
-    const now = Date.now();
+    await recoverStaleSendingJobs();
 
-    // Mark due jobs as sending under lock and take a snapshot to send.
-    const toSend: FollowupJob[] = await withStoreLock(async () => {
-      await loadOnce();
+    const now = new Date();
 
-      const dueJobs: FollowupJob[] = [];
-      for (const job of jobs.values()) {
-        if (isDue(job, now)) {
-          job.status = "sending";
-          job.lastError = undefined;
-          job.failureReason = undefined;
-          job.updatedAt = new Date().toISOString();
-          dueJobs.push({ ...job });
-        }
-      }
-
-      if (dueJobs.length > 0) {
-        await persist();
-      }
-
-      return dueJobs;
+    // Claim each due job individually with a guarded update: updateMany with a
+    // status filter is the atomic compare-and-set; a row already claimed by a
+    // concurrent worker matches 0 rows and is skipped.
+    const due = await prisma.followupJob.findMany({
+      where: { status: FollowupJobStatus.SCHEDULED, scheduledAt: { lte: now } },
+      orderBy: { scheduledAt: "asc" },
     });
 
-    for (const job of toSend) {
+    const toSend: DbFollowupJob[] = [];
+    for (const job of due) {
+      const claimed = await prisma.followupJob.updateMany({
+        where: { id: job.id, status: FollowupJobStatus.SCHEDULED },
+        data: {
+          status: FollowupJobStatus.SENDING,
+          lastError: null,
+          failureReason: null,
+        },
+      });
+      if (claimed.count === 1) toSend.push(job);
+    }
+
+    for (const row of toSend) {
+      const job = toApiJob(row);
+      job.status = "sending";
+
       try {
         await onSend(job);
 
-        // If onSend decided the outcome (cancelled / failed / sent),
-        // do not overwrite it.
-        await withStoreLock(async () => {
-          await loadOnce();
-          const current = jobs.get(job.id);
-          if (!current || current.status !== "sending") return;
-
-          current.status = "sent";
-          current.sentAt = new Date().toISOString();
-          current.updatedAt = current.sentAt;
-          current.lastError = undefined;
-          current.failureReason = undefined;
-          await persist();
+        // If onSend decided the outcome (cancelled / failed / sent), do not
+        // overwrite it: only a job still in SENDING is finalized as SENT.
+        await prisma.followupJob.updateMany({
+          where: { id: row.id, status: FollowupJobStatus.SENDING },
+          data: {
+            status: FollowupJobStatus.SENT,
+            sentAt: new Date(),
+            lastError: null,
+            failureReason: null,
+          },
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        await withStoreLock(async () => {
-          await loadOnce();
-          const current = jobs.get(job.id);
-          if (!current) return;
 
-          current.status = "failed";
-          current.updatedAt = new Date().toISOString();
-          current.lastError = message;
-          current.failureReason = message;
-          await persist();
-        });
+        // A DENIED send (relay refused — bad/unauthorized From address) will
+        // never succeed on retry; everything else (SMTP timeouts, transient
+        // auth hiccups, tier-limit-reached) gets a backoff retry.
+        const isPermanent = err instanceof MailError && err.code === "DENIED";
+        const attemptCount = row.attemptCount + 1;
+        const retryDelayMs = isPermanent ? null : computeNextRetryDelayMs(attemptCount);
 
-        logger.error(
-          { err, id: job.id, to: job.to, subject: job.subject },
-          "Follow-up job failed",
-        );
+        if (retryDelayMs === null) {
+          await prisma.followupJob.updateMany({
+            where: { id: row.id },
+            data: {
+              status: FollowupJobStatus.FAILED,
+              attemptCount,
+              lastError: message,
+              failureReason: message,
+            },
+          });
+          logger.error(
+            { err, id: row.id, to: row.to, subject: row.subject, attemptCount },
+            "Follow-up job failed permanently",
+          );
+        } else {
+          const nextRetryAt = new Date(Date.now() + retryDelayMs);
+          await prisma.followupJob.updateMany({
+            where: { id: row.id },
+            data: {
+              status: FollowupJobStatus.SCHEDULED,
+              scheduledAt: nextRetryAt,
+              nextRetryAt,
+              attemptCount,
+              lastError: message,
+            },
+          });
+          logger.warn(
+            { err, id: row.id, to: row.to, subject: row.subject, attemptCount, nextRetryAt },
+            "Follow-up job failed; retrying with backoff",
+          );
+        }
       }
     }
   } finally {
@@ -412,14 +396,22 @@ export function startFollowupScheduler(
   options?: { tickMs?: number },
 ): void {
   if (started) return;
+
+  // The queue lives in Postgres now; without a database there is nothing to
+  // tick (mail-only runs and the vitest suite import index.ts without a DB).
+  if (!config.DATABASE_URL || config.NODE_ENV === "test") {
+    logger.warn("Follow-up scheduler not started (no DATABASE_URL or test env)");
+    return;
+  }
+
   started = true;
 
   const intervalMs =
     options?.tickMs && options.tickMs > 0 ? options.tickMs : 10_000;
 
-  void loadOnce()
-    .then(() => tickOnce(onSend))
-    .catch((err) => logger.error({ err }, "Initial follow-up tick failed"));
+  void tickOnce(onSend).catch((err) =>
+    logger.error({ err }, "Initial follow-up tick failed"),
+  );
 
   setInterval(() => {
     void tickOnce(onSend).catch((err) =>

@@ -16,21 +16,35 @@ const base64Url = (s: string) => btoa(unescape(encodeURIComponent(s)))
 // Helper to encode string to standard Base64 with UTF-8 support
 const base64 = (s: string) => btoa(unescape(encodeURIComponent(s)));
 
-const mimeMessage = (to: string, subject: string, body: string) => {
+const withSignature = (body: string, signature?: string): string => {
+  const sig = (signature || '').trim();
+  if (!sig) return body;
+
+  // Ensure the signature is separated from the body.
+  return `${body}\n\n${sig}`;
+};
+
+const mimeMessage = (
+  to: string,
+  subject: string,
+  body: string,
+  extraHeaders: string[] = []
+) => {
   // Encode subject to handle UTF-8 characters in headers
   const encodedSubject = `=?UTF-8?B?${base64(subject)}?=`;
-  
+
   // Encode body to Base64 to ensure safe transport of all characters (emojis, etc.)
   const encodedBody = base64(body);
 
   return [
     `To: ${to}`,
     `Subject: ${encodedSubject}`,
+    ...extraHeaders,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
-    encodedBody
+    encodedBody,
   ].join('\r\n');
 };
 
@@ -242,4 +256,54 @@ export const scheduleGoogleEmail = async (
 ): Promise<void> => {
   console.warn("Client-side scheduling is not supported for Real Google API. A backend server is required to hold the job.", { to, subject, scheduledTime });
   throw new AppError(AppErrorCode.UNKNOWN, 'GOOGLE', "Scheduling requires a backend job queue and is not available in this demo.");
+};
+
+// ---------------------------------------------------------------------------
+// Canonical provider API (used by hooks/useEmailProvider.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Alias kept for compatibility with the app's provider interface.
+ * The app expects `fetchSentEmails` to exist for every provider module.
+ */
+export const fetchSentEmails = async (accessToken: string): Promise<Email[]> => {
+  return fetchGoogleEmails(accessToken);
+};
+
+/**
+ * Canonical send function expected by the app.
+ * Signature is optional and appended client-side.
+ */
+export const sendNewEmail = async (
+  accessToken: string,
+  to: string,
+  subject: string,
+  body: string,
+  signature?: string
+): Promise<void> => {
+  const finalBody = withSignature(body, signature);
+  return sendGoogleEmail(accessToken, to, subject, finalBody);
+};
+
+/**
+ * Follow-up send function expected by the app.
+ * Gmail threading requires proper headers; we include In-Reply-To/References
+ * when provided, but still sends as a normal email if not.
+ */
+export const sendFollowUpEmail = async (
+  accessToken: string,
+  to: string,
+  subject: string,
+  body: string,
+  inReplyTo: string,
+  signature?: string
+): Promise<void> => {
+  const finalBody = withSignature(body, signature);
+  const trimmed = (inReplyTo || '').trim();
+  const extraHeaders = trimmed ? [`In-Reply-To: ${trimmed}`, `References: ${trimmed}`] : [];
+
+  const raw = base64Url(mimeMessage(to, subject, finalBody, extraHeaders));
+  const sendUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`;
+  const response = await proxyFetch(accessToken, sendUrl, 'POST', { raw });
+  await handleApiError(response);
 };

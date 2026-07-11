@@ -79,7 +79,11 @@ async function refreshGoogle(refreshToken: string, scope?: string): Promise<Refr
 
   const { ok, body, raw } = await postForm('https://oauth2.googleapis.com/token', params);
   if (!ok || !body.access_token) {
-    throw new MailError('AUTH', `Google token refresh failed: ${body.error_description || raw.slice(0, 200)}`);
+    throw new MailError(
+      'AUTH',
+      `Google token refresh failed: ${body.error_description || raw.slice(0, 200)}`,
+      body.error === 'invalid_grant',
+    );
   }
   return {
     accessToken: body.access_token,
@@ -122,7 +126,11 @@ async function refreshMicrosoft(refreshToken: string, tenant: string | null, sco
   }
 
   if (!result.ok || !result.body.access_token) {
-    throw new MailError('AUTH', `Microsoft token refresh failed: ${result.body.error_description || result.raw.slice(0, 200)}`);
+    throw new MailError(
+      'AUTH',
+      `Microsoft token refresh failed: ${result.body.error_description || result.raw.slice(0, 200)}`,
+      result.body.error === 'invalid_grant',
+    );
   }
 
   return {

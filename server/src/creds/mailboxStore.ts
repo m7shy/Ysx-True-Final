@@ -5,7 +5,7 @@ import { logger } from '../logger.js';
 import { MailError } from '../httpErrors.js';
 import { maskEmail } from '../util/redact.js';
 import { encryptSecret, decryptSecret } from './crypto.js';
-import { refreshAccessToken, type OAuthProvider } from './oauth.js';
+import { refreshAccessToken, type OAuthProvider, type RefreshResult } from './oauth.js';
 
 /**
  * DB-backed, per-tenant mailbox credential store.
@@ -100,11 +100,33 @@ export async function ensureFreshAccessToken(mailbox: Mailbox): Promise<string> 
   }
 
   const refreshTokenPlain = decryptSecret(mailbox.refreshToken);
-  const result = await refreshAccessToken(provider, {
-    refreshToken: refreshTokenPlain,
-    tenant: mailbox.tenant,
-    scope: mailbox.scope ?? undefined,
-  });
+  let result: RefreshResult;
+  try {
+    result = await refreshAccessToken(provider, {
+      refreshToken: refreshTokenPlain,
+      tenant: mailbox.tenant,
+      scope: mailbox.scope ?? undefined,
+    });
+  } catch (err) {
+    if (err instanceof MailError && err.revoked) {
+      // The provider says the grant itself is dead (revoked/expired refresh
+      // token) — no amount of retrying will fix this without the user
+      // reconnecting. Disable the mailbox so the rotation engine
+      // (pickMailbox/pickRotationMailbox, both filter isActive: true) stops
+      // selecting it and campaign/follow-up sends stop retrying it forever.
+      await prisma.mailbox.update({ where: { id: mailbox.id }, data: { isActive: false } });
+      logger.warn(
+        { user: maskEmail(mailbox.email), provider },
+        'Mailbox OAuth grant revoked — disabled; user must reconnect',
+      );
+      throw new MailError(
+        'AUTH',
+        `Mailbox ${maskEmail(mailbox.email)} access was revoked; reconnect it to resume sending.`,
+        true,
+      );
+    }
+    throw err;
+  }
 
   await prisma.mailbox.update({
     where: { id: mailbox.id },
@@ -203,6 +225,23 @@ export async function listMailboxes(userId: string) {
     orderBy: { createdAt: 'asc' },
   });
   return mailboxes;
+}
+
+/**
+ * Disconnect (delete) a tenant's mailbox by id. Deleting the row removes the
+ * encrypted OAuth tokens entirely. Scoped by userId so one tenant can never
+ * disconnect another tenant's mailbox. Returns the deleted mailbox's email,
+ * or null when no such mailbox belongs to this tenant.
+ */
+export async function deleteMailbox(userId: string, mailboxId: string): Promise<string | null> {
+  const mailbox = await prisma.mailbox.findFirst({
+    where: { id: mailboxId, userId },
+    select: { id: true, email: true },
+  });
+  if (!mailbox) return null;
+  await prisma.mailbox.delete({ where: { id: mailbox.id } });
+  logger.info({ user: maskEmail(mailbox.email) }, 'Disconnected mailbox');
+  return mailbox.email;
 }
 
 /**

@@ -15,6 +15,7 @@ import { logger } from '../logger.js';
 export interface AccessTokenClaims {
   sub: string; // userId
   email: string;
+  ver?: number; // User.tokenVersion snapshot at issue (optional: old tokens predate this claim)
   typ: 'access';
 }
 
@@ -64,8 +65,13 @@ function signOptions(expiresIn: string): jwt.SignOptions {
   return { expiresIn: expiresIn as jwt.SignOptions['expiresIn'] };
 }
 
-export function signAccessToken(input: { userId: string; email: string }): string {
-  const claims: AccessTokenClaims = { sub: input.userId, email: input.email, typ: 'access' };
+export function signAccessToken(input: { userId: string; email: string; tokenVersion?: number }): string {
+  const claims: AccessTokenClaims = {
+    sub: input.userId,
+    email: input.email,
+    ...(input.tokenVersion !== undefined ? { ver: input.tokenVersion } : {}),
+    typ: 'access',
+  };
   return jwt.sign(claims, getSecret(), signOptions(config.JWT_ACCESS_TTL));
 }
 
