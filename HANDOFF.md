@@ -1,5 +1,31 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-11 (later same day) — Security audit fixes + git-history incident recovery
+
+**Context:** Ran a 5-criteria security/architecture stress test (credential leaks, architecture/scalability, multi-tenancy isolation, deliverability, campaign concurrency) via a plan-mode audit, then switched to Sonnet 5 to implement the fixes (F2–F9; F1 explicitly left for the user). Mid-implementation, discovered this session's shell is directly on the prod VM. Mid-*that*, the user pasted a 4-phase git remediation plan from a separate agent ("Gemini") that had **already executed** `git-filter-repo` (secret purge) + a force-push to `github.com/m7shy/Ysx-True-Final.git` on `phase5-frontend-wiring` **before I could act**, and a third agent ("Devin") had also pushed 8 unrelated branches to the same live repo. The filter-repo rewrite + a concurrent `git stash` silently reset several tracked source files back to old committed versions — some of my own just-applied fixes were lost, and (separately, pre-existing) the campaign-wizard's `campaigns/routes.ts` was also reverted.
+
+**Findings/fixes actually shipped this session (built + deployed to `ysx-backend`):**
+- **F2** — deleted the legacy unauthenticated `server/index.js` / `server/mail/{smtp,imap}Client.js` monolith (confirmed nothing referenced it; real backend is `server/src/index.ts` → `dist/index.js`).
+- **F3** — `campaigns/worker.ts`: atomic `PENDING→SENDING` compare-and-set claim (`updateMany` + `count===1` check) before dispatch, preventing duplicate sends on crash/concurrent ticks. Added `recoverStaleSendingRecipients()` (15 min timeout) so a crash mid-send doesn't strand a recipient forever. `openCount`/`terminalCount` now treat `SENDING` as open so a campaign can't flip `COMPLETED` with a stranded recipient. New `RecipientStatus.SENDING` enum value + migration `20260711120000_recipient_status_sending`, applied to prod DB.
+- **F4** — confirmed `scraper/service.ts`'s `MAX_CONCURRENT_CHILDREN` semaphore (`SCRAPER_MAX_CONCURRENT` env, default 4) is intact.
+- **F5** — `scheduler/followupScheduler.ts`: same stale-claim reaper pattern (`recoverStaleSendingJobs()`, 10 min timeout) for follow-up jobs stuck in `SENDING`.
+- **F6** — CORS pinned to `config.WEB_ORIGIN` instead of reflecting any Origin (`server/src/index.ts`).
+- **F7** — confirmed `ScraperSchedule` is in `tenantDb.ts`'s `TENANT_MODELS`; `CookieFile` deliberately excluded (documented why — legacy null-owned rows).
+- **F8** — `creds/oauth.ts`/`mailboxStore.ts`: `invalid_grant` on refresh now throws a `MailError` with `revoked:true`, which `ensureFreshAccessToken` catches to set `Mailbox.isActive=false` (terminal "reconnect required" instead of retrying forever). Also restored a genuinely-missing `deleteMailbox()` export (lost in the same revert, not part of the original F-list) and JWT `tokenVersion` claim wiring in `auth/jwt.ts` / `middleware.ts` / `routes.ts` / `index.ts` (revocation-on-logout-everywhere).
+- **Recovered `campaigns/routes.ts`** (found via `dist/campaigns/routes.js` being 375 lines vs `src` at 201 — same "silently reverted" pattern as the above, but pre-existing/out of F-scope): restored `GET /:id/recipients` (with `?format=csv` export) and the `customFields` merge-on-upsert logic that `campaignRoutes.test.ts` expects.
+- Deleted `server/src/__tests__/phase4.test.ts` — confirmed obsolete (tested the pre-`CampaignRecipient` dispatch architecture against a raw-`prisma` mock; superseded by `engine.test.ts`/`campaignRoutes.test.ts`).
+- Recovery method throughout: for any tracked file where `git status`/`git diff` showed no change vs a suspicious old `HEAD`, cross-referenced `server/dist/*.js` (the actually-running compiled output, untouched by any git operation) as ground truth and rewrote the TS source to match.
+
+**Result:** `npx tsc -p . --noEmit` clean. `npx vitest run` — 13/13 files, 95/95 tests passing. Committed (`git commit`, amended once pre-push after catching that the initial commit had swept in `scraper/leads.csv`, `blacklist.csv` (94k lines), `__pycache__/`, and other scraper runtime-state files — stripped those and added gitignore rules) and pushed to `origin/phase5-frontend-wiring`. Backend rebuilt (`npm run build`); **the final `nssm restart ysx-backend` had to be done by the user** — this session's shell is not elevated (confirmed via `whoami`/`net session`; `PowerShell`/`nssm` both got `Access is denied` even with sandbox override off) and self-elevation isn't possible without a UAC prompt only the user can approve.
+
+**Still outstanding — not done this session, needs the user:**
+1. **F1 — credential rotation.** Gmail app password, Microsoft client secret, Neon DB password, `JWT_SECRET`, `MAILBOX_ENCRYPTION_KEY` are confirmed still the original leaked values (`server/.env` mtime unchanged since 2026-07-08; `nssm get ysx-backend AppEnvironmentExtra` shows no rotation either). This is the actual "already-happened" compromise from the original audit — do this before routing real leads through the platform, independent of anything else in this file.
+2. **F9 nit** — verify the prod NSSM service definition pins `NODE_ENV=production` (if not, `jwt.ts`'s dev-fallback secret is reachable even after F1 rotation).
+3. The 8 `devin/*` remote branches pushed to GitHub during this incident were never reviewed — unknown whether they contain anything worth merging or are safe to ignore/delete.
+4. Confirm the `nssm restart ysx-backend` the user ran after this session picked up the rebuilt `dist/` — spot-check `/api/health` and that a mailbox delete / campaign recipients CSV export works post-restart.
+
+---
+
 ## 2026-07-11 — Campaign creation wizard built, deployed, and live-QA'd
 
 **What shipped:** Replaced the old single-modal `ComposeNewEmail.tsx` (now deleted) with a Smartlead-style campaign flow: name popup (Continue/Cancel/Skip) → 4-step wizard (Import Leads → Sequences → Setup → Final Review). New UI lives at `src/features/campaigns/` (salvaged + rewritten from the stale `origin/devin/1776980999-campaign-wizard` branch's UI only — its in-memory backend stub was discarded; wired to the real `server/src/campaigns/routes.ts`/`worker.ts` instead). Full plan is in the session that did this work; summary below is what actually landed.
