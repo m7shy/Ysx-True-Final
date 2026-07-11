@@ -17,6 +17,15 @@ server/data/tokens.json
 server/data/tokens.json.bak_pre
 server/data/followups.json
 
+# Scraper: live Google/YouTube session cookies (yt-dlp anti-bot bypass) —
+# these are equivalent to a password, never commit them.
+scraper/cookies.txt
+scraper/cookies/
+scraper/gcp_key.json
+scraper/.env
+scraper/fly.secrets.env
+scraper/profiles/
+
 *.log
 server.log
 server.err
@@ -29,4 +38,5 @@ types.ts - original.ts
 .vscode/
 .idea/
 .DS_Store
-Thumbs.db
+Thumbs.db"server/.env" 
+"fly.secrets.env" 
