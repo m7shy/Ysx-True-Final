@@ -8,6 +8,15 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        // Dev-only: forward API calls to the local backend so the browser makes
+        // same-origin requests. Required because the backend's CORS is pinned to
+        // WEB_ORIGIN (https://ysxvisuals.online on this VM), which blocks a
+        // cross-origin localhost:3000 frontend. Pair with VITE_API_URL="" so
+        // apiClient uses relative URLs in dev (see services/apiClient.ts).
+        proxy: {
+          '/api': { target: 'http://localhost:3001', changeOrigin: true },
+          '/t': { target: 'http://localhost:3001', changeOrigin: true },
+        },
       },
       plugins: [react()],
       define: {
