@@ -1,5 +1,33 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-11 (evening) — Repo integrity sweep: 4 reverted files repaired, wizard re-wired, dev CORS fixed
+
+**Context:** Ran the deliberate whole-repo integrity sweep planned in `bug-hunt-prompt.md` (hunting for more files silently reverted by the git-filter-repo incident, or never committed). Full evidence trail is in **`INTEGRITY-REPORT.md` (repo root) — read it alongside this entry.** Plan file (approved): `C:\Users\banjigum1\.claude\plans\rad-handoff-file-and-happy-cocoa.md`. Sweep + low-risk fixes ran on Sonnet 5; the App.tsx reconstruction ran on Fable 5.
+
+**Sweep results (what's CLEAN — verified, don't re-do):**
+- `server/src` ↔ `server/dist`: every exported symbol and route registration matches across the entire backend. The dist-larger line counts are compile artifacts. `dist/creds/store.js` + `dist/__tests__/phase4.test.js` are harmless stale orphans of legitimate deletions.
+- Prisma: `schema.prisma` exactly matches the live DB (`migrate diff` empty). Note: naive `diff` vs the generated client's copy looks totally different — that's CRLF-vs-LF; content is identical except 2 stale comment lines in the generated copy.
+- `scraper/` project: all 18 .py files tracked; all HANDOFF-documented functions present.
+
+**What was DAMAGED and REPAIRED (all committed locally — `0067abb`, `eb773ed`, `7057ae1` on `phase5-frontend-wiring`; NOT pushed):**
+1. **`App.tsx` was reverted (the big one).** The campaign wizard was completely unwired: "New Campaign"/"Compose" opened the old `ComposeNewEmail` modal, no `SCRAPER` view existed. Reconstructed the exact deployed wiring **from the minified production bundle** (`dist/assets/index-Dxjlcxv8.js` — the build that passed live QA is the frontend's only ground truth): overlay flow `wizardFlow: 'closed'|'naming'|'wizard'` (NOT a `CAMPAIGN_CREATE` view), three entry points (sidebar Compose, CampaignsListView New Campaign, LeadsView per-lead compose → wizard's `initialLead` prop), `CampaignNameModal` → `CampaignWizard`, `closeWizard()` lands on CAMPAIGNS. Also restored the `SCRAPER` sidebar item + view (`components/ScraperView.tsx` existed committed but orphaned). Deleted `components/ComposeNewEmail.tsx` (git rm — matches HANDOFF claim + bundle).
+2. **`services/apiClient.ts` was reverted too** (found because re-wiring ScraperView crashed module load): missing `apiUpload`/`apiDownload` exports (imported by `scraperApi.ts` AND `leadsApi.ts` — lead CSV export was silently broken, tree couldn't production-build) and `apiRequest` lacked the FormData special-case. All three reconstructed line-for-line from the bundle's minified `fl`/`yf`/`Sd` functions.
+3. **`hooks/useEmailProvider.ts`**: restored `usesGateway()` helper — Microsoft now always routes through the gateway in all 3 paths (loadEmails/sendNewEmail/sendFollowUp); removed the 3 stale "Microsoft not supported" throws.
+4. **`components/IntegrationsView.tsx`**: HubSpot/Salesforce/Slack/Calendly now show disabled "Coming Soon" instead of the fake 2s-timer connect (Zoho CRM's simulated connect left as-was).
+5. **Prisma migrations disaster-recovery gap closed**: generated consolidated `prisma/migrations/0_baseline/migration.sql` (356 lines, all 10 models) and ran `prisma migrate resolve --applied 0_baseline` against the live DB **with the user's explicit approval** (bookkeeping row only; all 9 real historical migrations untouched; `migrate status` clean).
+6. **13 stray junk files deleted** (root `#`/`cd`/`node`/`npm`/`tatus`/`types.ts - original.ts`, scraper empties, and 4 "` - Copy`" backup files incl. `hooks/useEmailProvider - Copy.ts`).
+7. **Dev CORS fix (separate commits `eb773ed`+`7057ae1`)**: the F6 CORS pin (`WEB_ORIGIN=https://ysxvisuals.online` via NSSM env, overriding `server/.env`'s localhost value) blocks the dev frontend on :3000 entirely — login/signup died with "Failed to fetch". Fixed with a Vite dev proxy (`/api` + `/t` → localhost:3001) + tracked `.env.development` setting `VITE_API_URL=` (relative URLs in dev). Production build unaffected. **Don't "fix" the backend CORS for this — it's working as designed.**
+
+**Verification done:** server `tsc` clean; `vitest` 95/95; `prisma migrate diff` vs live DB empty; frontend production build to a **scratch dir** compiles and its feature-string profile exactly matches the deployed bundle (wizard/scraper strings in, ComposeNewEmail strings out); dev server renders clean, login POST via proxy returns proper 401 JSON for bad creds. Frontend `tsc --noEmit` has **~193 PRE-EXISTING errors** (types.ts drift in legacy components: DashboardView, CampaignDetailView, CampaignsListView, EmailCard, ComposeFollowUp, leadsApi, wizard files) — Vite doesn't type-check so builds pass; this predates everything, flagged in INTEGRITY-REPORT as a future cleanup, do not mistake it for new breakage.
+
+**NOT done yet — pick up here:**
+1. **Interactive post-login QA** of the restored flows (the only unverified piece): log in at `localhost:3000` (dev server: `npm run dev`, or `.claude/launch.json` "frontend" config), then click Compose → name popup (Continue/Cancel/Skip) → 4-step wizard renders; LeadsView per-lead compose pre-fills the wizard; Scraper view loads. The session ended waiting for the user to type their password (Claude doesn't enter passwords; creds documented below in this file — note trailing period on the password). **The sandboxed Browser pane is still broken on this VM (renders 0x0) — use Claude-in-Chrome instead.**
+2. **Deploy when satisfied**: `VITE_API_URL="" npx vite build` at repo root (frontend-only; no backend rebuild, no `nssm restart` needed). ⚠️ Rebuilding `dist/` IS a live deploy AND destroys the frontend's only revert-recovery ground truth — only do it once the wizard QA passes.
+3. **Push decision**: 3 local commits on `phase5-frontend-wiring` are unpushed (user hasn't decided).
+4. Carry-overs from previous entries still open: F1 remnants (Gmail app password + Microsoft client secret rotation unconfirmed), the campaign-wizard live-QA gaps (lead `name`/`company` not updated on re-import upsert; no "From CRM leads" tab in wizard Step 1 — note the restored `initialLead` path partially covers single-lead flows), and the ~193 frontend type errors above.
+
+---
+
 ## 2026-07-11 (later still) — Closed out prior outstanding items + fixed a live DB outage
 
 **Context:** Continuation of the security-audit session below. Verified the 4 remaining outstanding items and found a live production incident along the way.
