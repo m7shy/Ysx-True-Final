@@ -64,15 +64,20 @@ export async function apiRequest<T = any>(
 ): Promise<T> {
   const { method = 'GET', body, skipAuthRetry } = options;
 
+  // FormData bodies (file uploads) must go through untouched: no JSON
+  // stringify, and no explicit Content-Type so the browser sets the
+  // multipart boundary itself.
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+
   const doFetch = () => {
     const token = getAccessToken();
     return fetch(`${API_URL}${path}`, {
       method,
       headers: {
-        'Content-Type': 'application/json',
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body === undefined ? undefined : isFormData ? (body as FormData) : JSON.stringify(body),
     });
   };
 
@@ -97,3 +102,48 @@ export const apiGet = <T = any>(path: string) => apiRequest<T>(path);
 export const apiPost = <T = any>(path: string, body?: unknown) => apiRequest<T>(path, { method: 'POST', body });
 export const apiPatch = <T = any>(path: string, body?: unknown) => apiRequest<T>(path, { method: 'PATCH', body });
 export const apiDelete = <T = any>(path: string) => apiRequest<T>(path, { method: 'DELETE' });
+
+/** Multipart file upload; `field` is the form field name the server expects. */
+export const apiUpload = <T = any>(path: string, files: File[], field = 'files'): Promise<T> => {
+  const form = new FormData();
+  for (const file of files) form.append(field, file, file.name);
+  return apiRequest<T>(path, { method: 'POST', body: form });
+};
+
+/**
+ * Authenticated file download: fetches the path as a blob (with the same
+ * 401-refresh-retry behavior as apiRequest) and triggers a browser save
+ * under `filename`.
+ */
+export async function apiDownload(path: string, filename: string): Promise<void> {
+  const doFetch = () => {
+    const token = getAccessToken();
+    return fetch(`${API_URL}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  };
+
+  let res = await doFetch();
+
+  if (res.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      res = await doFetch();
+    } else {
+      clearAuth();
+      throw new ApiError(401, 'AUTH', 'Session expired. Please log in again.');
+    }
+  }
+
+  if (!res.ok) throw await parseError(res);
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

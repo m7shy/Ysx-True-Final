@@ -3,12 +3,13 @@ import { useSettings } from './context/SettingsContext';
 import { useNotification } from './context/NotificationContext';
 import { useAuth } from './context/AuthContext';
 import { CampaignProvider, useCampaigns } from './context/CampaignContext';
-import { Lead, Campaign } from './types';
+import { Lead } from './types';
 
 // Components
 import LoginScreen from './components/LoginScreen';
 import SettingsModal from './components/SettingsModal';
-import ComposeNewEmail from './components/ComposeNewEmail';
+import { CampaignNameModal } from './src/features/campaigns/CampaignNameModal';
+import { CampaignWizard } from './src/features/campaigns/CampaignWizard';
 
 // Views
 import { DashboardView } from './components/DashboardView';
@@ -23,18 +24,22 @@ import { StoryVaultView } from './components/StoryVaultView';
 import { CampaignsListView } from './components/CampaignsListView';
 import { CampaignDetailView } from './components/CampaignDetailView';
 import { UniboxView } from './components/UniboxView';
+import { ScraperView } from './components/ScraperView';
 
 // Icons & UI
-import { Mail, RefreshCcw, Layout, CalendarClock, Plus, Moon, Sun, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle, LogOut } from 'lucide-react';
+import { Mail, RefreshCcw, Layout, CalendarClock, Plus, Moon, Sun, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle, LogOut, Radar } from 'lucide-react';
 import { gwHealth } from './services/mailGateway';
 
-type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX';
+type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'SCRAPER' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX';
+
+// Campaign-creation overlay flow: name popup first, then the 4-step wizard.
+type WizardFlow = 'closed' | 'naming' | 'wizard';
 
 // --- Inner App Logic to use Campaign Context ---
 const AppContent: React.FC = () => {
   const { settings: userSettings, updateSettings, saveSettings } = useSettings();
   const { showToast } = useNotification();
-  const { campaigns, addCampaign } = useCampaigns();
+  const { campaigns } = useCampaigns();
 
   const { isLoggedIn, isHydrating, logout, user } = useAuth();
   const [darkMode, setDarkMode] = useState(false);
@@ -46,8 +51,9 @@ const AppContent: React.FC = () => {
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
 
   // Modals
-  const [isComposing, setIsComposing] = useState(false);
-  const [composeInitialData, setComposeInitialData] = useState<{email: string, name: string, company: string} | undefined>(undefined);
+  const [wizardFlow, setWizardFlow] = useState<WizardFlow>('closed');
+  const [wizardInitialName, setWizardInitialName] = useState<string | undefined>(undefined);
+  const [wizardInitialLead, setWizardInitialLead] = useState<{email: string, name: string, company: string} | undefined>(undefined);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Handle the backend's OAuth mailbox-connect redirect
@@ -95,20 +101,22 @@ const AppContent: React.FC = () => {
     };
   }, [userSettings.transportMode]);
 
-  const handleCreateCampaign = async (campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'>) => {
-    await addCampaign(campaignData);
-    setIsComposing(false);
-    setComposeInitialData(undefined);
-    setCurrentView('CAMPAIGNS'); 
+  // The wizard submits through CampaignContext.addCampaign itself; App only
+  // owns the open/close flow and lands the user on the campaigns list after.
+  const closeWizard = () => {
+    setWizardFlow('closed');
+    setWizardInitialName(undefined);
+    setWizardInitialLead(undefined);
+    setCurrentView('CAMPAIGNS');
   };
 
   const handleComposeFromLead = (lead: Lead) => {
-    setComposeInitialData({
+    setWizardInitialLead({
       email: lead.email,
       name: lead.name,
       company: lead.company
     });
-    setIsComposing(true);
+    setWizardFlow('naming');
     if (window.innerWidth < 768) {
       setIsMobileMenuOpen(false);
     }
@@ -167,8 +175,8 @@ const AppContent: React.FC = () => {
       </div>
 
       <div className="px-4 mb-6">
-        <button 
-          onClick={() => { setComposeInitialData(undefined); setIsComposing(true); setIsMobileMenuOpen(false); }}
+        <button
+          onClick={() => { setWizardInitialLead(undefined); setWizardFlow('naming'); setIsMobileMenuOpen(false); }}
           className="w-full flex items-center justify-center px-4 py-3 bg-white text-brand-900 font-semibold rounded-lg shadow hover:bg-brand-50 transition-all transform hover:scale-105 active:scale-95"
         >
           <Plus className="w-5 h-5 mr-2" />
@@ -196,6 +204,7 @@ const AppContent: React.FC = () => {
           <h3 className="px-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Workspace</h3>
           <nav className="space-y-1">
              <NavButton view="LEADS" icon={Users} label="Leads" isActive={currentView === 'LEADS'} />
+             <NavButton view="SCRAPER" icon={Radar} label="Scraper" isActive={currentView === 'SCRAPER'} />
              <NavButton view="STORY_VAULT" icon={Film} label="Story Vault" isActive={currentView === 'STORY_VAULT'} />
              <NavButton view="BRAND_OS" icon={Palette} label="Brand OS" isActive={currentView === 'BRAND_OS'} />
              <NavButton view="PERFORMANCE" icon={TrendingUp} label="Performance" isActive={currentView === 'PERFORMANCE'} />
@@ -271,13 +280,21 @@ const AppContent: React.FC = () => {
         onSave={handleSaveSettings}
       />
 
-      {isComposing && (
-        <ComposeNewEmail 
-          onClose={() => { setIsComposing(false); setComposeInitialData(undefined); }} 
-          onSend={handleCreateCampaign} 
-          initialRecipientEmail={composeInitialData?.email}
-          initialRecipientName={composeInitialData?.name}
-          initialCompany={composeInitialData?.company}
+      {wizardFlow === 'naming' && (
+        <CampaignNameModal
+          onCancel={closeWizard}
+          onContinue={(name) => {
+            setWizardInitialName(name);
+            setWizardFlow('wizard');
+          }}
+        />
+      )}
+
+      {wizardFlow === 'wizard' && (
+        <CampaignWizard
+          initialName={wizardInitialName}
+          initialLead={wizardInitialLead}
+          onClose={closeWizard}
         />
       )}
 
@@ -315,6 +332,7 @@ const AppContent: React.FC = () => {
                currentView === 'CAMPAIGNS' ? 'Campaigns' :
                currentView === 'CAMPAIGN_DETAIL' ? 'Campaign Details' :
                currentView === 'UNIBOX' ? 'Unified Inbox' :
+               currentView === 'SCRAPER' ? 'YouTube Scraper' :
                currentView === 'PERFORMANCE' ? 'Performance' : 'Integrations'}
             </h1>
           </div>
@@ -372,11 +390,12 @@ const AppContent: React.FC = () => {
         {currentView === 'PERFORMANCE' && <PerformanceView />}
         {currentView === 'STORY_VAULT' && <StoryVaultView />}
         {currentView === 'UNIBOX' && <UniboxView />}
+        {currentView === 'SCRAPER' && <ScraperView />}
         {currentView === 'CAMPAIGNS' && (
-          <CampaignsListView 
+          <CampaignsListView
             onNewCampaign={() => {
-              setComposeInitialData(undefined);
-              setIsComposing(true);
+              setWizardInitialLead(undefined);
+              setWizardFlow('naming');
             }}
             onSelectCampaign={(id) => {
               setSelectedCampaignId(id);

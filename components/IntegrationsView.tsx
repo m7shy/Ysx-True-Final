@@ -14,20 +14,22 @@ interface IntegrationItem {
   desc: string;
   color: string;
   hasError?: boolean;
+  comingSoon?: boolean;
 }
 
 // 'google_workspace' and 'microsoft_365' are backed by the real backend OAuth2
-// consent flow (GET /api/auth/oauth/:provider/start); everything else here is
-// still a simulated integration with no backend support.
+// consent flow (GET /api/auth/oauth/:provider/start); 'zoho_mail'/'zoho_crm' are
+// legacy/simulated. hubspot/salesforce/slack/calendly have no backend support at
+// all and are marked comingSoon so the UI doesn't offer a fake "Connect".
 const INITIAL_INTEGRATIONS: IntegrationItem[] = [
   { id: 'zoho_mail', name: "Zoho Mail", connected: true, desc: "Sync sent items, drafts, and folders.", color: "bg-[#2C72B8]" },
   { id: 'google_workspace', name: "Google Workspace", connected: false, desc: "Sync Gmail sent items and drafts via OAuth2.", color: "bg-[#EA4335]" },
   { id: 'microsoft_365', name: "Microsoft 365", connected: false, desc: "Sync Outlook sent items and drafts via OAuth2.", color: "bg-[#00A4EF]" },
   { id: 'zoho_crm', name: "Zoho CRM", connected: false, desc: "Sync contacts, leads, and deals bi-directionally.", color: "bg-[#e32933]" },
-  { id: 'hubspot', name: "HubSpot", connected: false, desc: "Import contacts and log email activity automatically.", color: "bg-[#ff7a59]" },
-  { id: 'salesforce', name: "Salesforce", connected: false, desc: "Enterprise CRM sync for leads and opportunities.", color: "bg-[#00a1e0]" },
-  { id: 'slack', name: "Slack", connected: false, desc: "Get instant notifications for replies and bounces.", color: "bg-[#4a154b]" },
-  { id: 'calendly', name: "Calendly", connected: false, desc: "Include dynamic booking links in your signatures.", color: "bg-[#006bff]" },
+  { id: 'hubspot', name: "HubSpot", connected: false, desc: "Import contacts and log email activity automatically.", color: "bg-[#ff7a59]", comingSoon: true },
+  { id: 'salesforce', name: "Salesforce", connected: false, desc: "Enterprise CRM sync for leads and opportunities.", color: "bg-[#00a1e0]", comingSoon: true },
+  { id: 'slack', name: "Slack", connected: false, desc: "Get instant notifications for replies and bounces.", color: "bg-[#4a154b]", comingSoon: true },
+  { id: 'calendly', name: "Calendly", connected: false, desc: "Include dynamic booking links in your signatures.", color: "bg-[#006bff]", comingSoon: true },
 ];
 
 const OAUTH_BACKED_IDS = new Set(['google_workspace', 'microsoft_365']);
@@ -145,8 +147,14 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
       return;
     }
 
+    // comingSoon integrations (HubSpot/Salesforce/Slack/Calendly) have no
+    // backend support at all — the Coming Soon badge replaces their Connect
+    // button below, so this path shouldn't be reachable, but guard anyway.
+    const item = integrations.find(i => i.id === id);
+    if (item?.comingSoon) return;
+
     setConnectingId(id);
-    // Simulate API connection delay for others
+    // Zoho CRM: still a simulated connection (no real backend yet).
     setTimeout(() => {
       setIntegrations(prev => prev.map(item =>
         item.id === id ? { ...item, connected: true } : item
@@ -256,6 +264,12 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
                             <FlaskConical className="w-3 h-3 mr-1" /> Simulated
                         </span>
                     )}
+
+                    {item.comingSoon && (
+                        <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold rounded-full flex items-center border border-slate-200 dark:border-slate-700">
+                            Coming Soon
+                        </span>
+                    )}
                   </h3>
                   <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 max-w-md">{item.desc}</p>
               </div>
@@ -289,13 +303,20 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
                 >
                    <Wrench className="w-4 h-4 mr-2" /> Fix Connection
                 </button>
+              ) : item.comingSoon ? (
+                <button
+                  disabled
+                  className="px-5 py-2.5 rounded-lg text-sm font-bold min-w-[140px] flex justify-center bg-slate-50 dark:bg-slate-900 text-slate-400 dark:text-slate-600 border border-slate-200 dark:border-slate-800 cursor-not-allowed"
+                >
+                  Coming Soon
+                </button>
               ) : (
-                <button 
+                <button
                   onClick={() => !item.connected && handleConnect(item.id)}
-                  disabled={connectingId === item.id || (item.connected && (item.id === 'zoho_mail' || item.id === 'google_workspace'))} 
+                  disabled={connectingId === item.id || (item.connected && (item.id === 'zoho_mail' || item.id === 'google_workspace'))}
                   className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all active:scale-95 min-w-[140px] flex justify-center ${
-                    item.connected 
-                      ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 cursor-default' 
+                    item.connected
+                      ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 cursor-default'
                       : 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-600 hover:border-brand-500 hover:text-brand-600 dark:hover:text-brand-400 shadow-sm hover:shadow'
                   } ${connectingId === item.id ? 'opacity-80 cursor-wait' : ''}`}
                 >

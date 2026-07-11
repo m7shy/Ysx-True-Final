@@ -92,6 +92,15 @@ function toFollowupProviderKey(provider: ActiveProvider): ProviderKeyDto | null 
   return null;
 }
 
+// Microsoft has no browser-side OAuth-API token exchange on the frontend — the
+// backend only ever talks to Microsoft through the IMAP/SMTP gateway. So
+// Microsoft always uses the gateway path regardless of the user's general
+// transportMode setting (which otherwise toggles Gmail/Zoho between
+// oauth-api and gateway modes).
+function usesGateway(provider: ActiveProvider, transportMode: string): boolean {
+  return transportMode === 'gateway-imap-smtp' || provider === 'MICROSOFT';
+}
+
 export const useEmailProvider = () => {
   const { settings, updateSettings } = useSettings();
   const { getValidToken, clearToken } = useTokenManager(settings);
@@ -143,32 +152,23 @@ export const useEmailProvider = () => {
       }
 
       // Real API mode:
-      if (settings.transportMode === 'gateway-imap-smtp') {
+      if (usesGateway(settings.activeProvider, settings.transportMode)) {
         const providerKey = toGatewayProviderKey(settings.activeProvider);
         const fetched = await gwFetchSent(providerKey, 20);
         setEmails(fetched);
         return;
       }
 
-      // OAuth-API mode
+      // OAuth-API mode (Gmail/Zoho only — Microsoft always takes the gateway
+      // branch above).
       if (settings.activeProvider === 'GMAIL') {
         const fetched = await executeWithRetry('GMAIL', (token) => fetchGoogleEmails(token));
         setEmails(fetched);
         return;
       }
 
-      if (settings.activeProvider === 'ZOHO') {
-        const fetched = await executeWithRetry('ZOHO', (token) => fetchZohoEmails(token));
-        setEmails(fetched);
-        return;
-      }
-
-      // Microsoft OAuth API not implemented on frontend in this version
-      throw new AppError(
-        AppErrorCode.PROVIDER_ERROR,
-        'MICROSOFT',
-        'Microsoft OAuth email fetching is not supported in this version. Use gateway mode.'
-      );
+      const fetched = await executeWithRetry('ZOHO', (token) => fetchZohoEmails(token));
+      setEmails(fetched);
     } catch (err: any) {
       console.error('Failed to load emails:', err);
       if (err instanceof AppError) {
@@ -208,7 +208,7 @@ export const useEmailProvider = () => {
           return { success: true, followups: baseFollowups };
         }
 
-        if (settings.transportMode === 'gateway-imap-smtp') {
+        if (usesGateway(settings.activeProvider, settings.transportMode)) {
           const gatewayProviderKey = toGatewayProviderKey(settings.activeProvider);
 
           try {
@@ -296,7 +296,8 @@ export const useEmailProvider = () => {
           }
         }
 
-        // OAuth API mode
+        // OAuth API mode (Gmail/Zoho only — Microsoft always takes the gateway
+        // branch above).
         if (settings.activeProvider === 'GMAIL') {
           try {
             await executeWithRetry('GMAIL', (token) =>
@@ -307,7 +308,7 @@ export const useEmailProvider = () => {
               ? error
               : new AppError(AppErrorCode.PROVIDER_ERROR, 'GOOGLE', error?.message || 'Failed to send email via Google');
           }
-        } else if (settings.activeProvider === 'ZOHO') {
+        } else {
           try {
             await executeWithRetry('ZOHO', (token) =>
               sendZohoEmail(token, normalizedTo, subject, withSignature(body, settings.emailSignature))
@@ -317,8 +318,6 @@ export const useEmailProvider = () => {
               ? error
               : new AppError(AppErrorCode.PROVIDER_ERROR, 'ZOHO', error?.message || 'Failed to send email via Zoho');
           }
-        } else {
-          throw new AppError(AppErrorCode.PROVIDER_ERROR, 'MICROSOFT', 'Microsoft sending requires gateway mode in this version.');
         }
 
         return { success: true, followups: baseFollowups };
@@ -352,7 +351,7 @@ export const useEmailProvider = () => {
           return { success: true, followups: baseFollowups };
         }
 
-        if (settings.transportMode === 'gateway-imap-smtp') {
+        if (usesGateway(settings.activeProvider, settings.transportMode)) {
           const providerKey = toGatewayProviderKey(settings.activeProvider);
 
           await gwSend(providerKey, {
@@ -366,17 +365,16 @@ export const useEmailProvider = () => {
           return { success: true, followups: baseFollowups };
         }
 
-        // OAuth mode
+        // OAuth mode (Gmail/Zoho only — Microsoft always takes the gateway
+        // branch above).
         if (settings.activeProvider === 'GMAIL') {
           await executeWithRetry('GMAIL', (token) =>
             sendGoogleFollowUp(token, originalEmail, withSignature(followUpContent, settings.emailSignature))
           );
-        } else if (settings.activeProvider === 'ZOHO') {
+        } else {
           await executeWithRetry('ZOHO', (token) =>
             sendZohoFollowUp(token, originalEmail, withSignature(followUpContent, settings.emailSignature))
           );
-        } else {
-          throw new AppError(AppErrorCode.PROVIDER_ERROR, 'MICROSOFT', 'Microsoft follow-ups require gateway mode.');
         }
 
         return { success: true, followups: baseFollowups };
