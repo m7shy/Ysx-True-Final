@@ -1,5 +1,11 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-12 (later) — DNC (do-not-contact) + Interested lead statuses, hard send blocking
+
+**What shipped (commit `8c0be74`, local, NOT pushed):** `LeadStatus` enum gained `INTERESTED` + `DNC` (migration `20260712100000_add_lead_interested_dnc`, **already applied to the prod DB** via `prisma migrate deploy`; additive-only, safe). New `server/src/leads/dnc.ts::enforceDnc()` cancels all scheduled follow-ups for the lead's email (all campaigns) and skips all PENDING campaign recipients; called when status transitions to DNC from leads PATCH or the unibox `lead-status` route. The unibox lead-status route now also writes the canonical `Lead.status` (INTERESTED→INTERESTED, NOT_INTERESTED→LOST, MEETING_BOOKED→CALL_BOOKED, DNC→DNC; LEFT_HANGING no-op) — previously it only stashed a JSON field with zero effect on sending. `sendFollowupJob` in `index.ts` has a runtime DNC guard (last line of defense); initial campaign sends were already blocked by the worker's `status !== NEW` check. UI: unibox status dropdown gained a confirm-gated "DO NOT CONTACT" action; LeadsView selects/badges gained Interested + DNC; `types.ts` gained real `LeadStatus`/`Thread*` types. Tests: new `dnc.test.ts` (4 tests), suite **100/100**, server tsc clean, `server/dist` rebuilt (live on next `nssm restart ysx-backend`). Frontend scratch build verified; live `dist/` still NOT rebuilt (same QA gate as the entry below).
+
+**Gotchas hit (worth knowing):** (1) `prisma generate` at repo root updates root `node_modules` but the server resolves its OWN `server/node_modules/.prisma/client`; the query-engine DLL there is locked by the running prod service — copied all generated files EXCEPT the DLL (engine version unchanged, so safe). (2) vitest's dep-optimizer cache (`server/node_modules/.vite`) served the stale @prisma/client after regeneration — `rm -rf server/node_modules/.vite` fixes bogus "enum value missing" behavior. (3) `prisma migrate deploy` must run from `server/` (env vars live in `server/.env`) with `--schema ../prisma/schema.prisma`.
+
 ## 2026-07-12 — Closed both campaign-wizard QA gaps (Smartlead-migration blockers)
 
 **What shipped (commit `3af695d` on `phase5-frontend-wiring`, local, NOT pushed):**
