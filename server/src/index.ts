@@ -21,7 +21,9 @@ import scraperRouter from './scraper/routes.js';
 import analyticsRouter from './analytics/routes.js';
 import trackingRouter from './campaigns/trackingRoutes.js';
 
-import { startFollowupScheduler, cancelFollowup, cancelRemainingFollowupsForRecipient } from './scheduler/followupScheduler.js';
+import { LeadStatus } from '@prisma/client';
+import { prisma } from './db/prisma.js';
+import { startFollowupScheduler, cancelFollowup, cancelRemainingFollowupsForRecipient, cancelScheduledFollowupsForUserRecipient } from './scheduler/followupScheduler.js';
 import { sendSmtpMail, parseProvider } from './mail/smtpGateway.js';
 import { hasRecipientReplied } from './mail/replyCheck.js';
 import { startCampaignWorker } from './campaigns/worker.js';
@@ -140,6 +142,23 @@ async function sendFollowupJob(job: any) {
   if (!userId) {
     logger.error({ id: job.id }, 'Follow-up job is missing userId; cannot resolve mailbox credentials');
     return;
+  }
+
+  // DNC hard block: a lead marked do-not-contact is never emailed again,
+  // even if this job was queued before the status change (enforceDnc cancels
+  // scheduled jobs, but this guard also covers jobs claimed mid-transition).
+  const dncRecipient = String(job.to ?? job.recipientEmail ?? '').trim();
+  if (dncRecipient) {
+    const lead = await prisma.lead.findFirst({
+      where: { userId, email: { equals: dncRecipient, mode: 'insensitive' } },
+      select: { status: true },
+    });
+    if (lead?.status === LeadStatus.DNC) {
+      await cancelFollowup(String(job.id), 'dnc');
+      await cancelScheduledFollowupsForUserRecipient(userId, dncRecipient, 'dnc');
+      logger.info({ id: job.id }, 'Skipping follow-up send: lead is marked DNC');
+      return;
+    }
   }
 
   // Reply gating + cancellation of remaining followups

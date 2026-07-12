@@ -25,10 +25,12 @@ enum LeadStatus {
   NEW
   CONTACTED
   REPLIED
+  INTERESTED
   CALL_BOOKED
   TRIAL
   CLIENT_CLOSED
   LOST
+  DNC
 }
 
 enum CampaignStatus {

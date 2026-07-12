@@ -139,6 +139,7 @@ export const UniboxView: React.FC = () => {
       case 'NOT_INTERESTED': return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
       case 'MEETING_BOOKED': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400';
       case 'LEFT_HANGING': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+      case 'DNC': return 'bg-red-600 text-white dark:bg-red-700 dark:text-red-100';
       default: return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
     }
   };
@@ -267,14 +268,25 @@ export const UniboxView: React.FC = () => {
                         {/* Dropdown */}
                         <div className="absolute right-0 top-full mt-2 w-40 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 hidden group-hover:block z-20">
                            {['INTERESTED', 'NOT_INTERESTED', 'MEETING_BOOKED', 'LEFT_HANGING'].map(s => (
-                              <button 
-                                key={s} 
+                              <button
+                                key={s}
                                 onClick={() => handleLeadStatusChange(s as ThreadLeadStatus)}
                                 className="block w-full text-left px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
                               >
                                  {s.replace('_', ' ')}
                               </button>
                            ))}
+                           <div className="my-1 border-t border-slate-200 dark:border-slate-800" />
+                           <button
+                             onClick={() => {
+                                if (window.confirm('Mark as Do Not Contact? All queued campaign sends and follow-ups to this lead will be cancelled, and it will never be contacted by a campaign again.')) {
+                                   handleLeadStatusChange('DNC');
+                                }
+                             }}
+                             className="block w-full text-left px-4 py-2 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+                           >
+                              DO NOT CONTACT
+                           </button>
                         </div>
                      </div>
                      <button className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">

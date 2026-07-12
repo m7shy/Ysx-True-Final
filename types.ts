@@ -41,15 +41,53 @@ export interface Email {
   from: string;
 }
 
+// Mirrors the backend's Prisma LeadStatus enum. DNC = do-not-contact: the
+// backend hard-blocks every automated send (campaigns + follow-ups) for it.
+export type LeadStatus =
+  | 'NEW'
+  | 'CONTACTED'
+  | 'REPLIED'
+  | 'INTERESTED'
+  | 'CALL_BOOKED'
+  | 'TRIAL'
+  | 'CLIENT_CLOSED'
+  | 'LOST'
+  | 'DNC';
+
 export interface Lead {
   id: string;
   name: string;
   email: string;
   company: string;
-  status: 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'CONVERTED' | 'LOST';
+  status: LeadStatus;
+  source?: string;
   lastContacted: string | null;
   notes: string;
+  score?: number;
+  intelligence?: Record<string, unknown>;
   sequence?: SequenceStep[];
+}
+
+// Unibox (universal inbox) thread shapes — mirror server/src/unibox/routes.ts.
+export type ThreadStatus = 'UNREAD' | 'READ' | 'ARCHIVED';
+export type ThreadLeadStatus = 'INTERESTED' | 'NOT_INTERESTED' | 'MEETING_BOOKED' | 'LEFT_HANGING' | 'DNC';
+
+export interface ThreadMessage {
+  id: string;
+  sender: 'ME' | 'LEAD';
+  content: string;
+  date: string;
+}
+
+export interface Thread {
+  id: string;
+  leadName: string;
+  leadCompany: string;
+  subject: string;
+  status: ThreadStatus;
+  leadStatus: ThreadLeadStatus;
+  lastMessageDate: string;
+  messages: ThreadMessage[];
 }
 
 export interface Campaign {

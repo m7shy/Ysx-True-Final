@@ -8,6 +8,7 @@ import { prisma } from '../db/prisma.js';
 import { requireUserId } from '../auth/middleware.js';
 import { pickRotationMailbox } from '../creds/mailboxStore.js';
 import { sendFromMailbox } from '../mail/smtpGateway.js';
+import { enforceDnc } from '../leads/dnc.js';
 
 /**
  * Unibox (tenant-scoped), backed by the Lead table — Phase 1 has no Message
@@ -21,7 +22,16 @@ import { sendFromMailbox } from '../mail/smtpGateway.js';
 const router = express.Router();
 
 const THREAD_STATUSES = ['UNREAD', 'READ', 'ARCHIVED'] as const;
-const LEAD_THREAD_STATUSES = ['INTERESTED', 'NOT_INTERESTED', 'MEETING_BOOKED', 'LEFT_HANGING'] as const;
+const LEAD_THREAD_STATUSES = ['INTERESTED', 'NOT_INTERESTED', 'MEETING_BOOKED', 'LEFT_HANGING', 'DNC'] as const;
+
+// Thread disposition → canonical Lead.status. LEFT_HANGING is absent on
+// purpose: it's "no disposition yet" and must not clobber the pipeline status.
+const THREAD_STATUS_TO_LEAD_STATUS: Partial<Record<(typeof LEAD_THREAD_STATUSES)[number], LeadStatus>> = {
+  INTERESTED: LeadStatus.INTERESTED,
+  NOT_INTERESTED: LeadStatus.LOST,
+  MEETING_BOOKED: LeadStatus.CALL_BOOKED,
+  DNC: LeadStatus.DNC,
+};
 
 type ManualMessage = { id: string; sender: 'ME' | 'LEAD'; content: string; date: string };
 
@@ -32,9 +42,10 @@ function intelligenceOf(lead: Lead): Record<string, any> {
 }
 
 function defaultLeadThreadStatus(lead: Lead): (typeof LEAD_THREAD_STATUSES)[number] {
+  if (lead.status === LeadStatus.DNC) return 'DNC';
   if (lead.status === LeadStatus.LOST) return 'NOT_INTERESTED';
   if (lead.status === LeadStatus.CALL_BOOKED) return 'MEETING_BOOKED';
-  if (lead.status === LeadStatus.REPLIED) return 'INTERESTED';
+  if (lead.status === LeadStatus.REPLIED || lead.status === LeadStatus.INTERESTED) return 'INTERESTED';
   return 'LEFT_HANGING';
 }
 
@@ -136,7 +147,18 @@ router.patch('/threads/:id/lead-status', async (req: Request, res: Response) => 
     if (!lead) return;
 
     const intelligence = { ...intelligenceOf(lead), threadLeadStatus: leadStatus };
-    await prisma.lead.update({ where: { id: lead.id }, data: { intelligence } });
+    const canonical = THREAD_STATUS_TO_LEAD_STATUS[leadStatus];
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { intelligence, ...(canonical ? { status: canonical } : {}) },
+    });
+
+    // DNC is a hard block: kill every queued follow-up and pending campaign
+    // send for this lead immediately.
+    if (leadStatus === 'DNC' && lead.status !== LeadStatus.DNC) {
+      await enforceDnc(userId, lead);
+    }
+
     res.json({ ok: true });
   } catch (err) {
     const out = toErrorPayload(err);

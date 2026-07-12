@@ -6,6 +6,7 @@ import { LeadStatus } from '@prisma/client';
 
 import { prisma } from '../db/prisma.js';
 import { requireUserId } from '../auth/middleware.js';
+import { enforceDnc } from './dnc.js';
 
 /**
  * Leads CRUD (tenant-scoped). Mounted behind requireAuth in index.ts, so
@@ -118,6 +119,11 @@ router.patch('/:id', async (req: Request, res: Response) => {
         ...(parsed.intelligence !== undefined ? { intelligence: parsed.intelligence } : {}),
       },
     });
+
+    if (parsed.status === LeadStatus.DNC && existing.status !== LeadStatus.DNC) {
+      await enforceDnc(userId, lead);
+    }
+
     res.json({ lead });
   } catch (err) {
     const out = toErrorPayload(err);

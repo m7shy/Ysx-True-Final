@@ -257,10 +257,12 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
         'NEW': 'bg-blue-500 text-blue-100',
         'CONTACTED': 'bg-amber-500 text-amber-100',
         'REPLIED': 'bg-indigo-500 text-indigo-100',
+        'INTERESTED': 'bg-green-500 text-green-100',
         'CALL_BOOKED': 'bg-purple-500 text-purple-100',
         'TRIAL': 'bg-cyan-500 text-cyan-100',
         'CLIENT_CLOSED': 'bg-emerald-500 text-emerald-100',
-        'LOST': 'bg-slate-500 text-slate-100'
+        'LOST': 'bg-slate-500 text-slate-100',
+        'DNC': 'bg-red-600 text-white'
     };
     return (
         <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${styles[status] || 'bg-slate-500 text-slate-100'}`}>
@@ -467,10 +469,12 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
                      <option value="NEW">New</option>
                      <option value="CONTACTED">Contacted</option>
                      <option value="REPLIED">Replied</option>
+                     <option value="INTERESTED">Interested</option>
                      <option value="CALL_BOOKED">Call Booked</option>
                      <option value="TRIAL">Trial</option>
                      <option value="CLIENT_CLOSED">Client Closed</option>
-                     <option value="LOST">Lost</option>
+                     <option value="LOST">Not Interested / Lost</option>
+                     <option value="DNC">Do Not Contact</option>
                   </select>
                </div>
             </div>
@@ -570,10 +574,12 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
                         <option value="NEW">New</option>
                         <option value="CONTACTED">Contacted</option>
                         <option value="REPLIED">Replied</option>
+                     <option value="INTERESTED">Interested</option>
                         <option value="CALL_BOOKED">Call Booked</option>
                         <option value="TRIAL">Trial</option>
                         <option value="CLIENT_CLOSED">Client Closed</option>
-                        <option value="LOST">Lost</option>
+                        <option value="LOST">Not Interested / Lost</option>
+                     <option value="DNC">Do Not Contact</option>
                       </select>
                     </td>
                     <td className="px-6 py-4 text-slate-500 dark:text-slate-400 tabular-nums">
