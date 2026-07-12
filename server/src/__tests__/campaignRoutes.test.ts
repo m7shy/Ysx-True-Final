@@ -236,6 +236,22 @@ describe('POST /api/campaigns validation', () => {
     // New import wins per-key (timestamp_1 updated), old keys not present in the new import are kept (problem_1).
     expect(leadAfterSecond?.customFields).toEqual({ timestamp_1: '1:10', problem_1: 'jump cut', first_name: 'Jamie' });
   });
+
+  it('updates name/company on re-import but never clobbers them with empty values', async () => {
+    await authed('post', '/api/campaigns').send({
+      name: '[TEST] reimport 1',
+      recipients: [{ email: 'reimport@example.com', name: 'Old Name', company: 'Old Co' }],
+    });
+
+    // Re-import with a fresh name but no company: name updates, company survives.
+    await authed('post', '/api/campaigns').send({
+      name: '[TEST] reimport 2',
+      recipients: [{ email: 'reimport@example.com', name: 'New Name', company: '' }],
+    });
+    const lead = [...store.leads.values()].find((l) => l.email === 'reimport@example.com');
+    expect(lead?.name).toBe('New Name');
+    expect(lead?.company).toBe('Old Co');
+  });
 });
 
 describe('GET /api/campaigns/:id/recipients', () => {

@@ -215,6 +215,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
             onCsvLoaded={handleCsvLoaded}
             onMappingChange={setMapping}
             onClearCsv={handleClearCsv}
+            crmSelected={crmLeads}
+            onCrmSelectedChange={setCrmLeads}
           />
         )}
         {step === 2 && <Step2Sequences sequence={sequence} onChange={setSequence} />}

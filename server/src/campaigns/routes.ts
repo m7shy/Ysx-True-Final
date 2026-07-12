@@ -159,7 +159,13 @@ async function upsertRecipientsAsLeads(
     }
     const lead = await db.lead.upsert({
       where: { userId_email: { userId, email: r.email } },
-      update: customFields !== undefined ? { customFields } : {},
+      update: {
+        ...(customFields !== undefined ? { customFields } : {}),
+        // A fresh import is newer info than what's on file — but never
+        // overwrite a real name/company with an empty value.
+        ...(r.name ? { name: r.name } : {}),
+        ...(r.company ? { company: r.company } : {}),
+      },
       create: {
         userId,
         email: r.email,
