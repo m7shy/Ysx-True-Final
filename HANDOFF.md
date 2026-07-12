@@ -1,5 +1,17 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-12 — Closed both campaign-wizard QA gaps (Smartlead-migration blockers)
+
+**What shipped (commit `3af695d` on `phase5-frontend-wiring`, local, NOT pushed):**
+1. **Lead re-import fix (backend):** `upsertRecipientsAsLeads` in `server/src/campaigns/routes.ts` now updates `name`/`company` on the upsert's update branch (skipping empty values so real data is never clobbered). This fixes `{{first_name}}` rendering as the raw email when a CSV is imported over a pre-existing lead. Regression test added in `campaignRoutes.test.ts`. `tsc` clean, **96/96 tests pass**. `server/npm run build` was run — **`server/dist` has the fix; it goes live on the next `nssm restart ysx-backend` (user must run, shell not elevated).**
+2. **"From CRM" tab in wizard Step 1 (frontend):** `src/features/campaigns/steps/Step1ImportLeads.tsx` now has Upload CSV / From CRM tabs. The CRM tab fetches `/api/leads` (existing `fetchLeads` in `services/leadsApi.ts`), offers search + per-lead checkboxes + select-all-filtered, and feeds the wizard's existing `crmLeads` state (same channel as the per-lead compose `initialLead` path — no backend change needed). CSV and CRM selections combine in one campaign.
+
+**Verified:** backend suite green; frontend production build to a scratch dir compiles and contains the new feature strings ("From CRM", search placeholder). Live `dist/` was NOT rebuilt — interactive wizard QA is still pending (login needed; Claude can't enter passwords), and per the standing warning, rebuilding `dist/` is a live deploy AND destroys the revert ground truth.
+
+**To deploy frontend when ready (after QA on the dev server at :3000):** `VITE_API_URL="" npx vite build` at repo root. Backend just needs the service restart noted above.
+
+**Still open (carried over):** push decision for the now-4 local commits on `phase5-frontend-wiring`; F1 remnants (Gmail app password, Microsoft client secret); ~193 pre-existing frontend tsc errors; interactive post-login QA of the restored wizard wiring + this new CRM tab.
+
 ## 2026-07-11 (evening) — Repo integrity sweep: 4 reverted files repaired, wizard re-wired, dev CORS fixed
 
 **Context:** Ran the deliberate whole-repo integrity sweep planned in `bug-hunt-prompt.md` (hunting for more files silently reverted by the git-filter-repo incident, or never committed). Full evidence trail is in **`INTEGRITY-REPORT.md` (repo root) — read it alongside this entry.** Plan file (approved): `C:\Users\banjigum1\.claude\plans\rad-handoff-file-and-happy-cocoa.md`. Sweep + low-risk fixes ran on Sonnet 5; the App.tsx reconstruction ran on Fable 5.
