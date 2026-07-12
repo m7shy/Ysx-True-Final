@@ -32,7 +32,7 @@ const LoginScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row font-sans overflow-hidden">
+    <div className="min-h-screen bg-canvas flex flex-col lg:flex-row font-sans overflow-hidden">
       {/* Left Side - Hero / Info */}
       <div className="flex-1 bg-gradient-to-br from-slate-900 via-brand-900 to-slate-900 p-8 lg:p-16 flex flex-col justify-between text-white relative overflow-hidden">
         <div className="absolute top-0 left-0 w-64 h-64 bg-brand-500/10 rounded-full -translate-x-1/2 -translate-y-1/2 blur-3xl animate-float" />
@@ -100,26 +100,26 @@ const LoginScreen: React.FC = () => {
       </div>
 
       {/* Right Side - Login / Signup Form */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-white relative">
+      <div className="flex-1 flex items-center justify-center p-8 bg-transparent relative">
         <div className="max-w-md w-full space-y-8 animate-in slide-in-from-bottom-8 fade-in duration-700 fill-mode-forwards">
           <div className="text-center lg:text-left">
-            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">
+            <h2 className="text-3xl font-bold text-white tracking-tight">
               {mode === 'LOGIN' ? 'Welcome Back' : 'Create Your Account'}
             </h2>
-            <p className="mt-2 text-slate-500">
+            <p className="mt-2 text-slate-400">
               {mode === 'LOGIN' ? 'Sign in to manage your campaigns.' : 'Sign up to start automating your outreach.'}
             </p>
           </div>
 
-          <div className="bg-slate-50 rounded-2xl border border-slate-100 shadow-sm p-6 hover:shadow-md transition-shadow duration-300">
-            <div className="flex space-x-1 p-1 bg-slate-200/50 rounded-lg mb-6">
+          <div className="glass rounded-2xl p-6 hover:shadow-glow transition-shadow duration-300">
+            <div className="flex space-x-1 p-1 bg-white/5 rounded-lg mb-6">
               {(['LOGIN', 'SIGNUP'] as Mode[]).map((m) => (
                 <button
                   key={m}
                   type="button"
                   onClick={() => { setMode(m); setError(null); }}
                   className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
-                    mode === m ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    mode === m ? 'bg-white/15 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
                   {m === 'LOGIN' ? 'Log In' : 'Sign Up'}
@@ -129,7 +129,7 @@ const LoginScreen: React.FC = () => {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Email</label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">Email</label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
                   <input
@@ -139,13 +139,13 @@ const LoginScreen: React.FC = () => {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@company.com"
-                    className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
+                    className="w-full pl-9 pr-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-brand-500 outline-none transition-shadow duration-300"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Password</label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">Password</label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
                   <input
@@ -156,13 +156,13 @@ const LoginScreen: React.FC = () => {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="At least 8 characters"
-                    className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
+                    className="w-full pl-9 pr-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-brand-500 outline-none transition-shadow duration-300"
                   />
                 </div>
               </div>
 
               {error && (
-                <div className="flex items-start space-x-2 p-3 bg-red-50 border border-red-100 rounded-lg text-red-700 text-xs">
+                <div className="flex items-start space-x-2 p-3 bg-red-500/10 border border-red-400/20 rounded-lg text-red-300 text-xs">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>{error}</span>
                 </div>
@@ -186,10 +186,10 @@ const LoginScreen: React.FC = () => {
             </form>
           </div>
 
-          <div className="flex justify-center space-x-6 text-xs font-medium text-slate-400 pt-8 border-t border-slate-100">
-            <a href="#" className="hover:text-slate-600 transition-colors hover:underline">Privacy Policy</a>
-            <a href="#" className="hover:text-slate-600 transition-colors hover:underline">Terms of Service</a>
-            <a href="#" className="hover:text-slate-600 transition-colors hover:underline">Help Center</a>
+          <div className="flex justify-center space-x-6 text-xs font-medium text-slate-500 pt-8 border-t border-white/10">
+            <a href="#" className="hover:text-slate-300 transition-colors duration-300 hover:underline">Privacy Policy</a>
+            <a href="#" className="hover:text-slate-300 transition-colors duration-300 hover:underline">Terms of Service</a>
+            <a href="#" className="hover:text-slate-300 transition-colors duration-300 hover:underline">Help Center</a>
           </div>
         </div>
       </div>

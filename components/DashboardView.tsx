@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { useSettings } from '../context/SettingsContext';
 import { useEmailProvider } from '../hooks/useEmailProvider';
 import { Email, EmailStatus } from '../types';
@@ -7,10 +8,20 @@ import EmailCard from './EmailCard';
 import { ComposeFollowUp } from './ComposeFollowUp';
 import { Search, X, Filter, User, Calendar, AlertCircle, CalendarClock, CheckCircle2, Mail, RefreshCcw, RotateCcw, ChevronLeft } from 'lucide-react';
 import { useNotification } from '../context/NotificationContext';
+import { EASE, staggerDelay, MaskedReveal } from './motion/primitives';
 
 interface DashboardViewProps {
   // Pass any necessary props or callbacks
 }
+
+type StatKey = 'NO_REPLY' | 'SCHEDULED' | 'REPLIED' | 'ALL';
+
+const STAT_CARDS: { key: StatKey; label: string; valueClass: string; icon: any; iconClass: string }[] = [
+  { key: 'NO_REPLY', label: 'Pending', valueClass: 'text-amber-400', icon: AlertCircle, iconClass: 'text-amber-900/40 group-hover:text-amber-400' },
+  { key: 'SCHEDULED', label: 'Scheduled', valueClass: 'text-purple-400', icon: CalendarClock, iconClass: 'text-purple-900/40 group-hover:text-purple-400' },
+  { key: 'REPLIED', label: 'Replied', valueClass: 'text-green-400', icon: CheckCircle2, iconClass: 'text-green-900/40 group-hover:text-green-400' },
+  { key: 'ALL', label: 'Total', valueClass: 'text-slate-300', icon: Mail, iconClass: 'text-slate-700/60 group-hover:text-slate-400' },
+];
 
 export const DashboardView: React.FC<DashboardViewProps> = () => {
   const { settings } = useSettings();
@@ -20,7 +31,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'ALL' | 'NO_REPLY' | 'SCHEDULED' | 'REPLIED'>('NO_REPLY');
   const [searchQuery, setSearchQuery] = useState('');
-  
+
   // Advanced Filtering State
   const [showFilters, setShowFilters] = useState(false);
   const [senderFilter, setSenderFilter] = useState('');
@@ -35,6 +46,9 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     replied: emails.filter(e => e.status === EmailStatus.REPLIED).length,
     scheduled: emails.filter(e => e.status === EmailStatus.SCHEDULED).length
   };
+
+  const statValue = (key: StatKey) =>
+    key === 'NO_REPLY' ? stats.pending : key === 'SCHEDULED' ? stats.scheduled : key === 'REPLIED' ? stats.replied : stats.total;
 
   const selectedEmail = emails.find(e => e.id === selectedEmailId);
 
@@ -110,7 +124,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           const currentIndex = filteredEmails.findIndex(mail => mail.id === selectedEmailId);
           let prevIndex = 0;
           if (currentIndex === -1) {
-            prevIndex = 0; 
+            prevIndex = 0;
           } else if (currentIndex > 0) {
             prevIndex = currentIndex - 1;
           } else {
@@ -128,9 +142,9 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
   const handleActionComplete = async (date?: string, content?: string) => {
     if (!selectedEmailId || !selectedEmail) return;
-    
+
     const body = content || "Follow-up content";
-    
+
     try {
       await sendFollowUp(selectedEmail, body, date);
       setSelectedEmailId(null);
@@ -148,57 +162,40 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   return (
     <div className="flex h-full flex-col">
       {/* Dashboard Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-slate-200 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800/50 backdrop-blur-sm">
-        <div 
-          onClick={() => { setFilter('NO_REPLY'); setSearchQuery(''); }}
-          className={`bg-slate-50 dark:bg-transparent p-3 md:p-4 flex items-center justify-between group hover:bg-white dark:hover:bg-slate-800/40 transition-all cursor-pointer animate-in slide-in-from-top-4 fade-in duration-500 ${filter === 'NO_REPLY' && !searchQuery ? 'bg-white dark:bg-slate-800/60 shadow-[inset_0_-2px_0_0_#0ea5e9] dark:shadow-[inset_0_-2px_0_0_#0ea5e9]' : ''}`} 
-          style={{animationDelay: '0.1s'}}
-        >
-          <div className="min-w-0">
-            <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 uppercase truncate">Pending</p>
-            <p className="text-lg md:text-2xl font-bold text-amber-600 dark:text-amber-500 transition-transform group-hover:scale-105 origin-left">{stats.pending}</p>
-          </div>
-          <AlertCircle className="w-5 h-5 md:w-8 md:h-8 text-amber-200 dark:text-amber-900/30 group-hover:text-amber-400 transition-colors shrink-0 ml-2" />
-        </div>
-        <div 
-          onClick={() => { setFilter('SCHEDULED'); setSearchQuery(''); }}
-          className={`bg-slate-50 dark:bg-transparent p-3 md:p-4 flex items-center justify-between group hover:bg-white dark:hover:bg-slate-800/40 transition-all cursor-pointer animate-in slide-in-from-top-4 fade-in duration-500 ${filter === 'SCHEDULED' && !searchQuery ? 'bg-white dark:bg-slate-800/60 shadow-[inset_0_-2px_0_0_#a855f7] dark:shadow-[inset_0_-2px_0_0_#a855f7]' : ''}`} 
-          style={{animationDelay: '0.2s'}}
-        >
-          <div className="min-w-0">
-            <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 uppercase truncate">Scheduled</p>
-            <p className="text-lg md:text-2xl font-bold text-purple-600 dark:text-purple-500 transition-transform group-hover:scale-105 origin-left">{stats.scheduled}</p>
-          </div>
-          <CalendarClock className="w-5 h-5 md:w-8 md:h-8 text-purple-200 dark:text-purple-900/30 group-hover:text-purple-400 transition-colors shrink-0 ml-2" />
-        </div>
-        <div 
-          onClick={() => { setFilter('REPLIED'); setSearchQuery(''); }}
-          className={`bg-slate-50 dark:bg-transparent p-3 md:p-4 flex items-center justify-between group hover:bg-white dark:hover:bg-slate-800/40 transition-all cursor-pointer animate-in slide-in-from-top-4 fade-in duration-500 ${filter === 'REPLIED' && !searchQuery ? 'bg-white dark:bg-slate-800/60 shadow-[inset_0_-2px_0_0_#22c55e] dark:shadow-[inset_0_-2px_0_0_#22c55e]' : ''}`} 
-          style={{animationDelay: '0.3s'}}
-        >
-          <div className="min-w-0">
-            <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 uppercase truncate">Replied</p>
-            <p className="text-lg md:text-2xl font-bold text-green-600 dark:text-green-500 transition-transform group-hover:scale-105 origin-left">{stats.replied}</p>
-          </div>
-          <CheckCircle2 className="w-5 h-5 md:w-8 md:h-8 text-green-200 dark:text-green-900/30 group-hover:text-green-400 transition-colors shrink-0 ml-2" />
-        </div>
-        <div 
-          onClick={() => { setFilter('ALL'); setSearchQuery(''); }}
-          className={`bg-slate-50 dark:bg-transparent p-3 md:p-4 flex items-center justify-between group hover:bg-white dark:hover:bg-slate-800/40 transition-all cursor-pointer animate-in slide-in-from-top-4 fade-in duration-500 ${filter === 'ALL' && !searchQuery ? 'bg-white dark:bg-slate-800/60 shadow-[inset_0_-2px_0_0_#64748b] dark:shadow-[inset_0_-2px_0_0_#64748b]' : ''}`} 
-          style={{animationDelay: '0.4s'}}
-        >
-          <div className="min-w-0">
-            <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 uppercase truncate">Total</p>
-            <p className="text-lg md:text-2xl font-bold text-slate-700 dark:text-slate-300 transition-transform group-hover:scale-105 origin-left">{stats.total}</p>
-          </div>
-          <Mail className="w-5 h-5 md:w-8 md:h-8 text-slate-200 dark:text-slate-700/50 group-hover:text-slate-400 transition-colors shrink-0 ml-2" />
-        </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-white/5 border-b border-white/10 backdrop-blur-sm">
+        {STAT_CARDS.map((card, i) => {
+          const isActive = filter === card.key && !searchQuery;
+          const Icon = card.icon;
+          return (
+            <motion.div
+              key={card.key}
+              initial={{ opacity: 0, y: -12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, ease: EASE, delay: 0.1 + i * 0.05 }}
+              onClick={() => { setFilter(card.key); setSearchQuery(''); }}
+              className={`relative bg-canvas/60 p-3 md:p-4 flex items-center justify-between group hover:bg-white/5 transition-colors duration-300 cursor-pointer ${isActive ? 'bg-white/5' : ''}`}
+            >
+              <div className="min-w-0">
+                <p className="text-[10px] md:text-xs font-medium text-slate-400 uppercase truncate">{card.label}</p>
+                <p className={`text-lg md:text-2xl font-bold ${card.valueClass} transition-transform group-hover:scale-105 origin-left duration-300`}>{statValue(card.key)}</p>
+              </div>
+              <Icon className={`w-5 h-5 md:w-8 md:h-8 ${card.iconClass} transition-colors duration-300 shrink-0 ml-2`} />
+              {isActive && (
+                <motion.div
+                  layoutId="activeStatIndicator"
+                  transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
+                  className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-500 shadow-glow"
+                />
+              )}
+            </motion.div>
+          );
+        })}
       </div>
 
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Panel: List View */}
-        <div className={`${selectedEmailId ? 'hidden md:flex md:w-1/2 lg:w-2/5' : 'flex w-full'} border-r border-slate-200 dark:border-slate-800/50 flex-col bg-white dark:bg-transparent animate-in slide-in-from-left duration-300`}>
-          <div className="p-3 md:p-4 border-b border-slate-200 dark:border-slate-800/50 bg-white dark:bg-slate-950/40 backdrop-blur-sm sticky top-0 z-10 shadow-sm dark:shadow-none">
+        <div className={`${selectedEmailId ? 'hidden md:flex md:w-1/2 lg:w-2/5' : 'flex w-full'} border-r border-white/10 flex-col bg-transparent`}>
+          <div className="p-3 md:p-4 border-b border-white/10 bg-white/5 backdrop-blur-sm sticky top-0 z-10">
             {/* Mobile Search Bar */}
             <div className="md:hidden mb-3 relative">
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
@@ -207,92 +204,116 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 placeholder="Search emails..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-brand-500 outline-none"
+                className="w-full pl-9 pr-4 py-2 border border-white/10 rounded-lg bg-white/5 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-brand-500 outline-none transition-shadow duration-300"
               />
             </div>
 
             <div className="flex space-x-2 mb-2 overflow-x-auto no-scrollbar pb-1 md:pb-0">
-              {['NO_REPLY', 'SCHEDULED', 'REPLIED', 'ALL'].map((f) => (
-                <button 
-                  key={f}
-                  onClick={() => { setFilter(f as any); setSearchQuery(''); }}
-                  className={`flex-shrink-0 flex-1 text-xs font-medium px-3 py-1.5 rounded-md transition-all duration-200 active:scale-95 whitespace-nowrap ${filter === f && !searchQuery ? 'bg-slate-800 text-white shadow-md dark:bg-slate-800 dark:shadow-glow border border-transparent dark:border-slate-700' : 'bg-slate-100 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
-                >
-                  {f === 'NO_REPLY' ? 'Pending' : f === 'SCHEDULED' ? 'Sched' : f === 'REPLIED' ? 'Replied' : 'All'}
-                </button>
-              ))}
-              <button 
+              {(['NO_REPLY', 'SCHEDULED', 'REPLIED', 'ALL'] as const).map((f) => {
+                const isActive = filter === f && !searchQuery;
+                return (
+                  <button
+                    key={f}
+                    onClick={() => { setFilter(f); setSearchQuery(''); }}
+                    className={`relative flex-shrink-0 flex-1 text-xs font-medium px-3 py-1.5 rounded-md transition-colors duration-300 active:scale-95 whitespace-nowrap ${isActive ? 'text-white' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200'}`}
+                  >
+                    {isActive && (
+                      <motion.div
+                        layoutId="activeQuickFilter"
+                        transition={{ type: 'spring', bounce: 0.2, duration: 0.5 }}
+                        className="absolute inset-0 rounded-md bg-white/10 border border-white/10 shadow-glow"
+                      />
+                    )}
+                    <span className="relative z-10">{f === 'NO_REPLY' ? 'Pending' : f === 'SCHEDULED' ? 'Sched' : f === 'REPLIED' ? 'Replied' : 'All'}</span>
+                  </button>
+                );
+              })}
+              <button
                 onClick={() => setShowFilters(!showFilters)}
-                className={`px-2.5 rounded-md transition-colors flex-shrink-0 ${showFilters || senderFilter || dateRange.start || dateRange.end ? 'bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 border border-brand-200 dark:border-brand-800' : 'bg-slate-100 dark:bg-slate-800/50 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                className={`px-2.5 rounded-md transition-colors duration-300 flex-shrink-0 ${showFilters || senderFilter || dateRange.start || dateRange.end ? 'bg-brand-900/30 text-brand-400 border border-brand-800' : 'bg-white/5 text-slate-500 hover:text-slate-300'}`}
                 title="Filter Options"
               >
                 <Filter className="w-4 h-4" />
               </button>
             </div>
 
-            {(showFilters || senderFilter || dateRange.start || dateRange.end) && (
-              <div className={`mb-2 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-800 p-3 space-y-3 animate-in slide-in-from-top-2 text-sm ${!showFilters ? 'hidden' : ''}`}>
-                <div className="flex items-center space-x-2">
-                   <div className="w-8 h-8 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
-                     <User className="w-4 h-4 text-slate-400" />
-                   </div>
-                   <input 
-                      type="text" 
-                      placeholder="Filter by sender..."
-                      value={senderFilter}
-                      onChange={(e) => setSenderFilter(e.target.value)}
-                      className="w-full p-1.5 bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded outline-none focus:border-brand-500 text-slate-700 dark:text-slate-200 placeholder-slate-400"
-                   />
-                </div>
-                <div className="flex items-center space-x-2">
-                   <div className="w-8 h-8 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
-                     <Calendar className="w-4 h-4 text-slate-400" />
-                   </div>
-                   <div className="flex-1 flex items-center space-x-2">
-                     <input 
-                        type="date" 
-                        value={dateRange.start}
-                        onChange={(e) => setDateRange(prev => ({...prev, start: e.target.value}))}
-                        className="w-full p-1.5 bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded outline-none focus:border-brand-500 text-slate-700 dark:text-slate-200 text-xs"
-                     />
-                     <span className="text-slate-400">-</span>
-                     <input 
-                        type="date" 
-                        value={dateRange.end}
-                        onChange={(e) => setDateRange(prev => ({...prev, end: e.target.value}))}
-                        className="w-full p-1.5 bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded outline-none focus:border-brand-500 text-slate-700 dark:text-slate-200 text-xs"
-                     />
-                   </div>
-                </div>
-                {(senderFilter || dateRange.start || dateRange.end) && (
-                  <button 
-                    onClick={() => { setSenderFilter(''); setDateRange({start:'', end:''}); }}
-                    className="w-full py-1 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 bg-slate-100 dark:bg-slate-800/50 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-                  >
-                    Clear Advanced Filters
-                  </button>
-                )}
-              </div>
-            )}
+            <AnimatePresence initial={false}>
+              {(showFilters || senderFilter || dateRange.start || dateRange.end) && showFilters && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.3, ease: EASE }}
+                  className="overflow-hidden"
+                >
+                  <div className="mb-2 bg-white/5 rounded-lg border border-white/10 p-3 space-y-3 text-sm">
+                    <div className="flex items-center space-x-2">
+                       <div className="w-8 h-8 rounded bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                         <User className="w-4 h-4 text-slate-400" />
+                       </div>
+                       <input
+                          type="text"
+                          placeholder="Filter by sender..."
+                          value={senderFilter}
+                          onChange={(e) => setSenderFilter(e.target.value)}
+                          className="w-full p-1.5 bg-white/5 border border-white/10 rounded outline-none focus:border-brand-500 text-slate-200 placeholder-slate-500 transition-colors duration-300"
+                       />
+                    </div>
+                    <div className="flex items-center space-x-2">
+                       <div className="w-8 h-8 rounded bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                         <Calendar className="w-4 h-4 text-slate-400" />
+                       </div>
+                       <div className="flex-1 flex items-center space-x-2">
+                         <input
+                            type="date"
+                            value={dateRange.start}
+                            onChange={(e) => setDateRange(prev => ({...prev, start: e.target.value}))}
+                            className="w-full p-1.5 bg-white/5 border border-white/10 rounded outline-none focus:border-brand-500 text-slate-200 text-xs transition-colors duration-300"
+                         />
+                         <span className="text-slate-500">-</span>
+                         <input
+                            type="date"
+                            value={dateRange.end}
+                            onChange={(e) => setDateRange(prev => ({...prev, end: e.target.value}))}
+                            className="w-full p-1.5 bg-white/5 border border-white/10 rounded outline-none focus:border-brand-500 text-slate-200 text-xs transition-colors duration-300"
+                         />
+                       </div>
+                    </div>
+                    {(senderFilter || dateRange.start || dateRange.end) && (
+                      <button
+                        onClick={() => { setSenderFilter(''); setDateRange({start:'', end:''}); }}
+                        className="w-full py-1 text-xs text-slate-400 hover:text-slate-200 bg-white/5 rounded hover:bg-white/10 transition-colors duration-300"
+                      >
+                        Clear Advanced Filters
+                      </button>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {appError && (
-              <div className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 p-3 rounded-lg text-xs flex items-start animate-in fade-in">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="mt-2 bg-red-500/10 border border-red-400/20 text-red-300 p-3 rounded-lg text-xs flex items-start"
+              >
                 <AlertCircle className="w-4 h-4 mr-2 shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <p className="font-medium">{appError.message}</p>
                 </div>
-              </div>
+              </motion.div>
             )}
 
             {searchQuery && (
-              <div className="mt-2 text-xs text-brand-600 dark:text-brand-400 font-medium flex items-center animate-in fade-in">
+              <div className="mt-2 text-xs text-brand-400 font-medium flex items-center">
                 <Search className="w-3 h-3 mr-1" />
                 Results for "{searchQuery}"
               </div>
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto bg-white dark:bg-transparent scroll-smooth custom-scrollbar">
+          <div className="flex-1 overflow-y-auto bg-transparent scroll-smooth custom-scrollbar">
             {loading ? (
               <div className="flex flex-col items-center justify-center h-40 space-y-3 animate-pulse">
                 <RefreshCcw className="w-6 h-6 text-brand-500 animate-spin" />
@@ -300,87 +321,113 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               </div>
             ) : (
               filteredEmails.map((email, index) => (
-                <div key={email.id} style={{ animationDelay: `${index * 0.05}s` }} className="animate-in fade-in slide-in-from-bottom-2 fill-mode-backwards">
-                  <EmailCard 
-                    email={email} 
+                <motion.div
+                  key={email.id}
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.5, ease: EASE, delay: staggerDelay(index) }}
+                >
+                  <EmailCard
+                    email={email}
                     isSelected={selectedEmailId === email.id}
                     onClick={() => setSelectedEmailId(email.id)}
                   />
-                </div>
+                </motion.div>
               ))
             )}
             {!loading && filteredEmails.length === 0 && (
-              <div className="p-8 text-center text-slate-500 dark:text-slate-400 text-sm animate-in fade-in zoom-in-95">
-                {searchQuery 
-                  ? 'No emails found matching your search.' 
+              <motion.div
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.4, ease: EASE }}
+                className="p-8 text-center text-slate-400 text-sm"
+              >
+                {searchQuery
+                  ? 'No emails found matching your search.'
                   : 'No emails found matching your filters.'}
-              </div>
+              </motion.div>
             )}
           </div>
         </div>
 
         {/* Right Panel: Detail View */}
-        <div className={`${selectedEmailId ? 'absolute inset-0 z-30 md:static md:w-1/2 lg:w-3/5 block' : 'hidden md:block md:w-1/2 lg:w-3/5'} bg-slate-50 dark:bg-transparent relative overflow-hidden flex flex-col`}>
-          {selectedEmail ? (
-            <div className="absolute inset-0 flex flex-col bg-white dark:bg-slate-950/90 backdrop-blur-md md:bg-transparent">
-              <div className="flex-1 p-4 md:p-8 overflow-y-auto animate-in slide-in-from-right duration-300 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-700">
-                {/* Mobile Back Button */}
-                <button 
-                  onClick={() => setSelectedEmailId(null)}
-                  className="md:hidden mb-4 flex items-center text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white p-2 -ml-2 rounded-lg active:bg-slate-100 dark:active:bg-slate-800"
-                >
-                  <ChevronLeft className="w-4 h-4 mr-1" />
-                  Back to List
-                </button>
-
-                <div className="bg-white dark:bg-slate-900/60 shadow-sm border border-slate-200 dark:border-slate-700/50 rounded-xl p-5 md:p-8 mb-6 transition-shadow hover:shadow-md">
-                  <div className="flex justify-between items-start mb-6">
-                      <div>
-                        <h2 className="text-lg md:text-xl font-bold text-slate-900 dark:text-white mb-2 leading-snug break-words">{selectedEmail.subject}</h2>
-                        <div className="flex flex-wrap items-center text-sm text-slate-500 dark:text-slate-400 gap-y-1 gap-x-2">
-                          <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-slate-600 dark:text-slate-300 truncate max-w-[200px]">To: {selectedEmail.recipientName}</span>
-                          <span className="hidden md:inline text-slate-300 dark:text-slate-600">•</span>
-                          <span>{new Date(selectedEmail.sentDate).toLocaleDateString()}</span>
-                        </div>
-                      </div>
-                      <div className="hidden md:block bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 px-3 py-1 rounded-full text-xs font-medium shadow-sm shrink-0 ml-2">
-                        {selectedEmail.provider === 'GMAIL' ? 'Gmail' : selectedEmail.provider === 'ZOHO' ? 'Zoho' : 'Original'}
-                      </div>
-                  </div>
-                  <div className="prose prose-slate dark:prose-invert prose-sm max-w-none text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed break-words">
-                    {selectedEmail.body}
-                  </div>
-                </div>
-
-                <div className="flex justify-center pb-24 md:pb-0">
-                  <button 
-                    className="hidden md:flex items-center space-x-2 text-slate-400 dark:text-slate-500 text-sm opacity-50 cursor-default"
+        <div className={`${selectedEmailId ? 'absolute inset-0 z-30 md:static md:w-1/2 lg:w-3/5 block' : 'hidden md:block md:w-1/2 lg:w-3/5'} bg-transparent relative overflow-hidden flex flex-col`}>
+          <AnimatePresence mode="wait">
+            {selectedEmail ? (
+              <motion.div
+                key={selectedEmail.id}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                transition={{ duration: 0.3, ease: EASE }}
+                className="absolute inset-0 flex flex-col bg-canvas/90 backdrop-blur-md md:bg-transparent"
+              >
+                <div className="flex-1 p-4 md:p-8 overflow-y-auto custom-scrollbar">
+                  {/* Mobile Back Button */}
+                  <button
+                    onClick={() => setSelectedEmailId(null)}
+                    className="md:hidden mb-4 flex items-center text-sm font-medium text-slate-300 hover:text-white p-2 -ml-2 rounded-lg active:bg-white/10 transition-colors duration-300"
                   >
-                    <span>Email selected. Use panel to reply.</span>
+                    <ChevronLeft className="w-4 h-4 mr-1" />
+                    Back to List
                   </button>
-                </div>
-              </div>
 
-              <div className="absolute inset-0 z-20 pointer-events-none">
-                <div className="pointer-events-auto h-full">
-                  <ComposeFollowUp 
-                      email={selectedEmail} 
-                      onClose={() => setSelectedEmailId(null)}
-                      onComplete={handleActionComplete}
-                      signature={settings.emailSignature}
-                      defaultTone={settings.defaultTone}
-                  />
+                  <MaskedReveal className="glass rounded-xl p-5 md:p-8 mb-6 transition-shadow duration-300 hover:shadow-glow">
+                    <div className="flex justify-between items-start mb-6">
+                        <div>
+                          <h2 className="text-lg md:text-xl font-bold text-white mb-2 leading-snug break-words">{selectedEmail.subject}</h2>
+                          <div className="flex flex-wrap items-center text-sm text-slate-400 gap-y-1 gap-x-2">
+                            <span className="bg-white/10 px-2 py-0.5 rounded text-slate-300 truncate max-w-[200px]">To: {selectedEmail.recipientName}</span>
+                            <span className="hidden md:inline text-slate-600">•</span>
+                            <span>{new Date(selectedEmail.sentDate).toLocaleDateString()}</span>
+                          </div>
+                        </div>
+                        <div className="hidden md:block bg-white/10 text-slate-300 px-3 py-1 rounded-full text-xs font-medium shrink-0 ml-2">
+                          {selectedEmail.provider === 'GMAIL' ? 'Gmail' : selectedEmail.provider === 'ZOHO' ? 'Zoho' : 'Original'}
+                        </div>
+                    </div>
+                    <div className="prose prose-invert prose-sm max-w-none text-slate-300 whitespace-pre-wrap leading-relaxed break-words">
+                      {selectedEmail.body}
+                    </div>
+                  </MaskedReveal>
+
+                  <div className="flex justify-center pb-24 md:pb-0">
+                    <button
+                      className="hidden md:flex items-center space-x-2 text-slate-500 text-sm opacity-50 cursor-default"
+                    >
+                      <span>Email selected. Use panel to reply.</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </div>
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 p-8 animate-in fade-in zoom-in-95 duration-500">
-              <div className="w-16 h-16 md:w-20 md:h-20 bg-slate-200/50 dark:bg-slate-800/30 rounded-full flex items-center justify-center mb-6 animate-bounce-slow backdrop-blur-sm">
-                <Mail className="w-8 h-8 md:w-10 md:h-10 text-slate-400/70 dark:text-slate-500/70" />
-              </div>
-              <p className="text-base md:text-lg font-medium text-slate-600 dark:text-slate-300 text-center">Select an email to view details</p>
-            </div>
-          )}
+
+                <div className="absolute inset-0 z-20 pointer-events-none">
+                  <div className="pointer-events-auto h-full">
+                    <ComposeFollowUp
+                        email={selectedEmail}
+                        onClose={() => setSelectedEmailId(null)}
+                        onComplete={handleActionComplete}
+                        signature={settings.emailSignature}
+                        defaultTone={settings.defaultTone}
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="empty"
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                transition={{ duration: 0.5, ease: EASE }}
+                className="h-full flex flex-col items-center justify-center text-slate-500 p-8"
+              >
+                <div className="w-16 h-16 md:w-20 md:h-20 bg-white/5 border border-white/10 rounded-full flex items-center justify-center mb-6 backdrop-blur-sm">
+                  <Mail className="w-8 h-8 md:w-10 md:h-10 text-slate-500/70" />
+                </div>
+                <p className="text-base md:text-lg font-medium text-slate-300 text-center">Select an email to view details</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
     </div>
