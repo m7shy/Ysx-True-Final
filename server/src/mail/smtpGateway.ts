@@ -54,6 +54,8 @@ export interface SmtpSendInput {
   inReplyTo?: string;
   references?: string;
   attachments?: any[];
+  /** Extra RFC-822 headers (e.g. List-Unsubscribe on campaign sends). */
+  headers?: Record<string, string>;
 }
 
 export async function sendSmtpMail(userId: string, provider: WireProvider, input: SmtpSendInput): Promise<string> {
@@ -96,6 +98,7 @@ async function sendViaConnection(conn: MailboxConnection, input: SmtpSendInput):
     inReplyTo: input.inReplyTo,
     references: input.references,
     attachments: input.attachments,
+    headers: input.headers,
     // Microsoft SMTP can be slow to connect/greet.
     connectionTimeout: provider === 'microsoft' ? 60000 : undefined,
     greetingTimeout: provider === 'microsoft' ? 60000 : undefined,

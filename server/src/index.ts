@@ -20,6 +20,7 @@ import uniboxRouter from './unibox/routes.js';
 import scraperRouter from './scraper/routes.js';
 import analyticsRouter from './analytics/routes.js';
 import trackingRouter from './campaigns/trackingRoutes.js';
+import { unsubscribeHeaders, unsubscribeUrlForRecipient } from './campaigns/trackedHtml.js';
 
 import { LeadStatus } from '@prisma/client';
 import { prisma } from './db/prisma.js';
@@ -62,6 +63,14 @@ app.use(
   })
 );
 
+// Campaign open/click tracking pixel + click redirect + one-click unsubscribe —
+// deliberately unauthenticated (the recipient's mail client has no session);
+// HMAC-signed tokens (campaigns/trackingToken.ts) stand in for auth. Mounted
+// BEFORE the global rate limiter: a burst of legitimate opens (e.g. a mail
+// provider prefetching pixels for a whole send batch from one egress IP) must
+// never be throttled, and RFC 8058 unsubscribe POSTs must always succeed.
+app.use('/t', trackingRouter);
+
 app.use(
   rateLimit({
     windowMs: 60_000,
@@ -83,17 +92,25 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-// Campaign open/click tracking pixel + redirect — deliberately unauthenticated
-// (the recipient's mail client has no session); HMAC-signed tokens
-// (campaigns/trackingToken.ts) stand in for auth. Must be public, so it's
-// mounted before every requireAuth-gated router below.
-app.use('/t', trackingRouter);
-
 // OAuth connect/callback flow (multi-account mailbox consent). Mounted before
 // the auth router so its paths take precedence. The /start leg is gated by
 // requireAuth inside the router; the /callback leg is a provider browser redirect
 // with no Authorization header and is instead protected by the signed `state`.
 app.use('/api/auth/oauth', oauthRouter);
+
+// Credential-stuffing guard: login/signup get a much tighter budget than the
+// global 120/min limiter. Failed attempts only — successful logins don't
+// consume the budget, so a legitimate user can't lock themselves out.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { code: 'RATE_LIMITED', message: 'Too many attempts — try again in a few minutes' },
+});
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/signup', authLimiter);
 
 // Public auth endpoints (signup / login / refresh).
 app.use('/api/auth', authRouter);
@@ -215,6 +232,22 @@ async function sendFollowupJob(job: any) {
   // Threading: if we have original message id, set as reply headers
   const originalMessageId = job.originalMessageId ? String(job.originalMessageId) : undefined;
 
+  // Campaign follow-ups carry the one-click unsubscribe headers, same as the
+  // initial send. The job stores campaignId/leadId, not the recipient row, so
+  // rebuild the URL from the (campaignId, leadId)-unique recipient.
+  let headers: Record<string, string> | undefined;
+  if (job.campaignId && job.leadId) {
+    try {
+      const recipient = await prisma.campaignRecipient.findUnique({
+        where: { campaignId_leadId: { campaignId: String(job.campaignId), leadId: String(job.leadId) } },
+        select: { id: true },
+      });
+      if (recipient) headers = unsubscribeHeaders(unsubscribeUrlForRecipient(recipient.id));
+    } catch (err) {
+      logger.error({ err, id: job.id }, 'Failed to resolve unsubscribe headers for follow-up');
+    }
+  }
+
   const messageId = await sendSmtpMail(userId, provider, {
     to,
     subject,
@@ -225,6 +258,7 @@ async function sendFollowupJob(job: any) {
     inReplyTo: originalMessageId,
     references: originalMessageId,
     attachments: job.attachments,
+    headers,
   });
 
   logger.info({ messageId, id: job.id }, 'Followup sent');

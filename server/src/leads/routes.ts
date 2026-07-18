@@ -1,6 +1,7 @@
 // FILE: server/src/leads/routes.ts
 
 import express, { Request, Response } from 'express';
+import multer from 'multer';
 import { z } from 'zod';
 import { LeadStatus } from '@prisma/client';
 
@@ -47,6 +48,147 @@ router.get('/', async (req: Request, res: Response) => {
     orderBy: { createdAt: 'desc' },
   });
   res.json({ leads });
+});
+
+// ── CSV export / import ──────────────────────────────────────────────────────
+// Both registered BEFORE /:id so the literal paths win the route match.
+// The frontend service (services/leadsApi.ts) has called these paths since the
+// lead-CRUD refactor; the backend halves were never landed until now.
+
+function csvEscape(v: unknown): string {
+  const s = v == null ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** GET /api/leads/export — all of the tenant's leads as leads.csv. */
+router.get('/export', async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+  const leads = await prisma.lead.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } });
+
+  const header = ['name', 'email', 'company', 'status', 'source', 'score', 'notes', 'lastContacted', 'createdAt'];
+  const lines = [header.join(',')];
+  for (const l of leads) {
+    lines.push([
+      csvEscape(l.name),
+      csvEscape(l.email),
+      csvEscape(l.company),
+      csvEscape(l.status),
+      csvEscape(l.source),
+      csvEscape(l.score),
+      csvEscape(l.notes),
+      csvEscape(l.lastContacted?.toISOString()),
+      csvEscape(l.createdAt.toISOString()),
+    ].join(','));
+  }
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="leads.csv"');
+  res.send(lines.join('\n') + '\n');
+});
+
+const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
+
+/** Minimal RFC-4180 parser (quoted fields, embedded commas/newlines). */
+function parseCsv(text: string): Array<Record<string, string>> {
+  const rawRows: string[][] = [];
+  let field = '';
+  let row: string[] = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); field = ''; rawRows.push(row); row = []; }
+    else if (c !== '\r') field += c;
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rawRows.push(row); }
+  if (rawRows.length < 2) return [];
+
+  const header = rawRows[0].map((h) => h.trim().toLowerCase());
+  return rawRows.slice(1)
+    .filter((r) => r.some((v) => v.trim().length > 0))
+    .map((r) => {
+      const obj: Record<string, string> = {};
+      header.forEach((h, idx) => { obj[h] = (r[idx] ?? '').trim(); });
+      return obj;
+    });
+}
+
+/**
+ * POST /api/leads/import-csv — multipart upload (field "file"), header row
+ * required; recognizes name/email/company/source/notes/score columns. Upserts
+ * by email within the tenant: existing leads get their empty fields filled,
+ * never overwritten.
+ */
+router.post('/import-csv', csvUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    const userId = requireUserId(req);
+    const file = req.file;
+    if (!file || file.buffer.length === 0) {
+      res.status(400).json({ code: 'VALIDATION', message: 'A non-empty CSV file is required' });
+      return;
+    }
+
+    const rows = parseCsv(file.buffer.toString('utf8'));
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors: Array<{ row: number; message: string }> = [];
+
+    for (const [i, raw] of rows.entries()) {
+      const email = (raw.email ?? '').trim().toLowerCase();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        skipped++;
+        errors.push({ row: i + 2, message: 'Missing or invalid email' });
+        continue;
+      }
+      const name = (raw.name ?? '').trim() || email.split('@')[0];
+      const score = raw.score && Number.isFinite(Number(raw.score)) ? Math.round(Number(raw.score)) : undefined;
+
+      try {
+        const existing = await prisma.lead.findUnique({ where: { userId_email: { userId, email } } });
+        if (existing) {
+          await prisma.lead.update({
+            where: { id: existing.id },
+            data: {
+              name: existing.name || name,
+              company: existing.company || raw.company || undefined,
+              source: existing.source || raw.source || undefined,
+              notes: existing.notes || raw.notes || undefined,
+              score: existing.score ?? score,
+            },
+          });
+          updated++;
+        } else {
+          await prisma.lead.create({
+            data: {
+              userId,
+              name,
+              email,
+              company: raw.company || undefined,
+              source: raw.source || 'CSV Import',
+              notes: raw.notes || undefined,
+              score,
+              status: LeadStatus.NEW,
+            },
+          });
+          created++;
+        }
+      } catch (err) {
+        skipped++;
+        errors.push({ row: i + 2, message: err instanceof Error ? err.message : 'Row failed' });
+      }
+    }
+
+    res.json({ created, updated, skipped, total: rows.length, errors: errors.slice(0, 20) });
+  } catch (err) {
+    const out = toErrorPayload(err);
+    res.status(out.status).json({ code: out.code, message: out.message });
+  }
 });
 
 /** GET /api/leads/:id */

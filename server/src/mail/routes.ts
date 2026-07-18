@@ -4,7 +4,14 @@ import { ImapFlow } from 'imapflow';
 
 import { requireUserId } from '../auth/middleware.js';
 import { MailError } from '../httpErrors.js';
-import { getMailboxConnection, listMailboxes as listUserMailboxes, deleteMailbox, type WireProvider } from '../creds/mailboxStore.js';
+import {
+  getMailboxConnection,
+  listMailboxes as listUserMailboxes,
+  deleteMailbox,
+  listMailboxSettings,
+  updateMailboxSettings,
+  type WireProvider,
+} from '../creds/mailboxStore.js';
 import { sendSmtpMail } from './smtpGateway.js';
 
 /**
@@ -148,6 +155,53 @@ router.get('/health', async (req: Request, res: Response) => {
         expiresAt: m.expiresAt,
       })),
     });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * List the tenant's mailboxes with rotation settings (no secrets).
+ * GET /api/mail/mailboxes
+ */
+router.get('/mailboxes', async (req: Request, res: Response) => {
+  try {
+    const userId = requireUserId(req);
+    res.json({ mailboxes: await listMailboxSettings(userId) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+const mailboxPatchSchema = z
+  .object({
+    dailyLimit: z.number().int().min(0).max(500).optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((p) => p.dailyLimit !== undefined || p.isActive !== undefined, {
+    message: 'Provide dailyLimit and/or isActive',
+  });
+
+/**
+ * Update a mailbox's rotation settings (daily send limit, active flag).
+ * PATCH /api/mail/mailboxes/:id
+ */
+router.patch('/mailboxes/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = requireUserId(req);
+    const mailboxId = String(req.params.id || '').trim();
+    if (!mailboxId) {
+      throw makeHttpError(400, 'INVALID_INPUT', 'mailbox id is required');
+    }
+    const parsed = mailboxPatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw makeHttpError(400, 'VALIDATION', parsed.error.issues.map((i) => i.message).join('; '));
+    }
+    const updated = await updateMailboxSettings(userId, mailboxId, parsed.data);
+    if (!updated) {
+      throw makeHttpError(404, 'NOT_FOUND', 'No such mailbox is connected for this account');
+    }
+    res.json({ mailbox: updated });
   } catch (err) {
     sendError(res, err);
   }

@@ -135,6 +135,28 @@ export function isHardBounceError(err: unknown): boolean {
   return HARD_BOUNCE_MESSAGE_RE.test(message);
 }
 
+/**
+ * Soft bounce: a 4xx recipient-side rejection (mailbox full, over quota,
+ * greylisting). Still retried like any transient error, but each occurrence
+ * increments Lead.bounceCount; at SOFT_BOUNCE_THRESHOLD the lead flips
+ * isBounced and stops being mailed — see worker.ts's dispatch catch block.
+ * 421/450/451/452 are the RFC 5321 transient-failure codes; the message
+ * regex catches relays that don't surface a clean responseCode.
+ */
+const SOFT_BOUNCE_CODES = new Set([421, 450, 451, 452]);
+const SOFT_BOUNCE_MESSAGE_RE = /mailbox full|over quota|quota exceeded|insufficient (system )?storage|temporarily (deferred|unavailable|rejected)/i;
+
+export const SOFT_BOUNCE_THRESHOLD = 3;
+
+export function isSoftBounceError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  if (isHardBounceError(err)) return false;
+  const responseCode = (err as any).responseCode;
+  if (typeof responseCode === 'number' && SOFT_BOUNCE_CODES.has(responseCode)) return true;
+  const message = err instanceof Error ? err.message : String((err as any).message ?? '');
+  return SOFT_BOUNCE_MESSAGE_RE.test(message);
+}
+
 // ── Mailbox selection (honors Campaign.distributionMethod) ──────────────────
 
 /**

@@ -275,7 +275,60 @@ export async function upsertMailbox(input: {
 
   return prisma.mailbox.upsert({
     where: { userId_email: { userId: input.userId, email } },
-    create: { userId: input.userId, email, ...data },
+    // New mailboxes start with a cold-start-safe daily send budget so campaign
+    // rotation (pickRotationMailbox requires dailyLimit > 0) can use them
+    // immediately. Deliberately absent from `update`: re-authenticating must
+    // not clobber a user-tuned limit.
+    create: { userId: input.userId, email, dailyLimit: DEFAULT_DAILY_LIMIT, ...data },
     update: data,
   });
+}
+
+/** Cold-start-safe default sends/day for a freshly connected mailbox. */
+export const DEFAULT_DAILY_LIMIT = 30;
+
+export interface MailboxSettings {
+  id: string;
+  email: string;
+  provider: WireProvider;
+  isActive: boolean;
+  dailyLimit: number;
+  sentToday: number;
+  lastSentAt: string | null;
+}
+
+function toSettings(m: Mailbox): MailboxSettings {
+  return {
+    id: m.id,
+    email: m.email,
+    provider: toWireProvider(m.provider),
+    isActive: m.isActive,
+    dailyLimit: m.dailyLimit,
+    sentToday: effectiveSentToday(m),
+    lastSentAt: m.lastSentAt?.toISOString() ?? null,
+  };
+}
+
+/** All of a tenant's mailboxes with their rotation settings (no secrets). */
+export async function listMailboxSettings(userId: string): Promise<MailboxSettings[]> {
+  const rows = await prisma.mailbox.findMany({ where: { userId }, orderBy: { email: 'asc' } });
+  return rows.map(toSettings);
+}
+
+/** Update a tenant-owned mailbox's rotation settings. Returns null if not theirs. */
+export async function updateMailboxSettings(
+  userId: string,
+  mailboxId: string,
+  patch: { dailyLimit?: number; isActive?: boolean },
+): Promise<MailboxSettings | null> {
+  const existing = await prisma.mailbox.findFirst({ where: { id: mailboxId, userId } });
+  if (!existing) return null;
+  const updated = await prisma.mailbox.update({
+    where: { id: existing.id },
+    data: {
+      ...(patch.dailyLimit !== undefined ? { dailyLimit: patch.dailyLimit } : {}),
+      ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
+    },
+  });
+  return toSettings(updated);
 }

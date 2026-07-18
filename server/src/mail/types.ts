@@ -55,6 +55,11 @@ export interface SendMailOptions {
   text?: string;
   html?: string;
   attachments?: Attachment[];
+  replyTo?: string;
+  inReplyTo?: string;
+  references?: string;
+  /** Extra RFC-822 headers (e.g. List-Unsubscribe). */
+  headers?: Record<string, string>;
 }
 
 export interface ProviderConfig {

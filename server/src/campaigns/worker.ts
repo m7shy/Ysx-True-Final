@@ -9,7 +9,7 @@ import { recordMailboxSend } from '../creds/mailboxStore.js';
 import { scheduleFollowup } from '../scheduler/followupScheduler.js';
 import { resolveSpintax } from './spintax.js';
 import { renderTemplate } from './variables.js';
-import { buildTrackedEmail } from './trackedHtml.js';
+import { buildTrackedEmail, unsubscribeHeaders } from './trackedHtml.js';
 import {
   isWithinSendWindow,
   pickMailbox,
@@ -17,6 +17,8 @@ import {
   computeNextRetryDelayMs,
   isLimitExceededError,
   isHardBounceError,
+  isSoftBounceError,
+  SOFT_BOUNCE_THRESHOLD,
 } from './engine.js';
 
 /**
@@ -123,6 +125,7 @@ async function dispatchRecipient(
     subject,
     text: tracked.text,
     html: tracked.html,
+    headers: unsubscribeHeaders(tracked.unsubscribeUrl),
   });
 
   await recordMailboxSend(mailbox);
@@ -396,6 +399,34 @@ async function processCampaign(campaign: Campaign): Promise<void> {
         const paused = await handleHardBounce(campaign, recipient, lead, message);
         if (paused) break; // stop dispatching more of this campaign's recipients this tick
         continue;
+      }
+
+      if (isSoftBounceError(err)) {
+        // Soft bounce (mailbox full / greylisting): still retried below like
+        // any transient error, but tracked per lead — at the threshold the
+        // address is treated as undeliverable and permanently skipped.
+        const updatedLead = await prisma.lead.update({
+          where: { id: lead.id },
+          data: { bounceCount: { increment: 1 }, lastBounceAt: new Date() },
+        });
+        if (updatedLead.bounceCount >= SOFT_BOUNCE_THRESHOLD) {
+          await prisma.lead.update({ where: { id: lead.id }, data: { isBounced: true } });
+          await prisma.campaignRecipient.update({
+            where: { id: recipient.id },
+            data: { status: RecipientStatus.FAILED, attemptCount: recipient.attemptCount + 1, lastError: `Soft-bounce threshold reached: ${message}` },
+          });
+          await prisma.trackingEvent.create({
+            data: {
+              userId: campaign.userId,
+              leadId: lead.id,
+              campaignId: campaign.id,
+              type: TrackingEventType.BOUNCED,
+              meta: { message, soft: true },
+            },
+          });
+          logger.warn({ campaignId: campaign.id, leadId: lead.id, bounceCount: updatedLead.bounceCount }, 'Lead flipped isBounced after repeated soft bounces');
+          continue;
+        }
       }
 
       const attemptCount = recipient.attemptCount + 1;

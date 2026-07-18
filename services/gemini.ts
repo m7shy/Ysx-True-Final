@@ -1,4 +1,5 @@
 import { Email, FollowUpTone, GeneratedDraft, SmartCampaignResult, EmailAnalysisResult, BrandBible, StoryIdea, OfferFitAnalysis } from '../types';
+import { apiPost } from './apiClient';
 
 // Replicate SDK Type enum for schema definition compatibility
 const Type = {
@@ -12,29 +13,16 @@ const Type = {
   NULL: 'NULL'
 } as const;
 
-const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
-const PROXY_URL = `${API_URL}/api/gemini/generate`;
-
 const cleanJsonString = (text: string): string => {
   // Remove markdown code block syntax
   return text.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim();
 };
 
-// Helper to call backend proxy
+// Backend proxy (server/src/gemini/routes.ts) — mounted behind requireAuth,
+// so calls must go through apiClient to carry the tenant's JWT.
 const callGeminiProxy = async (model: string, contents: any, config?: any) => {
   try {
-    const response = await fetch(PROXY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, contents, config })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Gemini Proxy Error: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    return data; // Expected { text: "..." }
+    return await apiPost<{ text: string }>('/api/gemini/generate', { model, contents, config });
   } catch (error) {
     console.error("Gemini Proxy Call Failed:", error);
     throw error;
@@ -339,6 +327,66 @@ export const processStoryDump = async (rawText: string): Promise<StoryIdea[]> =>
   } catch (error) {
     console.error("Error processing story dump:", error);
     return [];
+  }
+};
+
+export interface LeadScoreResult {
+  score: number;
+  reasoning: string;
+}
+
+/**
+ * Score a lead 0-100 on fit for a high-ticket video-editing offer, from
+ * whatever real data the CRM holds (scraped channel intelligence, company,
+ * source, notes). Replaces mockZoho.analyzeLead's random scoring.
+ */
+export const scoreLead = async (lead: {
+  name: string;
+  email: string;
+  company?: string;
+  source?: string;
+  notes?: string;
+  intelligence?: Record<string, unknown>;
+}): Promise<LeadScoreResult | null> => {
+  const prompt = `
+    You are scoring a cold-outreach lead for a high-ticket video editing agency
+    that serves YouTube creators and online-business owners.
+
+    Lead data (from a CRM; "intelligence" is scraped YouTube channel metadata when present):
+    ${JSON.stringify({
+      name: lead.name,
+      company: lead.company || undefined,
+      source: lead.source || undefined,
+      notes: lead.notes || undefined,
+      intelligence: lead.intelligence || undefined,
+    }, null, 2)}
+
+    Score 0-100 how strong a prospect this lead is (audience size, content
+    output, monetization signals, niche fit). Be conservative when data is
+    thin — a lead with no signals should score under 40. Give one short
+    sentence of reasoning.
+  `;
+
+  try {
+    const response = await callGeminiProxy('gemini-2.5-flash', prompt, {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.NUMBER },
+            reasoning: { type: Type.STRING }
+          },
+          required: ["score", "reasoning"]
+        }
+    });
+
+    if (!response.text) return null;
+    const parsed = JSON.parse(cleanJsonString(response.text)) as LeadScoreResult;
+    parsed.score = Math.min(100, Math.max(0, Math.round(parsed.score)));
+    return parsed;
+  } catch (error) {
+    console.error("Error scoring lead:", error);
+    return null;
   }
 };
 

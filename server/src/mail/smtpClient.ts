@@ -14,8 +14,9 @@ interface SmtpSendOptions extends SmtpConfig, SendMailOptions {
 }
 
 export async function sendMail(options: SmtpSendOptions): Promise<string> {
-  const { 
+  const {
     host, port = 465, secure = true, auth, from, to, subject, text, html, attachments,
+    replyTo, inReplyTo, references, headers,
     connectionTimeout, greetingTimeout, socketTimeout
   } = options;
 
@@ -84,6 +85,10 @@ export async function sendMail(options: SmtpSendOptions): Promise<string> {
       text,
       html,
       attachments,
+      replyTo,
+      inReplyTo,
+      references,
+      headers,
     });
 
     const duration = performance.now() - start;

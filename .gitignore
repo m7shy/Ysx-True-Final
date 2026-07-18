@@ -32,6 +32,11 @@ scraper/insufficient_content.csv
 scraper/used_keywords.txt
 scraper/backlog_ids.txt
 scraper/.quota_state.json
+scraper/tracking.db
+
+# Manual revert-recovery snapshot of dist/ taken before the dark-UI refactor —
+# deliberately kept out of git, never delete or commit.
+dist_pre_refactor_backup/
 
 *.log
 server.log

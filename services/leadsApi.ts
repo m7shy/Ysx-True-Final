@@ -53,6 +53,23 @@ export const updateLeadNotes = async (id: string, notes: string): Promise<void> 
   await apiPatch(`/api/leads/${id}`, { notes });
 };
 
+/**
+ * Persist an AI fit score. `intelligence`, when given, REPLACES the stored
+ * JSON — callers must pass the merged object (existing intelligence + new
+ * fields), not just the additions.
+ */
+export const updateLeadScore = async (
+  id: string,
+  score: number,
+  intelligence?: Record<string, unknown>,
+): Promise<Lead> => {
+  const data = await apiPatch<{ lead: any }>(`/api/leads/${id}`, {
+    score,
+    ...(intelligence ? { intelligence } : {}),
+  });
+  return toLead(data.lead);
+};
+
 export const deleteLead = async (id: string): Promise<void> => {
   await apiDelete(`/api/leads/${id}`);
 };

@@ -1,5 +1,5 @@
 import { ImapFlow } from 'imapflow';
-import { LeadStatus, type Lead, type Mailbox } from '@prisma/client';
+import { LeadStatus, TrackingEventType, type Lead, type Mailbox } from '@prisma/client';
 
 import { prisma } from '../db/prisma.js';
 import { logger } from '../logger.js';
@@ -64,6 +64,25 @@ async function handleReply(lead: Lead, intent: ReplyIntent): Promise<void> {
       where: { id: campaignId },
       data: { repliedCount: { increment: 1 } },
     });
+  }
+
+  // Durable record for analytics (/api/analytics/summary counts REPLIED
+  // events). campaignId is optional on TrackingEvent; attribute the reply to
+  // the first paused campaign when there is one, else record it campaign-less
+  // (e.g. a manually contacted lead). Never let a failure here abort the
+  // reply handling itself.
+  try {
+    await prisma.trackingEvent.create({
+      data: {
+        userId: lead.userId,
+        leadId: lead.id,
+        campaignId: campaignIds[0] ?? null,
+        type: TrackingEventType.REPLIED,
+        meta: { intent },
+      },
+    });
+  } catch (err) {
+    logger.error({ err, leadId: lead.id }, 'Failed to record REPLIED tracking event');
   }
 
   const intelligence = {
