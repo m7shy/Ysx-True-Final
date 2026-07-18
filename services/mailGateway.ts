@@ -1,12 +1,42 @@
 import { Email, EmailStatus, AppError, AppErrorCode, MailGatewayProviderKey } from '../types';
-import { getAccessToken } from './authStorage';
-import { apiGet } from './apiClient';
+import { getAccessToken, clearAuth } from './authStorage';
+import { apiGet, refreshAccessToken } from './apiClient';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
 
 function authHeaders(): Record<string, string> {
   const token = getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * fetch() with the same silent refresh-and-retry-once-on-401 semantics as
+ * apiClient.ts's apiRequest — needed here (instead of just calling apiGet/
+ * apiPost directly) because handleGatewayError below maps failures to typed,
+ * provider-specific AppErrors that callers depend on, not apiClient's generic
+ * ApiError. Without this, a momentarily-stale access token surfaces as a
+ * false AUTH_ERROR instead of transparently refreshing (see the gwHealth fix
+ * in this same file for the bug this caused in practice).
+ */
+async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const doFetch = () =>
+    fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: { ...init.headers, ...authHeaders() },
+    });
+
+  let res = await doFetch();
+
+  if (res.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      res = await doFetch();
+    } else {
+      clearAuth();
+    }
+  }
+
+  return res;
 }
 
 export interface GatewaySentItem {
@@ -101,9 +131,8 @@ export async function gwHealth(): Promise<boolean> {
 export async function gwFetchSent(provider: MailGatewayProviderKey, limit = 20): Promise<Email[]> {
   const targetProvider = toGatewayErrorProvider(provider);
 
-  const response = await fetch(
-    `${API_URL}/api/mail/sent?provider=${encodeURIComponent(provider)}&limit=${encodeURIComponent(String(limit))}`,
-    { headers: authHeaders() }
+  const response = await authFetch(
+    `/api/mail/sent?provider=${encodeURIComponent(provider)}&limit=${encodeURIComponent(String(limit))}`,
   );
   const data = (await handleGatewayError(response, targetProvider)) as GatewaySentResponse;
   return (data.items || []).map(mapGatewayItemToEmail);
@@ -120,9 +149,9 @@ export interface GwSendInput {
 export async function gwSend(provider: MailGatewayProviderKey, input: GwSendInput): Promise<{ messageId: string }> {
   const targetProvider = toGatewayErrorProvider(provider);
 
-  const response = await fetch(`${API_URL}/api/mail/send`, {
+  const response = await authFetch('/api/mail/send', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       provider,
       to: input.to,

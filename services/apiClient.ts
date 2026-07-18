@@ -14,8 +14,14 @@ export class ApiError extends Error {
 
 let refreshPromise: Promise<boolean> | null = null;
 
-/** Exchange the stored refresh token for a fresh pair. De-duplicated across concurrent 401s. */
-async function refreshAccessToken(): Promise<boolean> {
+/**
+ * Exchange the stored refresh token for a fresh pair. De-duplicated across
+ * concurrent 401s. Exported so other authenticated fetch wrappers (e.g.
+ * services/mailGateway.ts, which needs its own error-mapping on top of the
+ * raw Response) can get the same retry semantics without duplicating the
+ * refresh dance.
+ */
+export async function refreshAccessToken(): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
