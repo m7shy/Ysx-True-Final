@@ -32,7 +32,7 @@ const LoginScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-canvas flex flex-col lg:flex-row font-sans overflow-hidden">
+    <div className="min-h-screen bg-canvas flex flex-col lg:flex-row font-sans overflow-y-auto">
       {/* Left Side - Hero / Info */}
       <div className="flex-1 bg-gradient-to-br from-slate-900 via-brand-900 to-slate-900 p-8 lg:p-16 flex flex-col justify-between text-white relative overflow-hidden">
         <div className="absolute top-0 left-0 w-64 h-64 bg-brand-500/10 rounded-full -translate-x-1/2 -translate-y-1/2 blur-3xl animate-float" />
