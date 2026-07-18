@@ -35,7 +35,7 @@ Both fixes: pushed to `origin/phase5-frontend-wiring`, frontend rebuilt (fronten
 
 **Third fix (`refreshAccessToken` exported from `apiClient.ts`, new commit, not yet numbered above) — `gwFetchSent`/`gwSend` in `services/mailGateway.ts` migrated off the same bare-`fetch` pattern as bug #2**, onto a new local `authFetch()` helper that gets the identical refresh-and-retry semantics while still preserving these two functions' own typed `AppError` mapping (`handleGatewayError`) that `apiGet`/`apiPost` don't provide. `tsc --noEmit` still clean (150 errors, unchanged).
 
-**⚠️ Critical finding while verifying the fix above — NOT part of any fix in this session, needs the user directly:** Testing `gwFetchSent` live (temporarily flipped `useRealApi`/`activeProvider` in localStorage to exercise the real Microsoft gateway path, reverted after) surfaced a real, live production bug: **the connected Microsoft mailbox's OAuth access token expired on 2026-07-11 (a week before this session, 2026-07-18) and cannot be refreshed.** `GET /api/mail/sent?provider=microsoft` returns:
+**⚠️→✅ Critical finding while verifying the fix above, FIXED same session:** Testing `gwFetchSent` live (temporarily flipped `useRealApi`/`activeProvider` in localStorage to exercise the real Microsoft gateway path, reverted after) surfaced a real, live production bug: **the connected Microsoft mailbox's OAuth access token expired on 2026-07-11 (a week before this session, 2026-07-18) and could not be refreshed.** `GET /api/mail/sent?provider=microsoft` was returning:
 
 ```
 401 {"code":"AUTH","message":"Microsoft token refresh failed: AADSTS7000215: Invalid client secret provided.
@@ -43,14 +43,11 @@ Ensure the secret being sent in the request is the client secret value, not the 
 for a secret added to app '7f03ed98-5a4c-43d4-b2ee-de16ab442a36'. ..."}
 ```
 
-This is a very specific, common Azure AD mistake: `server/.env`'s `MICROSOFT_CLIENT_SECRET` appears to hold the secret's **ID**, not its **value** — almost certainly introduced during the F1 credential rotation (this file's earlier entries note Gmail/Microsoft rotation as the still-open F1 item; the Jul 14 `.env` edit the user confirmed as "done" this session was evidently incomplete or made this specific mistake for Microsoft specifically). **Impact: anything touching the Microsoft mailbox via OAuth-refreshed Graph/IMAP access is likely silently failing right now** — campaign sends through that mailbox, unibox reply polling, the sent-mail view. (My earlier fix to `gwHealth()`/`authFetch` is confirmed working correctly here — it did trigger the JWT refresh-and-retry as designed; the persistent 401 survives the retry because the failure is downstream at Microsoft, not in our own auth.)
-
-**Next session must:** go to Azure Portal → App registrations → app `7f03ed98-5a4c-43d4-b2ee-de16ab442a36` → Certificates & secrets, copy the actual secret **value** (not the ID shown in the list), and update `MICROSOFT_CLIENT_SECRET` in `server/.env`, then restart `ysx-backend`. Verify via `GET /api/mail/sent?provider=microsoft&limit=5` (authenticated) returning real sent-item data instead of a 401.
+Root cause: `server/.env`'s `MICROSOFT_CLIENT_SECRET` held the secret's **ID**, not its **value** — introduced during the earlier F1 credential rotation (the Jul 14 `.env` edit this file previously logged as "done" was incomplete for Microsoft specifically). **The user retrieved the correct secret value from Azure Portal and updated `server/.env` directly** (Claude does not handle raw credential values — this was the user's own action, per standing policy). Verified fixed: `GET /api/mail/sent?provider=microsoft&limit=5` now returns `200` with real sent-mail data (confirmed a real email dated 2026-07-18 in the response), and `/api/mail/mailboxes` still shows the mailbox `isActive:true`. Campaign sends, unibox reply polling, and the sent-mail view through this mailbox should all be working again.
 
 **Still open, carried forward:**
 1. **~193 pre-existing frontend `tsc --noEmit` errors** (now ~191 after this session's incidental fixes in `LeadsView.tsx`) — real but out of scope for this release; unrelated legacy type drift in `DashboardView`, `CampaignDetailView`, `CampaignsListView`, `EmailCard`, `ComposeFollowUp`, wizard files, etc.
 2. `devin/*` branch review status — per earlier entries, these were already deleted (2026-07-11); nothing further needed unless they resurface.
-3. **The Microsoft client secret fix above — highest priority, do this first next session.**
 
 ---
 
