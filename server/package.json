@@ -11,10 +11,10 @@
     "lint": "tsc --noEmit",
     "test": "vitest",
     "test:smoke": "bash scripts/smoke.sh",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy",
-    "prisma:studio": "prisma studio"
+    "prisma:generate": "prisma generate --schema=../prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate dev --schema=../prisma/schema.prisma",
+    "prisma:deploy": "prisma migrate deploy --schema=../prisma/schema.prisma",
+    "prisma:studio": "prisma studio --schema=../prisma/schema.prisma"
   },
   "dependencies": {
     "@prisma/client": "^6.2.0",
