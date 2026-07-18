@@ -91,7 +91,7 @@ export function buildLeads(
       if (!field || field === 'ignore') return;
       const canonical = FIELD_TO_KEY[field];
       if (canonical) {
-        (lead as Record<string, unknown>)[canonical] = value;
+        (lead as unknown as Record<string, unknown>)[canonical] = value;
       }
     });
     return lead;

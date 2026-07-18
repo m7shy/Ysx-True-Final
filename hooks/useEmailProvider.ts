@@ -84,12 +84,12 @@ function toGatewayProviderKey(provider: ActiveProvider): GatewayProviderKey {
 }
 
 // Map UI provider enum to followup provider key (follow-ups are scheduled via
-// backend gateway; the scheduler backend only supports gmail/zoho/microsoft).
-function toFollowupProviderKey(provider: ActiveProvider): ProviderKeyDto | null {
+// backend gateway; the scheduler backend only supports gmail/zoho/microsoft —
+// which is every member of ActiveProvider, so this is exhaustive/non-null).
+function toFollowupProviderKey(provider: ActiveProvider): ProviderKeyDto {
   if (provider === 'GMAIL') return 'gmail';
   if (provider === 'ZOHO') return 'zoho';
-  if (provider === 'MICROSOFT') return 'microsoft';
-  return null;
+  return 'microsoft';
 }
 
 // Microsoft has no browser-side OAuth-API token exchange on the frontend — the
@@ -366,14 +366,16 @@ export const useEmailProvider = () => {
         }
 
         // OAuth mode (Gmail/Zoho only — Microsoft always takes the gateway
-        // branch above).
+        // branch above). Both sendFollowUpEmail implementations apply the
+        // signature themselves, so pass the raw content (not pre-signed) to
+        // avoid signing it twice.
         if (settings.activeProvider === 'GMAIL') {
           await executeWithRetry('GMAIL', (token) =>
-            sendGoogleFollowUp(token, originalEmail, withSignature(followUpContent, settings.emailSignature))
+            sendGoogleFollowUp(token, to, subject, followUpContent, originalEmail.messageId ?? '', settings.emailSignature)
           );
         } else {
           await executeWithRetry('ZOHO', (token) =>
-            sendZohoFollowUp(token, originalEmail, withSignature(followUpContent, settings.emailSignature))
+            sendZohoFollowUp(token, to, subject, followUpContent, originalEmail.messageId ?? '', settings.zohoRegion, settings.emailSignature)
           );
         }
 

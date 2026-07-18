@@ -26,7 +26,7 @@ const EmailCard: React.FC<EmailCardProps> = ({ email, isSelected, onClick }) => 
     }
   };
 
-  const daysAgo = Math.floor((Date.now() - new Date(email.sentDate).getTime()) / (1000 * 60 * 60 * 24));
+  const daysAgo = Math.floor((Date.now() - new Date(email.date).getTime()) / (1000 * 60 * 60 * 24));
 
   return (
     <div
@@ -62,17 +62,17 @@ const EmailCard: React.FC<EmailCardProps> = ({ email, isSelected, onClick }) => 
         )}
       </div>
 
-      {email.followupHistory && email.followupHistory.length > 0 && (
+      {email.followUpHistory && email.followUpHistory.length > 0 && (
         <div className="mt-4 pt-3 border-t border-white/5">
           <div className="flex items-center gap-1.5 mb-2.5">
             <History className="w-3 h-3 text-slate-500" />
             <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Activity History</p>
           </div>
           <div className="space-y-2 pl-1">
-            {email.followupHistory.map((item, idx) => (
+            {email.followUpHistory.map((item, idx) => (
               <div key={idx} className="flex gap-2.5 text-xs group/item relative">
                 {/* Timeline connector line */}
-                {idx !== (email.followupHistory?.length || 0) - 1 && (
+                {idx !== (email.followUpHistory?.length || 0) - 1 && (
                    <div className="absolute left-[3px] top-2 bottom-[-8px] w-px bg-white/10 group-hover/item:bg-white/20 transition-colors duration-300" />
                 )}
 

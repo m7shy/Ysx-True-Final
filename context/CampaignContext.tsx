@@ -8,7 +8,12 @@ interface CampaignContextType {
   campaigns: Campaign[];
   isLoading: boolean;
   addCampaign: (
-    campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'>
+    campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'> & {
+      // Optional explicit status override (e.g. the wizard's "Save as
+      // Draft"); when omitted, addCampaign derives ACTIVE/SCHEDULED from
+      // scheduledAt as before.
+      status?: Campaign['status'];
+    }
   ) => Promise<void>;
   deleteCampaign: (id: string) => void;
   toggleCampaignStatus: (id: string) => void;
@@ -91,10 +96,12 @@ export const CampaignProvider: React.FC<{ children: ReactNode }> = ({ children }
   }, [isLoggedIn]);
 
   const addCampaign = async (
-    campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'>
+    campaignData: Omit<Campaign, 'id' | 'createdAt' | 'status' | 'progress' | 'stats' | 'sequence'> & {
+      status?: Campaign['status'];
+    }
   ) => {
     const isScheduled = campaignData.scheduledAt && new Date(campaignData.scheduledAt) > new Date();
-    const status = isScheduled ? 'SCHEDULED' : 'ACTIVE';
+    const status = campaignData.status ?? (isScheduled ? 'SCHEDULED' : 'ACTIVE');
     const sequence = buildSequence(campaignData);
 
     try {
@@ -114,7 +121,9 @@ export const CampaignProvider: React.FC<{ children: ReactNode }> = ({ children }
 
       showToast(
         'SUCCESS',
-        isScheduled
+        status === 'DRAFT'
+          ? `Campaign "${campaignData.name}" saved as a draft.`
+          : isScheduled
           ? `Campaign "${campaignData.name}" scheduled for ${new Date(campaignData.scheduledAt).toLocaleString()}.`
           : `Campaign "${campaignData.name}" activated. The outbound engine will begin dispatching shortly.`
       );

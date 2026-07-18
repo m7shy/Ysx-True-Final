@@ -142,13 +142,15 @@ export const fetchGoogleEmails = async (accessToken: string): Promise<Email[]> =
 
       return {
         id: detail.id,
-        recipient: recipientEmail,
+        to: recipientEmail,
+        from: 'me',
         recipientName: recipientName,
         company: 'External',
         subject: subject,
         body: snippet || "(No content)",
-        sentDate: sentDate,
+        date: sentDate,
         status: EmailStatus.NO_REPLY,
+        followUpHistory: [],
         provider: 'GMAIL'
       } as Email;
   }));

@@ -57,10 +57,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       matches = (
-        e.recipientName.toLowerCase().includes(q) ||
+        (e.recipientName ?? '').toLowerCase().includes(q) ||
         e.subject.toLowerCase().includes(q) ||
         (e.company && e.company.toLowerCase().includes(q)) ||
-        e.recipient.toLowerCase().includes(q)
+        e.to.toLowerCase().includes(q)
       );
     } else {
       if (filter === 'NO_REPLY') {
@@ -73,15 +73,15 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     }
     if (matches && senderFilter) {
       const s = senderFilter.toLowerCase();
-      matches = e.recipientName.toLowerCase().includes(s) || e.recipient.toLowerCase().includes(s);
+      matches = (e.recipientName ?? '').toLowerCase().includes(s) || e.to.toLowerCase().includes(s);
     }
     if (matches && dateRange.start) {
-      matches = new Date(e.sentDate) >= new Date(dateRange.start);
+      matches = new Date(e.date) >= new Date(dateRange.start);
     }
     if (matches && dateRange.end) {
       const endDate = new Date(dateRange.end);
       endDate.setHours(23, 59, 59, 999);
-      matches = new Date(e.sentDate) <= endDate;
+      matches = new Date(e.date) <= endDate;
     }
     return matches;
   });
@@ -146,7 +146,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     const body = content || "Follow-up content";
 
     try {
-      await sendFollowUp(selectedEmail, body, date);
+      await sendFollowUp(selectedEmail, body);
       setSelectedEmailId(null);
       showToast('SUCCESS', date ? "Follow-up scheduled successfully." : "Follow-up sent successfully.");
     } catch (e: any) {
@@ -379,7 +379,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                           <div className="flex flex-wrap items-center text-sm text-slate-400 gap-y-1 gap-x-2">
                             <span className="bg-white/10 px-2 py-0.5 rounded text-slate-300 truncate max-w-[200px]">To: {selectedEmail.recipientName}</span>
                             <span className="hidden md:inline text-slate-600">•</span>
-                            <span>{new Date(selectedEmail.sentDate).toLocaleDateString()}</span>
+                            <span>{new Date(selectedEmail.date).toLocaleDateString()}</span>
                           </div>
                         </div>
                         <div className="hidden md:block bg-white/10 text-slate-300 px-3 py-1 rounded-full text-xs font-medium shrink-0 ml-2">

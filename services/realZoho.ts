@@ -252,14 +252,15 @@ export const fetchRealSentEmails = async (accessToken: string, accountId: string
   // 3. Map to local Email type using robust parsing
   return data.data.map((msg: ZohoMessage) => ({
     id: msg.messageId,
-    recipient: extractEmail(msg.toAddress),
+    to: extractEmail(msg.toAddress),
+    from: 'me',
     recipientName: (msg.toAddress || 'Unknown').split('<')[0].trim().replace(/"/g, ''),
-    recipientEmail: extractEmail(msg.toAddress),
     company: 'External',
     subject: msg.subject || '(No Subject)',
     body: msg.summary || "Content not available",
-    sentDate: safeDateConvert(msg.sentDateInMillis),
-    status: EmailStatus.NO_REPLY
+    date: safeDateConvert(msg.sentDateInMillis),
+    status: EmailStatus.NO_REPLY,
+    followUpHistory: [],
   }));
 };
 

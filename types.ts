@@ -22,10 +22,15 @@ export interface AutoFollowUp {
 export interface SequenceStep {
   id: string;
   step: number;
-  delayDays: number;
+  delayDays?: number;
   subject: string;
   body: string;
   autoFollowUps?: AutoFollowUp[];
+  // Real shape persisted by server/src/campaigns/routes.ts (Campaign.sequence
+  // JSON column) and built client-side in context/CampaignContext.tsx.
+  scheduledFor: string; // ISO string
+  status: 'PENDING' | 'SENT' | 'SKIPPED';
+  type: 'INITIAL' | 'FOLLOW_UP';
 }
 
 export interface Email {
@@ -39,6 +44,15 @@ export interface Email {
   messageId?: string;
   to: string;
   from: string;
+  // Extra display fields used by the simulated-mode data source
+  // (services/mockZoho.ts) and the client-side OAuth integrations
+  // (services/realGoogle.ts, services/realZoho.ts) — absent on emails
+  // fetched via the mailbox gateway (services/mailGateway.ts).
+  recipientName?: string;
+  company?: string;
+  scheduledDate?: string;
+  autoFollowUps?: AutoFollowUp[];
+  provider?: string;
 }
 
 // Mirrors the backend's Prisma LeadStatus enum. DNC = do-not-contact: the
@@ -81,7 +95,9 @@ export interface ThreadMessage {
 
 export interface Thread {
   id: string;
+  leadId: string;
   leadName: string;
+  leadEmail: string;
   leadCompany: string;
   subject: string;
   status: ThreadStatus;
@@ -90,13 +106,42 @@ export interface Thread {
   messages: ThreadMessage[];
 }
 
+// Mirrors server/src/campaigns/routes.ts's toClientCampaign() response shape
+// exactly (see prisma/schema.prisma's Campaign model for the backing columns).
 export interface Campaign {
   id: string;
   name: string;
   createdAt: string;
-  status: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED';
-  leads: Lead[];
-  templates: EmailTemplate[];
+  status: 'DRAFT' | 'SCHEDULED' | 'SENT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+  recipients: Recipient[];
+  subject: string;
+  body: string;
+  scheduledAt: string; // ISO string
+  progress: number; // 0-100
+  stats: {
+    sent: number;
+    clicked: number;
+    replied: number;
+    opportunities: number;
+  };
+  distributionMethod: 'INDIVIDUAL' | 'GROUP';
+  autoFollowUps: AutoFollowUp[];
+  sequence?: SequenceStep[];
+  sendWindowStart?: number | null; // minutes from local midnight, 0-1439
+  sendWindowEnd?: number | null;
+  sendDays?: number | null; // bitmask Mon=1<<0 ... Sun=1<<6; null = every day
+  timezone?: string | null; // IANA zone; null = UTC
+  dailyLimit?: number | null;
+  stopOnReply?: boolean;
+  openTracking?: boolean;
+  linkTracking?: boolean;
+  sendIntervalMinutes?: number | null;
+  stopOnClick?: boolean;
+  stopOnOpen?: boolean;
+  plainTextMode?: boolean;
+  followUpPercent?: number;
+  bouncedCount?: number;
+  pausedReason?: string | null;
 }
 
 export interface EmailTemplate {
@@ -110,6 +155,8 @@ export interface EmailTemplate {
 export interface Recipient {
   name: string;
   email: string;
+  company?: string;
+  customFields?: Record<string, string>;
 }
 
 export interface EmailAnalysisResult {
@@ -181,6 +228,10 @@ export const DEFAULT_SETTINGS: UserSettings = {
 export enum AppErrorCode {
   NETWORK_ERROR = 'NETWORK_ERROR',
   AUTH_ERROR = 'AUTH_ERROR',
+  // Distinct from AUTH_ERROR: the client-side OAuth token itself is expired/
+  // revoked (services/realGoogle.ts, services/realZoho.ts) — the caller
+  // should prompt a reconnect rather than treat it as a generic auth failure.
+  AUTH_EXPIRED = 'AUTH_EXPIRED',
   RATE_LIMIT = 'RATE_LIMIT',
   PROVIDER_ERROR = 'PROVIDER_ERROR',
   INVALID_INPUT = 'INVALID_INPUT',
@@ -321,4 +372,69 @@ export interface GatewaySentItem {
   to: string[];
   date: string;
   snippet: string;
+}
+
+// ── AI (Gemini) result shapes — services/gemini.ts ──────────────────────────
+// Each mirrors that function's Gemini responseSchema exactly.
+
+export interface GeneratedDraft {
+  subject: string;
+  body: string;
+  tone: FollowUpTone;
+}
+
+// parseSmartCampaign can return `{}` on failure, so every field is optional.
+export interface SmartCampaignResult {
+  recipientEmail?: string;
+  recipientName?: string;
+  subject?: string;
+  body?: string;
+  scheduledDate?: string; // ISO YYYY-MM-DD
+  followUps?: Array<{ content: string; delayDays: number }>;
+}
+
+export interface BrandBible {
+  voiceProfile: {
+    archetype: string;
+    keywords: string[];
+    description: string;
+  };
+  visualRules: {
+    colorPalette: string[]; // hex codes
+    typography: string;
+    vibeDescription: string;
+  };
+  doAndDonts: {
+    dos: string[];
+    donts: string[];
+  };
+  exampleScriptPrompts: string[];
+}
+
+export interface StoryIdea {
+  id: string;
+  hook: string;
+  coreStory: string;
+  emotion: 'Funny' | 'Painful' | 'Inspiring' | 'Educational' | 'Controversial';
+  format: 'Reel' | 'Long-form' | 'Carousel' | 'Story';
+}
+
+export interface OfferFitAnalysis {
+  product: string;
+  maturity: 'Beginner' | 'Mid' | 'Pro';
+  score: number;
+  angle: string;
+}
+
+// Scraped-channel intelligence attached to a Lead (services/mockZoho.ts's
+// analyzeLead simulates this; the real scraper populates Lead.intelligence
+// with a similar but not identical shape — see scraper/ and Lead.intelligence
+// above, kept as Record<string, unknown> there since real intelligence varies
+// by source).
+export interface LeadIntelligence {
+  postingFrequency: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'SPORADIC';
+  hasPaidCommunity: boolean;
+  offerType: 'HIGH_TICKET' | 'COURSE' | 'CONSULTING' | 'SAAS';
+  targetKeywords: string[];
+  lastPostDate: string; // ISO string
 }

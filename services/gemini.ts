@@ -44,7 +44,7 @@ export const generateFollowUpDraft = async (
     Original Email Details:
     - To: ${originalEmail.recipientName} (${originalEmail.company || 'Client'})
     - Subject: ${originalEmail.subject}
-    - Sent Date: ${new Date(originalEmail.sentDate).toLocaleDateString()}
+    - Sent Date: ${new Date(originalEmail.date).toLocaleDateString()}
     - Body: "${originalEmail.body}"
     
     Configuration:

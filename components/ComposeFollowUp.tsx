@@ -387,17 +387,17 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
         <div className="space-y-4">
           
           {/* Follow-up History Block */}
-          {email.followupHistory && email.followupHistory.length > 0 && (
+          {email.followUpHistory && email.followUpHistory.length > 0 && (
             <div className="bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden animate-in fade-in slide-in-from-top-2">
               <div className="px-4 py-2 bg-slate-100/50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center">
                  <History className="w-4 h-4 text-brand-500 mr-2" />
                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Conversation History</h4>
               </div>
               <div className="p-4 space-y-4">
-                  {email.followupHistory.map((item, idx) => (
+                  {email.followUpHistory.map((item, idx) => (
                     <div key={idx} className="relative pl-5 group">
                        {/* Timeline Line */}
-                       {idx !== (email.followupHistory!.length - 1) && (
+                       {idx !== (email.followUpHistory!.length - 1) && (
                           <div className="absolute left-[5px] top-2.5 bottom-[-20px] w-px bg-slate-300 dark:bg-slate-700" />
                        )}
                        
@@ -427,7 +427,7 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                   <Quote className="w-4 h-4 text-slate-400 mr-2" />
                   <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Original Email</h4>
                 </div>
-                <span className="text-[10px] text-slate-400">{new Date(email.sentDate).toLocaleDateString()}</span>
+                <span className="text-[10px] text-slate-400">{new Date(email.date).toLocaleDateString()}</span>
              </div>
              <div className="p-4">
                 <p className="text-slate-800 dark:text-slate-200 font-semibold text-sm mb-2">{email.subject}</p>

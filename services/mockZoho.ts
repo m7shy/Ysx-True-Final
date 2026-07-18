@@ -2,58 +2,69 @@
 import { Email, EmailStatus, FollowUpHistoryItem, AutoFollowUp, Lead, LeadStatus, LeadIntelligence, Thread, ThreadStatus, ThreadLeadStatus, ThreadMessage } from '../types';
 
 // Mock data to simulate a Zoho Mail "Sent Items" folder
+const SIMULATED_FROM = 'me@example.com';
+
 const INITIAL_EMAILS: Email[] = [
   {
     id: 'e1',
-    recipient: 'sarah.j@techcorp.com',
+    to: 'sarah.j@techcorp.com',
+    from: SIMULATED_FROM,
     recipientName: 'Sarah Jenkins',
     company: 'TechCorp Solutions',
     subject: 'Proposal for Q3 Marketing Campaign',
     body: 'Hi Sarah,\n\nIt was great speaking with you yesterday. Attached is the proposal for the Q3 marketing campaign we discussed. We have outlined the budget and timeline as requested.\n\nLet me know if you have any questions.\n\nBest,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 5).toISOString(), // 5 days ago
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 5).toISOString(), // 5 days ago
     status: EmailStatus.NO_REPLY,
+    followUpHistory: [],
   },
   {
     id: 'e2',
-    recipient: 'mike.chen@startuplab.io',
+    to: 'mike.chen@startuplab.io',
+    from: SIMULATED_FROM,
     recipientName: 'Mike Chen',
     company: 'StartupLab',
     subject: 'Contract Renewal - Service Agreement',
     body: 'Hello Mike,\n\nI hope this email finds you well. Our records indicate your service agreement is expiring next month. I have attached the renewal contract for your review.\n\nPlease sign and return it by the 30th.\n\nThanks,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 8).toISOString(), // 8 days ago
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 8).toISOString(), // 8 days ago
     status: EmailStatus.NO_REPLY,
+    followUpHistory: [],
   },
   {
     id: 'e3',
-    recipient: 'diana.prince@global.org',
+    to: 'diana.prince@global.org',
+    from: SIMULATED_FROM,
     recipientName: 'Diana Prince',
     company: 'Global Initiatives',
     subject: 'Re: Meeting availability next Tuesday',
     body: 'Hi Diana,\n\nThanks for the invite. Tuesday at 2 PM works perfectly for me. I will send a calendar invite shortly.\n\nSee you then,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 1).toISOString(), // 1 day ago
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 1).toISOString(), // 1 day ago
     status: EmailStatus.REPLIED,
+    followUpHistory: [],
   },
   {
     id: 'e4',
-    recipient: 'luke.s@designstudio.net',
+    to: 'luke.s@designstudio.net',
+    from: SIMULATED_FROM,
     recipientName: 'Luke Skywalker',
     company: 'Rebel Design',
     subject: 'Assets for the new landing page',
     body: 'Hey Luke,\n\nJust following up on the assets for the landing page. We are blocked on development until we receive the final SVGs.\n\nCould you please send them over by EOD?\n\nCheers,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString(), // 3 days ago
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString(), // 3 days ago
     status: EmailStatus.FOLLOW_UP_DRAFTED,
+    followUpHistory: [],
   },
   {
     id: 'e5',
-    recipient: 'jason@futuretech.com',
+    to: 'jason@futuretech.com',
+    from: SIMULATED_FROM,
     recipientName: 'Jason Bourne',
     company: 'Treadstone Inc',
     subject: 'Project Review Meeting',
     body: 'Hi Jason,\n\nChecking in on the project status. Can we schedule a brief review later this week?\n\nThanks,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 2).toISOString(),
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 2).toISOString(),
     status: EmailStatus.SCHEDULED,
     scheduledDate: new Date(Date.now() + 1000 * 60 * 60 * 24 * 2).toISOString(), // Scheduled for 2 days from now
-    followupHistory: [
+    followUpHistory: [
       {
         date: new Date(Date.now() + 1000 * 60 * 60 * 24 * 2).toISOString(),
         content: "Hi Jason,\n\nJust bumping this to the top of your inbox. Let me know if you have time for that review.\n\nBest,\nAlex",
@@ -64,53 +75,59 @@ const INITIAL_EMAILS: Email[] = [
   // Added explicit SENT emails for Style Mimicry testing
   {
     id: 'e6',
-    recipient: 'tony@stark.com',
+    to: 'tony@stark.com',
+    from: SIMULATED_FROM,
     recipientName: 'Tony Stark',
     company: 'Stark Industries',
     subject: 'Consultation Follow-up',
     body: 'Hi Tony,\n\nThanks for the time today. I loved hearing about the new reactor designs. As mentioned, I will put together a brief scope of work for the interface overhaul.\n\nExpect that by Friday.\n\nCheers,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 10).toISOString(),
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 10).toISOString(),
     status: EmailStatus.SENT,
+    followUpHistory: [],
   },
   {
     id: 'e7',
-    recipient: 'natasha@shield.gov',
+    to: 'natasha@shield.gov',
+    from: SIMULATED_FROM,
     recipientName: 'Natasha Romanoff',
     company: 'SHIELD',
     subject: 'Q4 Report Data',
     body: 'Hey Natasha,\n\nHere is the data you requested for the Q4 report. Let me know if you need any clarification on the metrics.\n\nBest,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 12).toISOString(),
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 12).toISOString(),
     status: EmailStatus.SENT,
+    followUpHistory: [],
   },
   {
     id: 'e8',
-    recipient: 'steve@rogers.com',
+    to: 'steve@rogers.com',
+    from: SIMULATED_FROM,
     recipientName: 'Steve Rogers',
     company: 'Brooklyn Avengers',
     subject: 'Leadership Seminar Invite',
     body: 'Hi Steve,\n\nIt was an honor to meet you at the summit. I attached the itinerary for the leadership seminar we discussed. I think your input on team dynamics would be invaluable.\n\nHope you can make it.\n\nBest,\nAlex',
-    sentDate: new Date(Date.now() - 1000 * 60 * 60 * 24 * 14).toISOString(),
+    date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 14).toISOString(),
     status: EmailStatus.SENT,
+    followUpHistory: [],
   }
 ];
 
 // Mock Leads Data with new Funnel Statuses
 const INITIAL_LEADS: Lead[] = [
-  { id: 'l1', name: 'Alice Freeman', email: 'alice@vertex.com', company: 'Vertex Inc', status: 'NEW', source: 'LinkedIn' },
+  { id: 'l1', name: 'Alice Freeman', email: 'alice@vertex.com', company: 'Vertex Inc', status: 'NEW', source: 'LinkedIn', lastContacted: null, notes: '' },
   // 1 Client Closed
-  { id: 'l2', name: 'Bob Smith', email: 'bob@builders.net', company: 'Builders Co', status: 'CLIENT_CLOSED', lastContacted: new Date(Date.now() - 86400000 * 15).toISOString(), source: 'Website', score: 95 },
+  { id: 'l2', name: 'Bob Smith', email: 'bob@builders.net', company: 'Builders Co', status: 'CLIENT_CLOSED', lastContacted: new Date(Date.now() - 86400000 * 15).toISOString(), source: 'Website', score: 95, notes: '' },
   // 2 Trials
-  { id: 'l3', name: 'Charlie Davis', email: 'charlie@delta.io', company: 'Delta Group', status: 'TRIAL', lastContacted: new Date(Date.now() - 86400000 * 5).toISOString(), source: 'Referral', score: 82 },
-  { id: 'l4', name: 'Diana Ross', email: 'diana@music.com', company: 'Motown', status: 'TRIAL', lastContacted: new Date(Date.now() - 86400000 * 3).toISOString(), source: 'Direct', score: 78 },
+  { id: 'l3', name: 'Charlie Davis', email: 'charlie@delta.io', company: 'Delta Group', status: 'TRIAL', lastContacted: new Date(Date.now() - 86400000 * 5).toISOString(), source: 'Referral', score: 82, notes: '' },
+  { id: 'l4', name: 'Diana Ross', email: 'diana@music.com', company: 'Motown', status: 'TRIAL', lastContacted: new Date(Date.now() - 86400000 * 3).toISOString(), source: 'Direct', score: 78, notes: '' },
   // 4 Calls Booked
-  { id: 'l5', name: 'Dana White', email: 'dana@ufc.com', company: 'TKO Group', status: 'CALL_BOOKED', lastContacted: new Date(Date.now() - 86400000 * 1).toISOString(), source: 'Event', score: 65 },
-  { id: 'l6', name: 'Evan Wright', email: 'evan@writes.com', company: 'Authors Guild', status: 'CALL_BOOKED', source: 'Cold Email', score: 70 },
-  { id: 'l7', name: 'Fiona Apple', email: 'fiona@fetch.com', company: 'Fetch', status: 'CALL_BOOKED', source: 'LinkedIn', score: 68 },
-  { id: 'l8', name: 'George Lucas', email: 'george@film.com', company: 'Lucasfilm', status: 'CALL_BOOKED', source: 'Referral', score: 75 },
+  { id: 'l5', name: 'Dana White', email: 'dana@ufc.com', company: 'TKO Group', status: 'CALL_BOOKED', lastContacted: new Date(Date.now() - 86400000 * 1).toISOString(), source: 'Event', score: 65, notes: '' },
+  { id: 'l6', name: 'Evan Wright', email: 'evan@writes.com', company: 'Authors Guild', status: 'CALL_BOOKED', source: 'Cold Email', score: 70, lastContacted: null, notes: '' },
+  { id: 'l7', name: 'Fiona Apple', email: 'fiona@fetch.com', company: 'Fetch', status: 'CALL_BOOKED', source: 'LinkedIn', score: 68, lastContacted: null, notes: '' },
+  { id: 'l8', name: 'George Lucas', email: 'george@film.com', company: 'Lucasfilm', status: 'CALL_BOOKED', source: 'Referral', score: 75, lastContacted: null, notes: '' },
   // Others
-  { id: 'l9', name: 'Harry Potter', email: 'harry@hogwarts.edu', company: 'Ministry', status: 'CONTACTED', lastContacted: new Date(Date.now() - 86400000 * 2).toISOString(), source: 'Owl' },
-  { id: 'l10', name: 'Ian Malcolm', email: 'ian@chaos.com', company: 'InGen', status: 'REPLIED', lastContacted: new Date(Date.now() - 86400000 * 4).toISOString(), source: 'Event' },
-  { id: 'l11', name: 'Jack Sparrow', email: 'jack@pearl.com', company: 'Caribbean', status: 'LOST', source: 'Sea' }
+  { id: 'l9', name: 'Harry Potter', email: 'harry@hogwarts.edu', company: 'Ministry', status: 'CONTACTED', lastContacted: new Date(Date.now() - 86400000 * 2).toISOString(), source: 'Owl', notes: '' },
+  { id: 'l10', name: 'Ian Malcolm', email: 'ian@chaos.com', company: 'InGen', status: 'REPLIED', lastContacted: new Date(Date.now() - 86400000 * 4).toISOString(), source: 'Event', notes: '' },
+  { id: 'l11', name: 'Jack Sparrow', email: 'jack@pearl.com', company: 'Caribbean', status: 'LOST', source: 'Sea', lastContacted: null, notes: '' }
 ];
 
 const INITIAL_THREADS: Thread[] = [
@@ -227,10 +244,10 @@ export const fetchSentEmails = async (): Promise<Email[]> => {
 
 export const getLastEmailSnippet = async (emailAddress: string): Promise<string | null> => {
   await delay(200); // Short delay
-  const sent = mockEmails.filter(e => e.recipient.toLowerCase() === emailAddress.toLowerCase());
+  const sent = mockEmails.filter(e => e.to.toLowerCase() === emailAddress.toLowerCase());
   if (sent.length === 0) return null;
   // Sort by date desc
-  sent.sort((a, b) => new Date(b.sentDate).getTime() - new Date(a.sentDate).getTime());
+  sent.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const last = sent[0];
   // return snippet
   const snippet = last.body.replace(/\n/g, ' ').substring(0, 100);
@@ -238,23 +255,25 @@ export const getLastEmailSnippet = async (emailAddress: string): Promise<string 
 };
 
 export const sendNewEmail = async (
-  to: string, 
-  name: string, 
-  company: string, 
-  subject: string, 
+  to: string,
+  name: string,
+  company: string,
+  subject: string,
   body: string,
   autoFollowUps?: AutoFollowUp[]
 ): Promise<Email> => {
   await delay(1000);
   const newEmail: Email = {
     id: `new_${Date.now()}`,
-    recipient: to,
+    to,
+    from: SIMULATED_FROM,
     recipientName: name,
     company: company,
     subject: subject,
     body: body,
-    sentDate: new Date().toISOString(),
+    date: new Date().toISOString(),
     status: EmailStatus.NO_REPLY,
+    followUpHistory: [],
     autoFollowUps: autoFollowUps
   };
   // Add to the beginning of the list
@@ -291,10 +310,10 @@ export const sendFollowUpEmail = async (emailId: string, content: string, schedu
     status: scheduledDate ? 'SCHEDULED' : 'SENT'
   };
 
-  if (!email.followupHistory) {
-    email.followupHistory = [];
+  if (!email.followUpHistory) {
+    email.followUpHistory = [];
   }
-  email.followupHistory.push(historyItem);
+  email.followUpHistory.push(historyItem);
 
   if (scheduledDate) {
     console.log(`[Simulated Zoho API] Scheduling email for ID ${emailId} on ${scheduledDate}:`, content);
@@ -303,9 +322,9 @@ export const sendFollowUpEmail = async (emailId: string, content: string, schedu
   } else {
     console.log(`[Simulated Zoho API] Sending email to ID ${emailId}:`, content);
     email.status = EmailStatus.FOLLOW_UP_SENT;
-    
+
     // Update lead status too
-    const lead = mockLeads.find(l => l.email === email.recipient);
+    const lead = mockLeads.find(l => l.email === email.to);
     if (lead) {
        lead.lastContacted = new Date().toISOString();
        mockLeads = mockLeads.map(l => l.id === lead.id ? lead : l);
@@ -391,7 +410,9 @@ export const analyzeLead = async (leadId: string): Promise<Lead> => {
 
   // Update the lead in the mock store
   lead.score = score;
-  lead.intelligence = intelligence;
+  // Lead.intelligence is a loosely-typed Record (real scraper intelligence
+  // varies by source); LeadIntelligence is this mock's own stricter shape.
+  lead.intelligence = intelligence as unknown as Record<string, unknown>;
 
   // Update global mockLeads
   mockLeads = mockLeads.map(l => l.id === leadId ? lead : l);
