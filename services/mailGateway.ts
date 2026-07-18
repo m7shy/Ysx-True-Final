@@ -1,5 +1,6 @@
 import { Email, EmailStatus, AppError, AppErrorCode, MailGatewayProviderKey } from '../types';
 import { getAccessToken } from './authStorage';
+import { apiGet } from './apiClient';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
 
@@ -85,8 +86,13 @@ const handleGatewayError = async (response: Response, provider: GatewayErrorProv
 
 export async function gwHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${API_URL}/api/mail/health`, { headers: authHeaders() });
-    return response.ok;
+    // Routed through apiGet (not a bare fetch) so a momentarily-expired access
+    // token gets the same silent refresh-and-retry every other authenticated
+    // call gets — otherwise a single stale-token race reports "unhealthy"
+    // once and the caller (App.tsx) never re-checks, pinning a false warning
+    // banner on for the rest of the session.
+    await apiGet('/api/mail/health');
+    return true;
   } catch {
     return false;
   }
