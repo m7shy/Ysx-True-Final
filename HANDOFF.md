@@ -19,7 +19,7 @@
 
 **Frontend production build:** `VITE_API_URL="" npx vite build` run at repo root after the above QA passed. This overwrites `dist/` — per this file's standing policy, `dist_pre_refactor_backup/` remains the pre-`ce599bb` revert reference; treat the newly-built `dist/` as the new live baseline going forward.
 
-**Backend build:** `server/dist/` rebuilt (`npm run build`), matching committed source. User ran `nssm restart ysx-backend` — confirmed picked up: `/api/health` 200, and the live process now serves the new routes (`GET /api/leads/export` went from a pre-restart `404`/`ApiError: Lead not found` to a real `200` post-restart; same for `GET /api/mail/mailboxes` and `POST /api/gemini/generate`, both verified with real round-trips against production data — the connected Microsoft mailbox and the rotated F1 credentials are all functioning).
+**Backend build:** `server/dist/` rebuilt (`npm run build`), matching committed source. User ran `nssm restart ysx-backend` — confirmed picked up: `/api/health` 200, and the live process now serves the new routes (`GET /api/leads/export` went from a pre-restart `404`/`ApiError: Lead not found` to a real `200` post-restart; same for `GET /api/mail/mailboxes` and `POST /api/gemini/generate`, both verified with real round-trips against production data). **Correction — see the ⚠️ critical item below: the Microsoft mailbox's own OAuth token refresh is actually broken; `/api/mail/mailboxes` and `/api/gemini/generate` succeeding does NOT exercise that path, so don't read this as "Microsoft credentials confirmed fine."**
 
 **Two more bugs found (and fixed) during post-restart QA, both user-reported from real interactive testing — not part of the original undocumented WIP:**
 
@@ -33,10 +33,24 @@
 
 Both fixes: pushed to `origin/phase5-frontend-wiring`, frontend rebuilt (frontend-only changes — no backend restart needed, `express.static` serves fresh files on every request). No new frontend `tsc --noEmit` errors introduced by either (still 150/~191, unchanged).
 
+**Third fix (`refreshAccessToken` exported from `apiClient.ts`, new commit, not yet numbered above) — `gwFetchSent`/`gwSend` in `services/mailGateway.ts` migrated off the same bare-`fetch` pattern as bug #2**, onto a new local `authFetch()` helper that gets the identical refresh-and-retry semantics while still preserving these two functions' own typed `AppError` mapping (`handleGatewayError`) that `apiGet`/`apiPost` don't provide. `tsc --noEmit` still clean (150 errors, unchanged).
+
+**⚠️ Critical finding while verifying the fix above — NOT part of any fix in this session, needs the user directly:** Testing `gwFetchSent` live (temporarily flipped `useRealApi`/`activeProvider` in localStorage to exercise the real Microsoft gateway path, reverted after) surfaced a real, live production bug: **the connected Microsoft mailbox's OAuth access token expired on 2026-07-11 (a week before this session, 2026-07-18) and cannot be refreshed.** `GET /api/mail/sent?provider=microsoft` returns:
+
+```
+401 {"code":"AUTH","message":"Microsoft token refresh failed: AADSTS7000215: Invalid client secret provided.
+Ensure the secret being sent in the request is the client secret value, not the client secret ID,
+for a secret added to app '7f03ed98-5a4c-43d4-b2ee-de16ab442a36'. ..."}
+```
+
+This is a very specific, common Azure AD mistake: `server/.env`'s `MICROSOFT_CLIENT_SECRET` appears to hold the secret's **ID**, not its **value** — almost certainly introduced during the F1 credential rotation (this file's earlier entries note Gmail/Microsoft rotation as the still-open F1 item; the Jul 14 `.env` edit the user confirmed as "done" this session was evidently incomplete or made this specific mistake for Microsoft specifically). **Impact: anything touching the Microsoft mailbox via OAuth-refreshed Graph/IMAP access is likely silently failing right now** — campaign sends through that mailbox, unibox reply polling, the sent-mail view. (My earlier fix to `gwHealth()`/`authFetch` is confirmed working correctly here — it did trigger the JWT refresh-and-retry as designed; the persistent 401 survives the retry because the failure is downstream at Microsoft, not in our own auth.)
+
+**Next session must:** go to Azure Portal → App registrations → app `7f03ed98-5a4c-43d4-b2ee-de16ab442a36` → Certificates & secrets, copy the actual secret **value** (not the ID shown in the list), and update `MICROSOFT_CLIENT_SECRET` in `server/.env`, then restart `ysx-backend`. Verify via `GET /api/mail/sent?provider=microsoft&limit=5` (authenticated) returning real sent-item data instead of a 401.
+
 **Still open, carried forward:**
 1. **~193 pre-existing frontend `tsc --noEmit` errors** (now ~191 after this session's incidental fixes in `LeadsView.tsx`) — real but out of scope for this release; unrelated legacy type drift in `DashboardView`, `CampaignDetailView`, `CampaignsListView`, `EmailCard`, `ComposeFollowUp`, wizard files, etc.
 2. `devin/*` branch review status — per earlier entries, these were already deleted (2026-07-11); nothing further needed unless they resurface.
-3. Worth a follow-up scan: `services/mailGateway.ts`'s other two functions (`gwFetchSent`, `gwSend`) still use the same bare-`fetch` + `authHeaders()` pattern that caused bug #2 above — they weren't hit this session, but carry the same latent token-race risk. Not fixed here since they weren't reported as broken; consider migrating them to `apiClient.ts`'s helpers next time they're touched.
+3. **The Microsoft client secret fix above — highest priority, do this first next session.**
 
 ---
 
