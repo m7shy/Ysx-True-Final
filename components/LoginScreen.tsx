@@ -32,9 +32,9 @@ const LoginScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-canvas flex flex-col lg:flex-row font-sans overflow-y-auto">
+    <div className="h-full bg-canvas flex flex-col lg:flex-row font-sans overflow-y-auto">
       {/* Left Side - Hero / Info */}
-      <div className="flex-1 bg-gradient-to-br from-slate-900 via-brand-900 to-slate-900 p-8 lg:p-16 flex flex-col justify-between text-white relative overflow-hidden">
+      <div className="flex-1 shrink-0 bg-gradient-to-br from-slate-900 via-brand-900 to-slate-900 p-8 lg:p-16 flex flex-col justify-between text-white relative overflow-hidden">
         <div className="absolute top-0 left-0 w-64 h-64 bg-brand-500/10 rounded-full -translate-x-1/2 -translate-y-1/2 blur-3xl animate-float" />
         <div className="absolute bottom-0 right-0 w-96 h-96 bg-brand-400/10 rounded-full translate-x-1/3 translate-y-1/3 blur-3xl animate-float-delayed" />
         <div className="absolute top-1/2 left-1/2 w-full h-full bg-brand-600/5 rounded-full -translate-x-1/2 -translate-y-1/2 blur-3xl animate-pulse-slow pointer-events-none" />
@@ -100,7 +100,7 @@ const LoginScreen: React.FC = () => {
       </div>
 
       {/* Right Side - Login / Signup Form */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-transparent relative">
+      <div className="flex-1 shrink-0 flex items-center justify-center p-8 bg-transparent relative">
         <div className="max-w-md w-full space-y-8 animate-in slide-in-from-bottom-8 fade-in duration-700 fill-mode-forwards">
           <div className="text-center lg:text-left">
             <h2 className="text-3xl font-bold text-white tracking-tight">
