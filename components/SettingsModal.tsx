@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Save, Globe, Shield, User, Sliders, AlertTriangle, PlugZap, CheckCircle2, Lock, Hammer, Square, ChevronDown, ChevronUp, Copy, ExternalLink, ArrowRight, Mail, Key, HelpCircle, Server } from 'lucide-react';
+import { X, Save, Globe, Shield, User, Sliders, AlertTriangle, PlugZap, CheckCircle2, Hammer, Square, Mail, Server } from 'lucide-react';
 import { UserSettings, FollowUpTone } from '../types';
 import { ConfirmModal } from './ConfirmModal';
+import { Button, Select, Textarea } from '../src/design/ui';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -15,7 +16,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
   const [localSettings, setLocalSettings] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
-  
+
   // New UI States
   const [clientIdError, setClientIdError] = useState(false);
   const [googleClientIdError, setGoogleClientIdError] = useState(false);
@@ -80,16 +81,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
 
     const settingsToSave = { ...settings, ...localSettings };
     localStorage.setItem('ysxflow_settings', JSON.stringify(settingsToSave));
-    onSave(settingsToSave); 
-    
+    onSave(settingsToSave);
+
     const redirectUri = window.location.origin;
     const scope = "ZohoMail.messages.READ,ZohoMail.messages.CREATE,ZohoMail.accounts.READ";
     const authUrl = getAuthUrl(localSettings.zohoRegion);
-    
+
     const state = generateState('zoho');
-    
+
     const url = `${authUrl}?scope=${scope}&client_id=${localSettings.zohoClientId}&response_type=token&redirect_uri=${redirectUri}&access_type=online&state=${encodeURIComponent(state)}`;
-    
+
     window.location.href = url;
   };
 
@@ -102,7 +103,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
 
     const settingsToSave = { ...settings, ...localSettings };
     localStorage.setItem('ysxflow_settings', JSON.stringify(settingsToSave));
-    onSave(settingsToSave); 
+    onSave(settingsToSave);
 
     const redirectUri = window.location.origin;
     const scope = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send";
@@ -116,11 +117,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95 slide-in-from-bottom-4 duration-300 border border-slate-200 dark:border-slate-800 overflow-hidden relative">
-        
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+      <div className="bg-[#0a0a0a]/95 backdrop-blur-xl rounded-2xl w-full max-w-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95 slide-in-from-bottom-4 duration-300 border border-white/10 overflow-hidden relative">
+
         {/* Reset Confirmation Modal */}
-        <ConfirmModal 
+        <ConfirmModal
           isOpen={showResetConfirm}
           onClose={() => setShowResetConfirm(false)}
           onConfirm={handleFactoryReset}
@@ -132,29 +133,23 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
 
         {/* Save Confirmation Overlay */}
         {showConfirm && (
-          <div className="absolute inset-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 p-6 max-w-sm w-full transform scale-100 animate-in zoom-in-95 duration-200">
+          <div className="absolute inset-0 z-50 bg-noir/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+            <div className="bg-[#0a0a0a] rounded-2xl border border-white/10 p-6 max-w-sm w-full transform scale-100 animate-in zoom-in-95 duration-200">
               <div className="flex flex-col items-center text-center">
-                <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 rounded-full flex items-center justify-center mb-4">
+                <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-full flex items-center justify-center mb-4">
                   <AlertTriangle className="w-6 h-6" />
                 </div>
-                <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">Save Changes?</h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
+                <h3 className="text-lg font-semibold text-white mb-2">Save Changes?</h3>
+                <p className="text-sm text-neutral-400 mb-6">
                   Are you sure you want to update your configuration settings? This may affect how your data interacts with your provider.
                 </p>
                 <div className="flex w-full gap-3">
-                  <button
-                    onClick={() => setShowConfirm(false)}
-                    className="flex-1 px-4 py-2 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-medium hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
-                  >
+                  <Button variant="secondary" fullWidth onClick={() => setShowConfirm(false)}>
                     Cancel
-                  </button>
-                  <button
-                    onClick={confirmSave}
-                    className="flex-1 px-4 py-2 bg-brand-600 text-white rounded-lg font-medium hover:bg-brand-700 transition-colors shadow-lg shadow-brand-500/20"
-                  >
+                  </Button>
+                  <Button fullWidth onClick={confirmSave}>
                     Confirm
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
@@ -162,43 +157,51 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
         )}
 
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-950">
+        <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-white/[0.02]">
           <div>
-            <h2 className="text-lg font-semibold text-slate-800 dark:text-white">Settings</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Configure your email provider and AI preferences</p>
+            <h2 className="text-lg font-semibold text-white">Settings</h2>
+            <p className="text-xs text-neutral-400">Configure your email provider and AI preferences</p>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-transform hover:rotate-90">
+          <button
+            onClick={onClose}
+            aria-label="Close settings"
+            className="text-neutral-400 hover:text-neutral-200 transition-transform hover:rotate-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text rounded-full"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <div className="flex flex-1 overflow-hidden">
           {/* Sidebar Tabs */}
-          <div className="w-48 bg-slate-50 dark:bg-slate-900/50 border-r border-slate-200 dark:border-slate-800 p-4 space-y-1">
+          <div className="w-48 bg-white/[0.02] border-r border-white/10 p-4 space-y-1">
             <button
               onClick={() => setActiveTab('INTEGRATION')}
-              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-colors ${activeTab === 'INTEGRATION' ? 'bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+              aria-current={activeTab === 'INTEGRATION' ? 'page' : undefined}
+              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${activeTab === 'INTEGRATION' ? 'bg-white/[0.08] text-volt-text' : 'text-neutral-400 hover:bg-white/[0.05]'}`}
             >
               <Globe className="w-4 h-4 mr-2" />
               Integration
             </button>
             <button
               onClick={() => setActiveTab('AI')}
-              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-colors ${activeTab === 'AI' ? 'bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+              aria-current={activeTab === 'AI' ? 'page' : undefined}
+              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${activeTab === 'AI' ? 'bg-white/[0.08] text-volt-text' : 'text-neutral-400 hover:bg-white/[0.05]'}`}
             >
               <User className="w-4 h-4 mr-2" />
               AI Persona
             </button>
             <button
               onClick={() => setActiveTab('SYNC')}
-              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-colors ${activeTab === 'SYNC' ? 'bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+              aria-current={activeTab === 'SYNC' ? 'page' : undefined}
+              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${activeTab === 'SYNC' ? 'bg-white/[0.08] text-volt-text' : 'text-neutral-400 hover:bg-white/[0.05]'}`}
             >
               <Sliders className="w-4 h-4 mr-2" />
               Sync & Data
             </button>
             <button
               onClick={() => setActiveTab('DEPLOYMENT')}
-              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-colors ${activeTab === 'DEPLOYMENT' ? 'bg-white dark:bg-slate-800 text-brand-600 dark:text-brand-400 shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+              aria-current={activeTab === 'DEPLOYMENT' ? 'page' : undefined}
+              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${activeTab === 'DEPLOYMENT' ? 'bg-white/[0.08] text-volt-text' : 'text-neutral-400 hover:bg-white/[0.05]'}`}
             >
               <Hammer className="w-4 h-4 mr-2" />
               Deployment
@@ -206,34 +209,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
           </div>
 
           {/* Content Area */}
-          <div className="flex-1 p-6 overflow-y-auto bg-white dark:bg-slate-950 custom-scrollbar">
-            
+          <div className="flex-1 p-6 overflow-y-auto bg-noir custom-scrollbar">
+
             {/* INTEGRATION TAB */}
             {activeTab === 'INTEGRATION' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-                
+
                 {/* Active Provider Selection */}
-                <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-                   <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-3">Active Email Provider</h3>
+                <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4">
+                   <h3 className="text-sm font-semibold text-white mb-3">Active Email Provider</h3>
                    <div className="grid grid-cols-3 gap-2">
-                      <button 
+                      <button
                         onClick={() => { setLocalSettings({...localSettings, activeProvider: 'ZOHO'}); setShowGuide(false); }}
-                        className={`p-2 rounded-lg border text-sm font-medium flex flex-col items-center justify-center transition-all ${localSettings.activeProvider === 'ZOHO' ? 'bg-[#2C72B8]/10 border-[#2C72B8] text-[#2C72B8]' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'}`}
+                        aria-pressed={localSettings.activeProvider === 'ZOHO'}
+                        className={`p-2 rounded-xl border text-sm font-medium flex flex-col items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${localSettings.activeProvider === 'ZOHO' ? 'bg-[#2C72B8]/10 border-[#2C72B8] text-[#2C72B8]' : 'bg-white/[0.02] border-white/10 text-neutral-500'}`}
                       >
                          <img src="https://upload.wikimedia.org/wikipedia/commons/b/b8/Zoho_Corporation_logo.png" alt="Zoho" className="h-6 mb-1 object-contain" />
                          <span className="text-xs">Zoho Mail</span>
                       </button>
-                      <button 
+                      <button
                         onClick={() => { setLocalSettings({...localSettings, activeProvider: 'GMAIL'}); setShowGuide(false); }}
-                        className={`p-2 rounded-lg border text-sm font-medium flex flex-col items-center justify-center transition-all ${localSettings.activeProvider === 'GMAIL' ? 'bg-red-50 dark:bg-red-900/20 border-red-500 text-red-600' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'}`}
+                        aria-pressed={localSettings.activeProvider === 'GMAIL'}
+                        className={`p-2 rounded-xl border text-sm font-medium flex flex-col items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${localSettings.activeProvider === 'GMAIL' ? 'bg-red-500/10 border-red-500 text-red-400' : 'bg-white/[0.02] border-white/10 text-neutral-500'}`}
                       >
                          <Mail className="w-6 h-6 mb-1" />
                          <span className="text-xs">Google</span>
                       </button>
                       {/* NEW MICROSOFT BUTTON */}
-                      <button 
+                      <button
                         onClick={() => { setLocalSettings({...localSettings, activeProvider: 'MICROSOFT'}); setShowGuide(false); }}
-                        className={`p-2 rounded-lg border text-sm font-medium flex flex-col items-center justify-center transition-all ${localSettings.activeProvider === 'MICROSOFT' ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-500 text-blue-600' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'}`}
+                        aria-pressed={localSettings.activeProvider === 'MICROSOFT'}
+                        className={`p-2 rounded-xl border text-sm font-medium flex flex-col items-center justify-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${localSettings.activeProvider === 'MICROSOFT' ? 'bg-blue-500/10 border-blue-500 text-blue-400' : 'bg-white/[0.02] border-white/10 text-neutral-500'}`}
                       >
                          <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/df/Microsoft_Office_Outlook_%282018%E2%80%93present%29.svg/512px-Microsoft_Office_Outlook_%282018%E2%80%93present%29.svg.png" alt="Outlook" className="h-6 w-6 mb-1 object-contain" />
                          <span className="text-xs">Outlook</span>
@@ -244,78 +250,82 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                 {/* Mode Selection Cards */}
                 <div className="grid grid-cols-2 gap-4">
                   {/* Sandbox Card */}
-                  <div 
+                  <button
+                    type="button"
                     onClick={() => setLocalSettings({...localSettings, useRealApi: false})}
-                    className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all ${!localSettings.useRealApi ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}
+                    aria-pressed={!localSettings.useRealApi}
+                    className={`relative p-4 rounded-2xl border-2 cursor-pointer transition-all text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${!localSettings.useRealApi ? 'border-green-500 bg-green-500/10' : 'border-white/10 hover:border-white/20'}`}
                   >
-                    {!localSettings.useRealApi && <div className="absolute top-2 right-2 text-green-600"><CheckCircle2 className="w-5 h-5" /></div>}
-                    <div className="flex items-center mb-2 text-green-700 dark:text-green-400">
+                    {!localSettings.useRealApi && <div className="absolute top-2 right-2 text-green-400"><CheckCircle2 className="w-5 h-5" /></div>}
+                    <div className="flex items-center mb-2 text-green-400">
                        <Shield className="w-5 h-5 mr-2" />
-                       <span className="font-bold text-sm">Sandbox Environment</span>
+                       <span className="font-semibold text-sm">Sandbox Environment</span>
                     </div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                    <p className="text-xs text-neutral-400">
                       Simulates data locally. No API credentials required. Perfect for UI testing.
                     </p>
-                  </div>
+                  </button>
 
                   {/* Live Card */}
-                  <div 
+                  <button
+                    type="button"
                     onClick={() => setLocalSettings({...localSettings, useRealApi: true})}
-                    className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all ${localSettings.useRealApi ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}
+                    aria-pressed={localSettings.useRealApi}
+                    className={`relative p-4 rounded-2xl border-2 cursor-pointer transition-all text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${localSettings.useRealApi ? 'border-purple-500 bg-purple-500/10' : 'border-white/10 hover:border-white/20'}`}
                   >
-                    {localSettings.useRealApi && <div className="absolute top-2 right-2 text-purple-600"><CheckCircle2 className="w-5 h-5" /></div>}
-                    <div className="flex items-center mb-2 text-purple-700 dark:text-purple-400">
+                    {localSettings.useRealApi && <div className="absolute top-2 right-2 text-purple-400"><CheckCircle2 className="w-5 h-5" /></div>}
+                    <div className="flex items-center mb-2 text-purple-400">
                        <PlugZap className="w-5 h-5 mr-2" />
-                       <span className="font-bold text-sm">Live API Mode</span>
+                       <span className="font-semibold text-sm">Live API Mode</span>
                     </div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                    <p className="text-xs text-neutral-400">
                       Connects to real provider API. Requires valid configuration below.
                     </p>
-                  </div>
+                  </button>
                 </div>
 
                 {localSettings.useRealApi ? (
                   <div className="animate-in slide-in-from-top-2 fade-in space-y-6 pt-2">
-                     
+
                      {/* TRANSPORT MODE TOGGLE */}
-                     <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-                        <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Transport Protocol</h4>
+                     <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4">
+                        <h4 className="text-xs font-semibold text-neutral-500 uppercase mb-3">Transport Protocol</h4>
                         <div className="space-y-3">
-                           <label className="flex items-center p-3 border rounded-lg cursor-pointer bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-brand-300">
-                              <input 
-                                type="radio" 
-                                name="transportMode" 
+                           <label className="flex items-center p-3 border rounded-xl cursor-pointer bg-white/[0.02] border-white/10 hover:border-volt-text/40">
+                              <input
+                                type="radio"
+                                name="transportMode"
                                 value="gateway-imap-smtp"
                                 checked={localSettings.transportMode === 'gateway-imap-smtp' || !localSettings.transportMode} // Default
                                 onChange={() => setLocalSettings({...localSettings, transportMode: 'gateway-imap-smtp'})}
-                                className="w-4 h-4 text-brand-600 focus:ring-brand-500 border-gray-300"
+                                className="w-4 h-4 text-volt focus:ring-volt-text border-white/20"
                               />
                               <div className="ml-3">
-                                 <span className="block text-sm font-medium text-slate-900 dark:text-white flex items-center">
-                                    <Server className="w-4 h-4 mr-2 text-brand-500" />
+                                 <span className="block text-sm font-medium text-white flex items-center">
+                                    <Server className="w-4 h-4 mr-2 text-volt-text" />
                                     Secure Gateway (IMAP/SMTP)
                                  </span>
-                                 <span className="block text-xs text-slate-500">
+                                 <span className="block text-xs text-neutral-400">
                                     Uses backend server environment variables for credentials. Most secure.
                                  </span>
                               </div>
                            </label>
 
-                           <label className="flex items-center p-3 border rounded-lg cursor-pointer bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-brand-300">
-                              <input 
-                                type="radio" 
-                                name="transportMode" 
+                           <label className="flex items-center p-3 border rounded-xl cursor-pointer bg-white/[0.02] border-white/10 hover:border-volt-text/40">
+                              <input
+                                type="radio"
+                                name="transportMode"
                                 value="oauth-api"
                                 checked={localSettings.transportMode === 'oauth-api'}
                                 onChange={() => setLocalSettings({...localSettings, transportMode: 'oauth-api'})}
-                                className="w-4 h-4 text-brand-600 focus:ring-brand-500 border-gray-300"
+                                className="w-4 h-4 text-volt focus:ring-volt-text border-white/20"
                               />
                               <div className="ml-3">
-                                 <span className="block text-sm font-medium text-slate-900 dark:text-white flex items-center">
-                                    <Globe className="w-4 h-4 mr-2 text-purple-500" />
+                                 <span className="block text-sm font-medium text-white flex items-center">
+                                    <Globe className="w-4 h-4 mr-2 text-purple-400" />
                                     Browser API (OAuth)
                                  </span>
-                                 <span className="block text-xs text-slate-500">
+                                 <span className="block text-xs text-neutral-400">
                                     Legacy mode. Connects directly from browser using provider APIs.
                                  </span>
                               </div>
@@ -324,38 +334,38 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                      </div>
 
                      {localSettings.transportMode === 'gateway-imap-smtp' ? (
-                       <div className="p-6 border border-slate-300 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/50 flex flex-col items-center text-center">
-                          <div className="w-12 h-12 bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 rounded-full flex items-center justify-center mb-4">
+                       <div className="p-6 border border-white/10 rounded-2xl bg-white/[0.02] flex flex-col items-center text-center">
+                          <div className="w-12 h-12 bg-volt/10 text-volt-text rounded-full flex items-center justify-center mb-4">
                              <Server className="w-6 h-6" />
                           </div>
-                          <h4 className="text-slate-900 dark:text-white font-bold mb-2">Server-Managed Credentials</h4>
-                          <p className="text-sm text-slate-500 max-w-sm mb-4">
+                          <h4 className="text-white font-semibold mb-2">Server-Managed Credentials</h4>
+                          <p className="text-sm text-neutral-400 max-w-sm mb-4">
                              Your email credentials are securely stored in the backend server's <code>.env</code> file. No client-side configuration is needed here.
                           </p>
-                          <div className="text-xs font-mono bg-slate-200 dark:bg-slate-800 px-3 py-2 rounded text-slate-600 dark:text-slate-400">
-                             {localSettings.activeProvider === 'ZOHO' ? 'ZOHO_USER / ZOHO_APP_PASSWORD' : 
+                          <div className="text-xs font-mono bg-white/[0.05] px-3 py-2 rounded text-neutral-400">
+                             {localSettings.activeProvider === 'ZOHO' ? 'ZOHO_USER / ZOHO_APP_PASSWORD' :
                               localSettings.activeProvider === 'MICROSOFT' ? 'MICROSOFT_USER / MICROSOFT_APP_PASSWORD' :
                               'GMAIL_USER / GMAIL_APP_PASSWORD'}
                           </div>
                           {localSettings.activeProvider === 'MICROSOFT' && (
-                             <p className="text-[10px] text-slate-400 mt-2">
+                             <p className="text-[10px] text-neutral-500 mt-2">
                                 Note: For Outlook/Microsoft, use an App Password generated from your Microsoft Account Security page.
                              </p>
                           )}
                        </div>
                      ) : (
                        /* LEGACY OAUTH CONFIGURATION - Placeholder or existing */
-                       <div className="flex flex-col items-center justify-center py-6 px-4 text-center bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
-                          <p className="text-sm text-slate-500 dark:text-slate-400">
+                       <div className="flex flex-col items-center justify-center py-6 px-4 text-center bg-white/[0.02] rounded-2xl border border-dashed border-white/10">
+                          <p className="text-sm text-neutral-400">
                             Please switch to <strong>Secure Gateway</strong> mode to use {localSettings.activeProvider} securely with App Passwords.
                           </p>
                        </div>
                      )}
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center py-6 px-4 text-center bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
-                     <CheckCircle2 className="w-12 h-12 text-slate-300 dark:text-slate-600 mb-3" />
-                     <p className="text-sm text-slate-500 dark:text-slate-400">
+                  <div className="flex flex-col items-center justify-center py-6 px-4 text-center bg-white/[0.02] rounded-2xl border border-dashed border-white/10">
+                     <CheckCircle2 className="w-12 h-12 text-neutral-600 mb-3" />
+                     <p className="text-sm text-neutral-400">
                        Sandbox Mode Active. No configuration needed.
                      </p>
                   </div>
@@ -367,16 +377,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
             {activeTab === 'AI' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 uppercase mb-1">Default Tone</label>
+                  <label className="block text-xs font-medium text-neutral-500 uppercase mb-1">Default Tone</label>
                   <div className="grid grid-cols-2 gap-3">
                     {Object.values(FollowUpTone).map((tone) => (
                       <button
                         key={tone}
                         onClick={() => setLocalSettings({...localSettings, defaultTone: tone})}
-                        className={`p-3 text-sm font-medium rounded-lg border text-left transition-all ${
-                          localSettings.defaultTone === tone 
-                            ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-400 ring-1 ring-brand-500' 
-                            : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700'
+                        aria-pressed={localSettings.defaultTone === tone}
+                        className={`p-3 text-sm font-medium rounded-xl border text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${
+                          localSettings.defaultTone === tone
+                            ? 'border-volt-text bg-volt/10 text-volt-text ring-1 ring-volt-text'
+                            : 'border-white/10 bg-white/[0.02] text-neutral-400 hover:bg-white/[0.05]'
                         }`}
                       >
                         {tone}
@@ -386,14 +397,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 uppercase mb-1">Email Signature</label>
-                  <textarea
+                  <label className="block text-xs font-medium text-neutral-500 uppercase mb-1">Email Signature</label>
+                  <Textarea
                     value={localSettings.emailSignature}
                     onChange={(e) => setLocalSettings({...localSettings, emailSignature: e.target.value})}
-                    className="w-full p-3 text-sm border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 outline-none resize-y min-h-[100px]"
+                    className="resize-y min-h-[100px]"
                     placeholder="e.g.&#10;John Doe&#10;Sales Director&#10;Acme Inc."
                   />
-                  <p className="text-xs text-slate-400 mt-1">The AI will use this signature to sign off drafts.</p>
+                  <p className="text-xs text-neutral-500 mt-1">The AI will use this signature to sign off drafts.</p>
                 </div>
               </div>
             )}
@@ -401,44 +412,44 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
              {/* SYNC TAB */}
              {activeTab === 'SYNC' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-                <div className="flex items-center justify-between p-4 border border-slate-200 dark:border-slate-700 rounded-lg">
+                <div className="flex items-center justify-between p-4 border border-white/10 rounded-2xl">
                   <div>
-                    <h4 className="text-sm font-medium text-slate-900 dark:text-white">Auto-Sync Background</h4>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Check for new sent emails every 15 mins.</p>
+                    <h4 className="text-sm font-medium text-white">Auto-Sync Background</h4>
+                    <p className="text-xs text-neutral-400">Check for new sent emails every 15 mins.</p>
                   </div>
-                  <div 
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={localSettings.autoSync}
+                    aria-label="Toggle auto-sync background"
                     onClick={() => setLocalSettings({...localSettings, autoSync: !localSettings.autoSync})}
-                    className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${localSettings.autoSync ? 'bg-brand-600' : 'bg-slate-300 dark:bg-slate-600'}`}
+                    className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${localSettings.autoSync ? 'bg-volt' : 'bg-white/10'}`}
                   >
                     <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${localSettings.autoSync ? 'translate-x-5' : 'translate-x-0'}`} />
-                  </div>
+                  </button>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 uppercase mb-1">Sync Lookback Period</label>
-                  <select
+                  <label className="block text-xs font-medium text-neutral-500 uppercase mb-1">Sync Lookback Period</label>
+                  <Select
                     value={localSettings.syncLookbackDays}
                     onChange={(e) => setLocalSettings({...localSettings, syncLookbackDays: parseInt(e.target.value)})}
-                    className="w-full p-2.5 text-sm border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 outline-none"
                   >
                     <option value={7}>Last 7 Days</option>
                     <option value={14}>Last 14 Days</option>
                     <option value={30}>Last 30 Days</option>
                     <option value={90}>Last 90 Days</option>
-                  </select>
-                  <p className="text-xs text-slate-400 mt-1">Emails older than this will not be imported.</p>
+                  </Select>
+                  <p className="text-xs text-neutral-500 mt-1">Emails older than this will not be imported.</p>
                 </div>
 
-                <div className="pt-6 border-t border-slate-200 dark:border-slate-700 mt-6">
-                  <h4 className="text-sm font-bold text-red-600 dark:text-red-400 mb-2 flex items-center">
+                <div className="pt-6 border-t border-white/10 mt-6">
+                  <h4 className="text-sm font-semibold text-red-400 mb-2 flex items-center">
                     <AlertTriangle className="w-4 h-4 mr-2" /> Danger Zone
                   </h4>
-                  <button 
-                    onClick={() => setShowResetConfirm(true)}
-                    className="px-4 py-2 border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 text-sm font-medium rounded-lg hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
-                  >
+                  <Button variant="danger" onClick={() => setShowResetConfirm(true)}>
                     Factory Reset / Clear Demo Data
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
@@ -446,12 +457,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
             {/* DEPLOYMENT TAB */}
             {activeTab === 'DEPLOYMENT' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
-                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800 rounded-lg p-4 mb-6">
-                   <h3 className="font-bold text-amber-800 dark:text-amber-300 flex items-center mb-2">
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 mb-6">
+                   <h3 className="font-semibold text-amber-300 flex items-center mb-2">
                       <Hammer className="w-4 h-4 mr-2" />
                       Production Readiness Checklist
                    </h3>
-                   <p className="text-sm text-amber-700 dark:text-amber-400 leading-relaxed">
+                   <p className="text-sm text-amber-400/90 leading-relaxed">
                       The current application is running in a client-side simulation/demo environment. To deploy this for real-world production use with secure integration, the following architectural changes are required.
                    </p>
                 </div>
@@ -463,13 +474,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                      { title: "Token Storage", desc: "Implement secure storage for Access/Refresh tokens (e.g., encrypted database)." },
                      { title: "Rate Limiting", desc: "Handle Zoho/Google API rate limits." }
                    ].map((item, i) => (
-                      <div key={i} className="flex items-start p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
-                         <div className="mr-3 mt-0.5 text-slate-400">
+                      <div key={i} className="flex items-start p-3 bg-white/[0.02] border border-white/10 rounded-xl">
+                         <div className="mr-3 mt-0.5 text-neutral-500">
                             <Square className="w-5 h-5" />
                          </div>
                          <div>
-                            <h4 className="text-sm font-bold text-slate-900 dark:text-white">{item.title}</h4>
-                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{item.desc}</p>
+                            <h4 className="text-sm font-semibold text-white">{item.title}</h4>
+                            <p className="text-xs text-neutral-400 mt-1">{item.desc}</p>
                          </div>
                       </div>
                    ))}
@@ -481,27 +492,18 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex justify-end space-x-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors"
-          >
+        <div className="px-6 py-4 border-t border-white/10 bg-white/[0.02] flex justify-end space-x-3">
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={handleSaveClick}
             disabled={isSaving}
-            className="flex items-center px-6 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg shadow-md transition-all disabled:opacity-70 active:scale-95"
+            loading={isSaving}
+            leftIcon={!isSaving ? <Save className="w-4 h-4" /> : undefined}
           >
-            {isSaving ? (
-              'Saving...'
-            ) : (
-              <>
-                <Save className="w-4 h-4 mr-2" />
-                Save Changes
-              </>
-            )}
-          </button>
+            {isSaving ? 'Saving...' : 'Save Changes'}
+          </Button>
         </div>
       </div>
     </div>

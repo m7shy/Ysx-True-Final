@@ -1,6 +1,6 @@
-
 import React from 'react';
-import { AlertTriangle, X } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
+import { Modal, Button } from '../src/design/ui';
 
 interface ConfirmModalProps {
   isOpen: boolean;
@@ -17,33 +17,31 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   isOpen, onClose, onConfirm, title, message,
   confirmText = "Confirm", cancelText = "Cancel", isDanger = false
 }) => {
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4">
-      <div className="bg-canvas/95 backdrop-blur-xl rounded-xl shadow-2xl w-full max-w-sm overflow-hidden border border-white/10">
-        <div className="p-6 text-center">
-          <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 mx-auto ${isDanger ? 'bg-red-500/15 text-red-400' : 'bg-brand-900/30 text-brand-400'}`}>
-            <AlertTriangle className="w-6 h-6" />
-          </div>
-          <h3 className="text-lg font-bold text-white mb-2">{title}</h3>
-          <p className="text-sm text-slate-400 leading-relaxed">{message}</p>
+    <Modal isOpen={isOpen} onClose={onClose} size="sm">
+      <div className="p-6 text-center">
+        <div
+          className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 mx-auto ${
+            isDanger ? 'bg-red-500/15 text-red-400' : 'bg-volt/15 text-volt-text'
+          }`}
+        >
+          <AlertTriangle className="w-6 h-6" />
         </div>
-        <div className="px-6 py-4 bg-white/5 border-t border-white/10 flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 rounded-lg transition-colors duration-300"
-          >
-            {cancelText}
-          </button>
-          <button
-            onClick={() => { onConfirm(); onClose(); }}
-            className={`flex-1 px-4 py-2.5 text-sm font-bold text-white rounded-lg shadow-sm transition-all duration-300 active:scale-95 ${isDanger ? 'bg-red-600 hover:bg-red-500 shadow-red-500/20' : 'bg-brand-600 hover:bg-brand-500 shadow-brand-500/20'}`}
-          >
-            {confirmText}
-          </button>
-        </div>
+        <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
+        <p className="text-sm text-neutral-400 leading-relaxed">{message}</p>
       </div>
-    </div>
+      <div className="px-6 py-4 bg-white/[0.03] border-t border-white/10 flex gap-3">
+        <Button variant="ghost" fullWidth onClick={onClose}>
+          {cancelText}
+        </Button>
+        <Button
+          variant={isDanger ? 'danger' : 'primary'}
+          fullWidth
+          onClick={() => { onConfirm(); onClose(); }}
+        >
+          {confirmText}
+        </Button>
+      </div>
+    </Modal>
   );
 };

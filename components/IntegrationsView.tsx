@@ -6,6 +6,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { useSettings } from '../context/SettingsContext';
 import { apiGet, apiPost, ApiError } from '../services/apiClient';
 import { useNotification } from '../context/NotificationContext';
+import { Card, Button, Badge } from '../src/design/ui';
 
 interface IntegrationItem {
   id: string;
@@ -185,15 +186,15 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
 
       <div className="flex justify-between items-center mb-8">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center">
-            <Layers className="w-6 h-6 mr-2 text-brand-500" />
+          <h2 className="text-2xl font-semibold text-white flex items-center">
+            <Layers className="w-6 h-6 mr-2 text-volt-text" />
             Integrations
           </h2>
-          <p className="text-slate-500 dark:text-slate-400 mt-1">Connect your workflow tools to supercharge YSX Flow.</p>
+          <p className="text-neutral-400 mt-1">Connect your workflow tools to supercharge YSX Flow.</p>
         </div>
         <button
           onClick={onViewDocumentation}
-          className="text-sm text-brand-600 dark:text-brand-400 font-medium hover:underline flex items-center group"
+          className="text-sm text-volt-text font-medium hover:underline flex items-center group rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text focus-visible:ring-offset-2 focus-visible:ring-offset-noir px-2 py-1"
         >
           View Documentation <ExternalLink className="w-3 h-3 ml-1 group-hover:translate-x-0.5 transition-transform" />
         </button>
@@ -201,13 +202,14 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
 
       <div className="mb-8">
         <div className="flex justify-between items-center mb-3">
-          <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center">
-            <MailboxIcon className="w-4 h-4 mr-2 text-brand-500" />
+          <h3 className="text-sm font-semibold text-neutral-300 flex items-center">
+            <MailboxIcon className="w-4 h-4 mr-2 text-volt-text" />
             Connected Mailboxes
           </h3>
           <button
             onClick={loadMailboxes}
-            className="p-1.5 text-slate-400 hover:text-brand-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            className="p-1.5 text-neutral-400 hover:text-volt-text rounded-full hover:bg-white/[0.05] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text focus-visible:ring-offset-2 focus-visible:ring-offset-noir"
+            aria-label="Refresh connected mailboxes"
             title="Refresh"
           >
             <RefreshCw className={`w-4 h-4 ${isLoadingMailboxes ? 'animate-spin' : ''}`} />
@@ -215,23 +217,23 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
         </div>
 
         {isLoadingMailboxes ? (
-          <div className="p-4 text-sm text-slate-400">Loading mailboxes...</div>
+          <div className="p-4 text-sm text-neutral-400">Loading mailboxes...</div>
         ) : mailboxes.length === 0 ? (
-          <div className="p-4 text-sm text-slate-400 bg-slate-50 dark:bg-slate-900 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+          <div className="p-4 text-sm text-neutral-400 bg-white/[0.02] border border-dashed border-white/10 rounded-2xl">
             No mailboxes connected yet. Connect Google Workspace or Microsoft 365 below to start rotating sends across them.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {mailboxes.map((mb) => (
-              <div key={mb.id} className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
+              <Card key={mb.id} padding="none" className="flex items-center justify-between p-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-slate-800 dark:text-white truncate">{mb.email}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{mb.provider === 'GMAIL' ? 'Google Workspace' : 'Microsoft 365'}</p>
+                  <p className="text-sm font-semibold text-white truncate">{mb.email}</p>
+                  <p className="text-xs text-neutral-400">{mb.provider === 'GMAIL' ? 'Google Workspace' : 'Microsoft 365'}</p>
                 </div>
-                <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full shrink-0 ${mb.isActive ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}`}>
+                <Badge variant={mb.isActive ? 'success' : 'neutral'} className="shrink-0">
                   {mb.isActive ? 'Active' : 'Paused'}
-                </span>
-              </div>
+                </Badge>
+              </Card>
             ))}
           </div>
         )}
@@ -239,55 +241,55 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
 
       <div className="grid grid-cols-1 gap-4">
         {integrations.map((item) => (
-          <div key={item.id} className={`flex flex-col md:flex-row md:items-center justify-between p-6 bg-white dark:bg-slate-900 border rounded-xl shadow-sm transition-all duration-300 ${item.hasError ? 'border-red-300 bg-red-50 dark:bg-red-900/10' : item.connected ? 'border-green-200 dark:border-green-900/30 bg-green-50/30 dark:bg-green-900/10' : 'border-slate-200 dark:border-slate-800 hover:shadow-md'}`}>
+          <div key={item.id} className={`flex flex-col md:flex-row md:items-center justify-between p-6 border rounded-2xl transition-all duration-300 ${item.hasError ? 'border-red-500/30 bg-red-500/[0.06]' : item.connected ? 'border-green-500/25 bg-green-500/[0.05]' : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04]'}`}>
             <div className="flex items-center space-x-5 mb-4 md:mb-0">
-              <div className={`w-14 h-14 rounded-xl flex items-center justify-center text-white shadow-lg ${item.color} shrink-0 relative overflow-hidden group`}>
+              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white ${item.color} shrink-0 relative overflow-hidden group`}>
                  {/* Shine effect */}
                  <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-1000" />
-                 <span className="font-bold text-xl tracking-tighter relative z-10">{item.name.substring(0, 2).toUpperCase()}</span>
+                 <span className="font-semibold text-xl tracking-tighter relative z-10">{item.name.substring(0, 2).toUpperCase()}</span>
               </div>
               <div>
-                  <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center flex-wrap gap-2">
+                  <h3 className="text-lg font-semibold text-white flex items-center flex-wrap gap-2">
                     {item.name}
-                    
+
                     {/* Status Badges */}
                     {item.hasError ? (
-                       <span className="px-2 py-0.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 text-[10px] uppercase font-bold rounded-full animate-pulse flex items-center">
-                          <AlertTriangle className="w-3 h-3 mr-1" /> Re-auth Required
-                       </span>
+                       <Badge variant="danger" className="animate-pulse" icon={<AlertTriangle className="w-3 h-3" />}>
+                          Re-auth Required
+                       </Badge>
                     ) : item.connected ? (
-                        <span className="px-2 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-[10px] uppercase font-bold rounded-full animate-in zoom-in">Active</span>
+                        <Badge variant="success" className="animate-in zoom-in">Active</Badge>
                     ) : null}
 
                     {item.connected && isSandbox && (item.id === 'zoho_mail') && !item.hasError && (
-                        <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold rounded-full animate-in zoom-in flex items-center border border-slate-200 dark:border-slate-700">
-                            <FlaskConical className="w-3 h-3 mr-1" /> Simulated
-                        </span>
+                        <Badge variant="neutral" className="animate-in zoom-in" icon={<FlaskConical className="w-3 h-3" />}>
+                            Simulated
+                        </Badge>
                     )}
 
                     {item.comingSoon && (
-                        <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold rounded-full flex items-center border border-slate-200 dark:border-slate-700">
-                            Coming Soon
-                        </span>
+                        <Badge variant="neutral">Coming Soon</Badge>
                     )}
                   </h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 max-w-md">{item.desc}</p>
+                  <p className="text-sm text-neutral-400 mt-0.5 max-w-md">{item.desc}</p>
               </div>
             </div>
-            
+
             <div className="flex items-center space-x-3 pl-19 md:pl-0">
               {item.connected && (
                 <>
-                  <button 
-                    className="p-2 text-slate-400 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20" 
+                  <button
+                    className="p-2 text-neutral-400 hover:text-red-500 transition-colors rounded-full hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text focus-visible:ring-offset-2 focus-visible:ring-offset-noir"
+                    aria-label={`Disconnect ${item.name}`}
                     title="Disconnect"
                     onClick={() => setDisconnectId(item.id)}
                   >
                     <XCircle className="w-5 h-5" />
                   </button>
                   {!item.hasError && (
-                    <button 
-                      className="p-2 text-slate-400 hover:text-brand-600 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" 
+                    <button
+                      className="p-2 text-neutral-400 hover:text-volt-text transition-colors rounded-full hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text focus-visible:ring-offset-2 focus-visible:ring-offset-noir"
+                      aria-label={`Sync ${item.name} now`}
                       title="Sync Now"
                     >
                       <RefreshCw className="w-5 h-5" />
@@ -295,39 +297,35 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
                   )}
                 </>
               )}
-              
+
               {item.hasError && onFixConnection ? (
-                <button
+                <Button
+                   variant="danger"
                    onClick={onFixConnection}
-                   className="px-5 py-2.5 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-500/20 transition-all flex items-center justify-center min-w-[140px]"
+                   leftIcon={<Wrench className="w-4 h-4" />}
+                   className="min-w-[140px]"
                 >
-                   <Wrench className="w-4 h-4 mr-2" /> Fix Connection
-                </button>
+                   Fix Connection
+                </Button>
               ) : item.comingSoon ? (
-                <button
+                <Button
+                  variant="secondary"
                   disabled
-                  className="px-5 py-2.5 rounded-lg text-sm font-bold min-w-[140px] flex justify-center bg-slate-50 dark:bg-slate-900 text-slate-400 dark:text-slate-600 border border-slate-200 dark:border-slate-800 cursor-not-allowed"
+                  className="min-w-[140px]"
                 >
                   Coming Soon
-                </button>
+                </Button>
               ) : (
-                <button
+                <Button
+                  variant="secondary"
                   onClick={() => !item.connected && handleConnect(item.id)}
                   disabled={connectingId === item.id || (item.connected && (item.id === 'zoho_mail' || item.id === 'google_workspace'))}
-                  className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all active:scale-95 min-w-[140px] flex justify-center ${
-                    item.connected
-                      ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 cursor-default'
-                      : 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white border border-slate-300 dark:border-slate-600 hover:border-brand-500 hover:text-brand-600 dark:hover:text-brand-400 shadow-sm hover:shadow'
-                  } ${connectingId === item.id ? 'opacity-80 cursor-wait' : ''}`}
+                  loading={connectingId === item.id}
+                  leftIcon={item.connected ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                  className={`min-w-[140px] ${item.connected ? '' : 'hover:border-volt-text hover:text-volt-text'}`}
                 >
-                  {connectingId === item.id ? (
-                    <span className="flex items-center animate-pulse"><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Connecting...</span>
-                  ) : item.connected ? (
-                    <span className="flex items-center"><Check className="w-4 h-4 mr-2" /> Connected</span>
-                  ) : (
-                    <span className="flex items-center"><Plus className="w-4 h-4 mr-2" /> Connect</span>
-                  )}
-                </button>
+                  {connectingId === item.id ? 'Connecting...' : item.connected ? 'Connected' : 'Connect'}
+                </Button>
               )}
             </div>
           </div>

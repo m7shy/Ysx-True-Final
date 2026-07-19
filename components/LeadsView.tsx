@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Users, Plus, Upload, Download, Search, Mail, Trash2, Loader2, X, Zap, Rocket, Trophy, Radar, Check, Copy, AlertCircle, Ghost } from 'lucide-react';
+import { X, Zap, Rocket, Trophy, Check, Copy, Radar } from 'lucide-react';
 import { Lead, LeadStatus, OfferFitAnalysis } from '../types';
 import {
   fetchLeads,
@@ -15,7 +15,10 @@ import {
 import { analyzeOfferFit, scoreLead } from '../services/gemini';
 import { useNotification } from '../context/NotificationContext';
 import { ConfirmModal } from './ConfirmModal';
-import { EASE, staggerDelay, AnimatedHeading, MaskedReveal } from './motion/primitives';
+import { EASE, MaskedReveal } from './motion/primitives';
+import { Button, Input, Select, Textarea, Alert } from '../src/design/ui';
+import { LeadsToolbar } from './leads/LeadsToolbar';
+import { LeadsTable } from './leads/LeadsTable';
 
 interface LeadsViewProps {
   onCompose: (lead: Lead) => void;
@@ -295,44 +298,6 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
   const topLeads = [...scoredLeads].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 10);
   const hasScores = scoredLeads.length > 0;
 
-  const STATUS_OPTIONS = (
-    <>
-      <option value="NEW">New</option>
-      <option value="CONTACTED">Contacted</option>
-      <option value="REPLIED">Replied</option>
-      <option value="INTERESTED">Interested</option>
-      <option value="CALL_BOOKED">Call Booked</option>
-      <option value="TRIAL">Trial</option>
-      <option value="CLIENT_CLOSED">Client Closed</option>
-      <option value="LOST">Not Interested / Lost</option>
-      <option value="DNC">Do Not Contact</option>
-    </>
-  );
-
-  const StatusBadge = ({ status }: { status: LeadStatus }) => {
-    const styles: Record<string, string> = {
-        'NEW': 'bg-blue-500/20 text-blue-300',
-        'CONTACTED': 'bg-amber-500/20 text-amber-300',
-        'REPLIED': 'bg-indigo-500/20 text-indigo-300',
-        'INTERESTED': 'bg-green-500/20 text-green-300',
-        'CALL_BOOKED': 'bg-purple-500/20 text-purple-300',
-        'TRIAL': 'bg-cyan-500/20 text-cyan-300',
-        'CLIENT_CLOSED': 'bg-emerald-500/20 text-emerald-300',
-        'LOST': 'bg-white/10 text-slate-300',
-        'DNC': 'bg-red-500/30 text-red-200'
-    };
-    return (
-        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${styles[status] || 'bg-white/10 text-slate-300'}`}>
-            {status.replace('_', ' ')}
-        </span>
-    );
-  };
-
-  const scoreBadgeClass = (score: number) =>
-    score >= 80 ? 'bg-green-500/20 text-green-300' :
-    score >= 50 ? 'bg-amber-500/20 text-amber-300' :
-    'bg-red-500/20 text-red-300';
-
   return (
     <div className="p-4 md:p-8 h-full flex flex-col overflow-y-auto custom-scrollbar">
       <ConfirmModal
@@ -348,388 +313,141 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
       {/* Top Section: Intelligence Dashboard */}
       <div className="mb-8">
          {hasScores ? (
-           <MaskedReveal className="glass rounded-xl p-6 text-white relative overflow-hidden">
-             <div className="absolute top-0 right-0 w-64 h-64 bg-brand-500/10 rounded-full translate-x-1/3 -translate-y-1/3 blur-3xl" />
+           <MaskedReveal className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 text-white relative overflow-hidden">
+             <div className="absolute top-0 right-0 w-64 h-64 bg-volt/10 rounded-full translate-x-1/3 -translate-y-1/3 blur-3xl" />
 
              <div className="flex items-center justify-between mb-4 relative z-10">
                 <div className="flex items-center">
-                   <Trophy className="w-6 h-6 text-yellow-400 mr-3" />
+                   <Trophy className="w-6 h-6 text-amber-400 mr-3" />
                    <div>
-                     <h3 className="text-lg font-bold">Today's Big 10</h3>
-                     <p className="text-slate-400 text-sm">Highest scoring prospects based on engagement & fit.</p>
+                     <h3 className="text-lg font-semibold">Today's Big 10</h3>
+                     <p className="text-neutral-400 text-sm">Highest scoring prospects based on engagement & fit.</p>
                    </div>
                 </div>
                 <div className="text-right hidden md:block">
-                   <div className="text-2xl font-bold text-brand-400">{Math.round(scoredLeads.reduce((acc, l) => acc + (l.score || 0), 0) / scoredLeads.length)}</div>
-                   <div className="text-xs text-slate-400 uppercase tracking-wider">Avg Score</div>
+                   <div className="text-2xl font-semibold text-volt-text">{Math.round(scoredLeads.reduce((acc, l) => acc + (l.score || 0), 0) / scoredLeads.length)}</div>
+                   <div className="text-xs text-neutral-500 uppercase tracking-wider">Avg Score</div>
                 </div>
              </div>
 
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 relative z-10">
                 {topLeads.slice(0, 3).map((lead, i) => (
-                  <div key={lead.id} className="bg-white/5 hover:bg-white/10 transition-colors duration-300 p-3 rounded-lg border border-white/10 flex items-center justify-between group cursor-pointer" onClick={() => onCompose(lead)}>
+                  <button key={lead.id} type="button" aria-label={`Compose email to ${lead.name}`} className="w-full text-left bg-white/[0.03] hover:bg-white/[0.06] transition-colors duration-300 p-3 rounded-2xl border border-white/10 flex items-center justify-between group" onClick={() => onCompose(lead)}>
                      <div className="flex items-center min-w-0">
-                        <div className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mr-3 ${i === 0 ? 'bg-yellow-500 text-yellow-900' : i === 1 ? 'bg-slate-300 text-slate-900' : 'bg-amber-700 text-amber-100'}`}>
+                        <div className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-semibold mr-3 ${i === 0 ? 'bg-amber-500 text-amber-950' : i === 1 ? 'bg-neutral-300 text-neutral-900' : 'bg-amber-700 text-amber-100'}`}>
                            {i + 1}
                         </div>
                         <div className="min-w-0">
-                           <div className="text-sm font-medium group-hover:text-brand-300 transition-colors duration-300 truncate">{lead.name}</div>
-                           <div className="text-xs text-slate-400 truncate">{lead.company}</div>
+                           <div className="text-sm font-medium group-hover:text-volt-text transition-colors duration-300 truncate">{lead.name}</div>
+                           <div className="text-xs text-neutral-400 truncate">{lead.company}</div>
                         </div>
                      </div>
-                     <div className="text-lg font-bold text-emerald-400 ml-2">{lead.score}</div>
-                  </div>
+                     <div className="text-lg font-semibold text-emerald-400 ml-2">{lead.score}</div>
+                  </button>
                 ))}
              </div>
            </MaskedReveal>
          ) : (
-            <MaskedReveal className="glass rounded-xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
+            <MaskedReveal className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 flex flex-col md:flex-row items-center justify-between gap-4">
                <div className="flex items-center text-center md:text-left flex-col md:flex-row">
-                  <div className="w-12 h-12 bg-brand-900/40 border border-brand-800 rounded-full flex items-center justify-center md:mr-4 mb-2 md:mb-0">
-                     <Rocket className="w-6 h-6 text-brand-400" />
+                  <div className="w-12 h-12 bg-volt/10 border border-volt-text/25 rounded-full flex items-center justify-center md:mr-4 mb-2 md:mb-0">
+                     <Rocket className="w-6 h-6 text-volt-text" />
                   </div>
                   <div>
-                     <h3 className="text-lg font-bold text-white">Unlock Lead Intelligence</h3>
-                     <p className="text-slate-400 text-sm">Run intelligence to identify top prospects and score leads automatically.</p>
+                     <h3 className="text-lg font-semibold text-white">Unlock Lead Intelligence</h3>
+                     <p className="text-neutral-400 text-sm">Run intelligence to identify top prospects and score leads automatically.</p>
                   </div>
                </div>
-               <button
+               <Button
                   onClick={handleBulkAnalyze}
-                  disabled={isBulkAnalyzing || leads.length === 0}
-                  className="w-full md:w-auto px-6 py-3 bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white rounded-lg font-bold shadow-glow transition-all duration-300 hover:scale-105 active:scale-95 whitespace-nowrap flex items-center justify-center"
+                  disabled={leads.length === 0}
+                  loading={isBulkAnalyzing}
+                  leftIcon={<Zap className="w-5 h-5" />}
+                  className="w-full md:w-auto whitespace-nowrap"
                >
-                  {isBulkAnalyzing ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <Zap className="w-5 h-5 mr-2 fill-white" />}
                   {isBulkAnalyzing ? 'Analyzing...' : 'Run Intelligence on All Leads'}
-               </button>
+               </Button>
             </MaskedReveal>
          )}
       </div>
 
-      <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
-        <div>
-          <AnimatedHeading as="h2" className="text-2xl font-bold text-white flex items-center tracking-tight">
-            <Users className="w-6 h-6 mr-2 text-brand-500" />
-            Lead Management
-          </AnimatedHeading>
-        </div>
+      <LeadsToolbar
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        showRunRemaining={hasScores && leads.some(l => l.score === undefined)}
+        isBulkAnalyzing={isBulkAnalyzing}
+        onBulkAnalyze={handleBulkAnalyze}
+        isImporting={isImporting}
+        onImportClick={() => importInputRef.current?.click()}
+        importInputRef={importInputRef}
+        onImportFile={handleImportFile}
+        isExporting={isExporting}
+        onExport={handleExport}
+        onAddLead={() => setIsAddModalOpen(true)}
+      />
 
-        <div className="flex flex-wrap gap-2 md:gap-3">
-          {hasScores && leads.some(l => l.score === undefined) && (
-             <button
-               onClick={handleBulkAnalyze}
-               disabled={isBulkAnalyzing}
-               className="flex items-center px-3 py-2 bg-purple-900/20 border border-purple-800 text-purple-300 rounded-lg text-sm font-medium hover:bg-purple-900/40 transition-colors duration-300"
-             >
-                {isBulkAnalyzing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Zap className="w-4 h-4 mr-2" />}
-                <span className="hidden sm:inline">Run Remaining</span>
-             </button>
-          )}
-          <button
-            onClick={() => importInputRef.current?.click()}
-            disabled={isImporting}
-            className="flex items-center px-3 py-2 bg-white/5 border border-white/10 text-slate-300 rounded-lg text-sm font-medium hover:bg-white/10 disabled:opacity-60 transition-colors duration-300"
-          >
-             {isImporting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
-             <span className="hidden sm:inline">Import</span>
-          </button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".csv"
-            onChange={(e) => handleImportFile(e.target.files)}
-            className="hidden"
-          />
-          <button
-            onClick={handleExport}
-            disabled={isExporting}
-            className="flex items-center px-3 py-2 bg-white/5 border border-white/10 text-slate-300 rounded-lg text-sm font-medium hover:bg-white/10 disabled:opacity-60 transition-colors duration-300"
-          >
-             {isExporting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Download className="w-4 h-4 mr-2" />}
-             <span className="hidden sm:inline">Export</span>
-          </button>
-          <button
-            onClick={() => setIsAddModalOpen(true)}
-            className="flex items-center px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-500 transition-all duration-300 shadow-glow active:scale-95 text-sm font-bold flex-1 md:flex-none justify-center"
-          >
-            <Plus className="w-4 h-4 mr-2" /> Add Lead
-          </button>
-        </div>
-      </div>
-
-      {/* Search Bar */}
-      <div className="mb-6 relative max-w-md">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-4 w-4 text-slate-400" />
-        </div>
-        <input
-          type="text"
-          placeholder="Search (e.g. 'John Acme')..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="block w-full pl-10 pr-4 py-2.5 border border-white/10 rounded-lg bg-white/5 backdrop-blur-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm transition-shadow duration-300"
-        />
-      </div>
-
-      {/* Mobile Card View */}
-      <div className="md:hidden space-y-4">
-        {loading ? (
-           <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-              <Loader2 className="w-6 h-6 animate-spin mb-2" />
-              <p>Loading leads...</p>
-           </div>
-        ) : filteredLeads.length === 0 ? (
-           <div className="flex flex-col items-center justify-center py-16 px-4 text-center glass rounded-xl">
-             <div className="w-16 h-16 bg-white/5 border border-white/10 rounded-full flex items-center justify-center mb-4">
-                <Ghost className="w-8 h-8 text-slate-500" />
-             </div>
-             <h3 className="text-lg font-bold text-white mb-1">No Leads Found</h3>
-             <p className="text-slate-400 text-sm">
-                Try adjusting your search, add a lead, or run the scraper to fill your pipeline.
-             </p>
-           </div>
-        ) : (
-          filteredLeads.map((lead, index) => (
-            <motion.div
-              key={lead.id}
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, ease: EASE, delay: staggerDelay(index) }}
-              className="glass p-4 rounded-xl"
-            >
-               <div className="flex justify-between items-start mb-3">
-                  <div>
-                     <h3 className="font-bold text-white">{lead.name}</h3>
-                     <div className="text-xs text-slate-400">{lead.company}</div>
-                  </div>
-                  <StatusBadge status={lead.status} />
-               </div>
-
-               <div className="grid grid-cols-2 gap-4 mb-4">
-                  <div>
-                     <p className="text-[10px] uppercase text-slate-500 font-bold mb-1">Score</p>
-                     {lead.score !== undefined ? (
-                        <div className="flex items-center">
-                            <span className={`inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs font-bold ${scoreBadgeClass(lead.score)}`}>
-                               {lead.score}
-                            </span>
-                        </div>
-                      ) : (
-                         <button
-                           onClick={() => handleAnalyze(lead.id)}
-                           disabled={analyzingIds.has(lead.id)}
-                           className="text-xs font-medium text-brand-400 hover:underline flex items-center disabled:opacity-50"
-                         >
-                            {analyzingIds.has(lead.id) ? 'Analyzing...' : 'Run AI Scan'}
-                         </button>
-                      )}
-                  </div>
-                  <div>
-                     <p className="text-[10px] uppercase text-slate-500 font-bold mb-1">Last Contact</p>
-                     <p className="text-sm text-slate-300">{lead.lastContacted ? new Date(lead.lastContacted).toLocaleDateString() : '-'}</p>
-                  </div>
-               </div>
-
-               <div className="flex items-center justify-between pt-3 border-t border-white/10">
-                  <div className="flex space-x-1">
-                     <button onClick={() => handleOpenScan(lead)} className="p-2 text-slate-400 hover:text-brand-400 bg-white/5 rounded-lg transition-colors duration-300" title="Scan Fit">
-                        <Radar className="w-4 h-4" />
-                     </button>
-                     <button onClick={() => onCompose(lead)} className="p-2 text-slate-400 hover:text-brand-400 bg-white/5 rounded-lg transition-colors duration-300" title="Email">
-                        <Mail className="w-4 h-4" />
-                     </button>
-                     <button onClick={() => setDeleteId(lead.id)} disabled={actionLoading === lead.id} className="p-2 text-slate-400 hover:text-red-400 bg-white/5 rounded-lg transition-colors duration-300">
-                        {actionLoading === lead.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                     </button>
-                  </div>
-
-                  <select
-                    value={lead.status}
-                    onChange={(e) => handleStatusChange(lead.id, e.target.value as LeadStatus)}
-                    className="text-xs bg-white/5 border border-white/10 rounded-lg py-1.5 pl-2 pr-6 focus:ring-0 font-medium text-slate-300"
-                  >
-                     {STATUS_OPTIONS}
-                  </select>
-               </div>
-            </motion.div>
-          ))
-        )}
-      </div>
-
-      {/* Desktop Table View */}
-      <MaskedReveal className="hidden md:flex glass rounded-xl overflow-hidden flex-1 flex-col min-h-[400px]">
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-white/5 text-slate-400 uppercase text-xs font-bold border-b border-white/10">
-              <tr>
-                <th className="px-6 py-4">Name</th>
-                <th className="px-6 py-4">Score</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4">Last Contact</th>
-                <th className="px-6 py-4">Source</th>
-                <th className="px-6 py-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/10">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-slate-400">
-                    <div className="flex justify-center items-center gap-2">
-                      <Loader2 className="w-5 h-5 animate-spin" /> Loading leads...
-                    </div>
-                  </td>
-                </tr>
-              ) : filteredLeads.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-24 text-center">
-                     <div className="flex flex-col items-center justify-center">
-                        <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-4 border border-white/10">
-                           <Search className="w-10 h-10 text-slate-600" />
-                        </div>
-                        <h3 className="text-xl font-bold text-slate-200 mb-2">No Leads Found</h3>
-                        <p className="text-slate-400 text-sm max-w-xs leading-relaxed">
-                           We couldn't find any leads matching your criteria. Try a different search, import a CSV, or run the scraper.
-                        </p>
-                     </div>
-                  </td>
-                </tr>
-              ) : (
-                filteredLeads.map((lead) => (
-                  <tr key={lead.id} className="group hover:bg-white/5 transition-colors duration-300">
-                    <td className="px-6 py-4">
-                      <div className="font-medium text-white">{lead.name}</div>
-                      <div className="text-xs text-slate-400">{lead.email}</div>
-                      {lead.company && <div className="text-xs text-slate-500 mt-0.5">{lead.company}</div>}
-                    </td>
-                    <td className="px-6 py-4">
-                      {lead.score !== undefined ? (
-                         <div className="flex items-center">
-                            <span className={`inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-xs font-bold ${scoreBadgeClass(lead.score)}`}>
-                               {lead.score}
-                            </span>
-                         </div>
-                      ) : (
-                         <button
-                           onClick={() => handleAnalyze(lead.id)}
-                           disabled={analyzingIds.has(lead.id)}
-                           className="text-xs font-medium text-brand-400 hover:bg-brand-900/20 px-2 py-1 rounded transition-colors duration-300 flex items-center disabled:opacity-50"
-                         >
-                            {analyzingIds.has(lead.id) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3 mr-1" />}
-                            Analyze
-                         </button>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <select
-                        value={lead.status}
-                        onChange={(e) => handleStatusChange(lead.id, e.target.value as LeadStatus)}
-                        disabled={actionLoading === lead.id}
-                        className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border border-white/10 bg-white/5 text-slate-300 outline-none cursor-pointer transition-colors duration-300 hover:bg-white/10"
-                      >
-                        {STATUS_OPTIONS}
-                      </select>
-                    </td>
-                    <td className="px-6 py-4 text-slate-400 tabular-nums">
-                      {lead.lastContacted ? new Date(lead.lastContacted).toLocaleDateString() : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-slate-400">
-                      {lead.source}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end space-x-2">
-                        <button
-                           onClick={() => handleOpenScan(lead)}
-                           className="p-1.5 text-slate-400 hover:text-brand-400 hover:bg-brand-900/20 rounded transition-colors duration-300"
-                           title="Scan Fit"
-                        >
-                           <Radar className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => onCompose(lead)}
-                          className="p-1.5 text-slate-400 hover:text-brand-400 hover:bg-brand-900/20 rounded transition-colors duration-300"
-                          title="Email Lead"
-                        >
-                          <Mail className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => setDeleteId(lead.id)}
-                          disabled={actionLoading === lead.id}
-                          className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors duration-300"
-                          title="Delete Lead"
-                        >
-                          {actionLoading === lead.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </MaskedReveal>
+      <LeadsTable
+        leads={filteredLeads}
+        loading={loading}
+        analyzingIds={analyzingIds}
+        actionLoading={actionLoading}
+        onAnalyze={handleAnalyze}
+        onStatusChange={handleStatusChange}
+        onScan={handleOpenScan}
+        onCompose={onCompose}
+        onDelete={setDeleteId}
+      />
 
       {/* Add Lead Modal */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.2, ease: EASE }}
-            className="glass bg-canvas/90 rounded-xl shadow-2xl w-full max-w-md overflow-hidden"
+            className="rounded-2xl border border-white/10 bg-[#0a0a0a]/95 backdrop-blur-xl w-full max-w-md overflow-hidden"
           >
             <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center">
-               <h3 className="font-bold text-lg text-white">Add New Lead</h3>
-               <button onClick={() => setIsAddModalOpen(false)} className="text-slate-400 hover:text-white transition-colors duration-300">
+               <h3 className="font-semibold text-lg text-white">Add New Lead</h3>
+               <button onClick={() => setIsAddModalOpen(false)} aria-label="Close" className="text-neutral-400 hover:text-white transition-colors duration-300">
                   <X className="w-5 h-5" />
                </button>
             </div>
             <form onSubmit={handleAddLead} className="p-6 space-y-4">
-               <div>
-                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Full Name</label>
-                 <input
-                    type="text"
-                    required
-                    className="w-full p-2.5 border border-white/10 rounded-lg bg-white/5 text-white text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                    value={newLead.name}
-                    onChange={e => setNewLead({...newLead, name: e.target.value})}
-                 />
-               </div>
-               <div>
-                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Email Address</label>
-                 <input
-                    type="email"
-                    required
-                    className="w-full p-2.5 border border-white/10 rounded-lg bg-white/5 text-white text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                    value={newLead.email}
-                    onChange={e => setNewLead({...newLead, email: e.target.value})}
-                 />
-               </div>
-               <div>
-                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Company</label>
-                 <input
-                    type="text"
-                    className="w-full p-2.5 border border-white/10 rounded-lg bg-white/5 text-white text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                    value={newLead.company}
-                    onChange={e => setNewLead({...newLead, company: e.target.value})}
-                 />
-               </div>
-               <div>
-                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Source</label>
-                 <select
-                    className="w-full p-2.5 border border-white/10 rounded-lg bg-white/5 text-white text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                    value={newLead.source}
-                    onChange={e => setNewLead({...newLead, source: e.target.value})}
-                 >
-                   <option>Direct</option>
-                   <option>LinkedIn</option>
-                   <option>Website</option>
-                   <option>Referral</option>
-                   <option>Event</option>
-                 </select>
-               </div>
-               <button type="submit" className="w-full py-2.5 bg-brand-600 text-white rounded-lg font-bold hover:bg-brand-500 shadow-glow transition-all duration-300 active:scale-[0.99] mt-2">
+               <Input
+                  label="Full Name"
+                  type="text"
+                  required
+                  value={newLead.name}
+                  onChange={e => setNewLead({...newLead, name: e.target.value})}
+               />
+               <Input
+                  label="Email Address"
+                  type="email"
+                  required
+                  value={newLead.email}
+                  onChange={e => setNewLead({...newLead, email: e.target.value})}
+               />
+               <Input
+                  label="Company"
+                  type="text"
+                  value={newLead.company}
+                  onChange={e => setNewLead({...newLead, company: e.target.value})}
+               />
+               <Select
+                  label="Source"
+                  value={newLead.source}
+                  onChange={e => setNewLead({...newLead, source: e.target.value})}
+               >
+                 <option>Direct</option>
+                 <option>LinkedIn</option>
+                 <option>Website</option>
+                 <option>Referral</option>
+                 <option>Event</option>
+               </Select>
+               <Button type="submit" fullWidth className="mt-2">
                   Add Lead
-               </button>
+               </Button>
             </form>
           </motion.div>
         </div>
@@ -737,22 +455,22 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
 
       {/* Offer Fit Scanner Modal */}
       {isScanModalOpen && selectedLeadForScan && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
            <motion.div
              initial={{ opacity: 0, scale: 0.95 }}
              animate={{ opacity: 1, scale: 1 }}
              transition={{ duration: 0.2, ease: EASE }}
-             className="glass bg-canvas/90 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]"
+             className="rounded-2xl border border-white/10 bg-[#0a0a0a]/95 backdrop-blur-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]"
            >
-              <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-white/5">
+              <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-white/[0.03]">
                  <div className="flex items-center">
-                    <Radar className="w-5 h-5 text-brand-500 mr-2" />
+                    <Radar className="w-5 h-5 text-volt-text mr-2" />
                     <div>
-                       <h3 className="font-bold text-lg text-white">Scan Lead Fit</h3>
-                       <p className="text-xs text-slate-400">Analyzing for: <span className="font-medium">{selectedLeadForScan.name}</span></p>
+                       <h3 className="font-semibold text-lg text-white">Scan Lead Fit</h3>
+                       <p className="text-xs text-neutral-400">Analyzing for: <span className="font-medium">{selectedLeadForScan.name}</span></p>
                     </div>
                  </div>
-                 <button onClick={() => setIsScanModalOpen(false)} className="text-slate-400 hover:text-white transition-colors duration-300">
+                 <button onClick={() => setIsScanModalOpen(false)} aria-label="Close" className="text-neutral-400 hover:text-white transition-colors duration-300">
                     <X className="w-5 h-5" />
                  </button>
               </div>
@@ -760,26 +478,27 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
               <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
                  {!scanResult ? (
                     <div className="space-y-4 h-full flex flex-col">
-                       <div className="bg-blue-900/20 border border-blue-800 rounded-lg p-4 text-sm text-blue-300 mb-2 flex items-start">
-                          <AlertCircle className="w-4 h-4 mr-2 mt-0.5 shrink-0" />
-                          <p>Paste their Twitter/LinkedIn bio, About page text, or recent content below. Gemini will analyze if they're a good fit for high-ticket video editing.</p>
-                       </div>
+                       <Alert variant="info" className="mb-2">
+                          Paste their Twitter/LinkedIn bio, About page text, or recent content below. Gemini will analyze if they're a good fit for high-ticket video editing.
+                       </Alert>
                        <div className="flex-1">
-                          <textarea
+                          <Textarea
                              value={scanContext}
                              onChange={(e) => setScanContext(e.target.value)}
                              placeholder="Paste Profile URL, Bio, or About Page text here..."
-                             className="w-full h-48 p-4 border border-white/10 rounded-xl bg-white/5 text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none resize-none placeholder-slate-500"
+                             aria-label="Scan context"
+                             className="h-48 resize-none"
                           />
                        </div>
-                       <button
+                       <Button
                           onClick={handleRunScan}
-                          disabled={isScanning || !scanContext.trim()}
-                          className="w-full py-3 bg-gradient-to-r from-brand-600 to-purple-600 hover:from-brand-500 hover:to-purple-500 text-white rounded-xl font-bold shadow-glow transition-all duration-300 flex items-center justify-center disabled:opacity-70 disabled:cursor-not-allowed"
+                          disabled={!scanContext.trim()}
+                          loading={isScanning}
+                          fullWidth
+                          leftIcon={<Rocket className="w-5 h-5" />}
                        >
-                          {isScanning ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <Rocket className="w-5 h-5 mr-2" />}
                           {isScanning ? 'Analyzing Fit...' : 'Run Analysis'}
-                       </button>
+                       </Button>
                     </div>
                  ) : (
                     <motion.div
@@ -789,10 +508,10 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
                       className="space-y-6"
                     >
                        {/* Result Header */}
-                       <div className="flex items-center justify-between bg-white/5 p-4 rounded-xl border border-white/10">
+                       <div className="flex items-center justify-between bg-white/[0.03] p-4 rounded-2xl border border-white/10">
                           <div className="text-center">
-                             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Fit Score</div>
-                             <div className={`text-4xl font-black ${
+                             <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-1">Fit Score</div>
+                             <div className={`text-4xl font-semibold ${
                                 scanResult.score >= 80 ? 'text-green-400' :
                                 scanResult.score >= 50 ? 'text-amber-400' : 'text-red-400'
                              }`}>
@@ -801,18 +520,18 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
                           </div>
                           <div className="h-10 w-px bg-white/10" />
                           <div className="text-center">
-                             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Maturity</div>
-                             <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                                scanResult.maturity === 'Pro' ? 'bg-purple-900/30 text-purple-300' :
-                                scanResult.maturity === 'Mid' ? 'bg-blue-900/30 text-blue-300' :
-                                'bg-white/10 text-slate-400'
+                             <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-1">Maturity</div>
+                             <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                                scanResult.maturity === 'Pro' ? 'bg-purple-500/15 text-purple-300 border-purple-500/25' :
+                                scanResult.maturity === 'Mid' ? 'bg-blue-500/15 text-blue-300 border-blue-500/25' :
+                                'bg-white/[0.06] text-neutral-400 border-white/10'
                              }`}>
                                 {scanResult.maturity}
                              </span>
                           </div>
                           <div className="h-10 w-px bg-white/10" />
                           <div className="text-center">
-                             <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Offer</div>
+                             <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-1">Offer</div>
                              <div className="text-sm font-semibold text-white max-w-[100px] truncate" title={scanResult.product}>
                                 {scanResult.product}
                              </div>
@@ -820,35 +539,36 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
                        </div>
 
                        {/* Pitch Angle */}
-                       <div className="bg-brand-900/10 border border-brand-900/30 rounded-xl p-5 relative group">
-                          <h4 className="text-xs font-bold text-brand-400 uppercase mb-2 flex items-center">
+                       <div className="bg-volt/10 border border-volt-text/25 rounded-2xl p-5 relative group">
+                          <h4 className="text-xs font-semibold text-volt-text uppercase mb-2 flex items-center">
                              <Zap className="w-3 h-3 mr-1" /> Recommended Pitch Angle
                           </h4>
-                          <p className="text-slate-300 text-sm leading-relaxed italic">
+                          <p className="text-neutral-300 text-sm leading-relaxed italic">
                              "{scanResult.angle}"
                           </p>
                           <button
                              onClick={() => navigator.clipboard.writeText(scanResult.angle)}
-                             className="absolute top-4 right-4 p-1.5 text-brand-400 hover:text-brand-300 bg-white/5 border border-white/10 rounded shadow-sm opacity-0 group-hover:opacity-100 transition-all duration-300"
+                             aria-label="Copy pitch angle"
+                             className="absolute top-4 right-4 p-1.5 text-volt-text hover:text-white bg-white/[0.03] border border-white/10 rounded-full opacity-0 group-hover:opacity-100 transition-all duration-300"
                              title="Copy Angle"
                           >
                              <Copy className="w-3 h-3" />
                           </button>
                        </div>
 
-                       <button
+                       <Button
                           onClick={handleSaveNotes}
-                          disabled={isSavingNote}
-                          className="w-full py-3 bg-white text-slate-900 rounded-xl font-bold shadow-md hover:shadow-lg transition-all duration-300 hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center disabled:opacity-70"
+                          loading={isSavingNote}
+                          fullWidth
+                          leftIcon={<Check className="w-4 h-4" />}
                        >
-                          {isSavingNote ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Check className="w-4 h-4 mr-2" />}
                           {isSavingNote ? 'Saving...' : 'Save Angle to Notes'}
-                       </button>
+                       </Button>
 
                        <div className="text-center">
                           <button
                              onClick={() => { setScanResult(null); setScanContext(''); }}
-                             className="text-xs text-slate-400 hover:text-slate-200 underline transition-colors duration-300"
+                             className="text-xs text-neutral-400 hover:text-neutral-200 underline transition-colors duration-300"
                           >
                              Scan Another
                           </button>

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Filter, Circle, Send, Sparkles, MoreVertical, Archive, CheckCircle2, ChevronDown, User, MessageSquare } from 'lucide-react';
+import { Search, Send, Sparkles, Archive, ChevronDown, MessageSquare } from 'lucide-react';
 import { Thread, ThreadStatus, ThreadLeadStatus } from '../types';
 import { apiGet, apiPatch, apiPost, ApiError } from '../services/apiClient';
 import { useNotification } from '../context/NotificationContext';
+import { Input, Textarea, Button, Badge } from '../src/design/ui';
 
 async function fetchInboxThreads(): Promise<Thread[]> {
   const data = await apiGet<{ threads: Thread[] }>('/api/unibox/threads');
@@ -119,28 +120,28 @@ export const UniboxView: React.FC = () => {
   };
 
   const filteredThreads = threads.filter(t => {
-    const matchesSearch = t.leadName.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    const matchesSearch = t.leadName.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           t.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           t.leadCompany.toLowerCase().includes(searchQuery.toLowerCase());
-    
+
     if (!matchesSearch) return false;
 
     if (filter === 'UNREAD') return t.status === 'UNREAD';
     if (filter === 'INTERESTED') return t.leadStatus === 'INTERESTED' || t.leadStatus === 'MEETING_BOOKED';
-    
+
     return true;
   }).sort((a, b) => new Date(b.lastMessageDate).getTime() - new Date(a.lastMessageDate).getTime());
 
   const selectedThread = threads.find(t => t.id === selectedThreadId);
 
-  const getStatusColor = (status: ThreadLeadStatus) => {
+  const getStatusVariant = (status: ThreadLeadStatus): 'success' | 'danger' | 'volt' | 'warning' | 'neutral' => {
     switch (status) {
-      case 'INTERESTED': return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400';
-      case 'NOT_INTERESTED': return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
-      case 'MEETING_BOOKED': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400';
-      case 'LEFT_HANGING': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
-      case 'DNC': return 'bg-red-600 text-white dark:bg-red-700 dark:text-red-100';
-      default: return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+      case 'INTERESTED': return 'success';
+      case 'NOT_INTERESTED': return 'danger';
+      case 'MEETING_BOOKED': return 'volt';
+      case 'LEFT_HANGING': return 'warning';
+      case 'DNC': return 'danger';
+      default: return 'neutral';
     }
   };
 
@@ -153,33 +154,35 @@ export const UniboxView: React.FC = () => {
   };
 
   return (
-    <div className="flex h-full animate-in fade-in slide-in-from-bottom-4 duration-500 overflow-hidden bg-white dark:bg-slate-950">
-      
+    <div className="flex h-full animate-in fade-in slide-in-from-bottom-4 duration-500 overflow-hidden bg-noir">
+
       {/* LEFT SIDEBAR: THREAD LIST */}
-      <div className={`w-full md:w-80 lg:w-96 flex flex-col border-r border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 ${selectedThreadId ? 'hidden md:flex' : 'flex'}`}>
-        
+      <div className={`w-full md:w-80 lg:w-96 flex flex-col border-r border-white/10 bg-white/[0.02] ${selectedThreadId ? 'hidden md:flex' : 'flex'}`}>
+
         {/* Search & Filter Header */}
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800">
+        <div className="p-4 border-b border-white/10">
            <div className="relative mb-3">
-              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-              <input 
-                type="text" 
-                placeholder="Search inbox..." 
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 z-10" />
+              <Input
+                type="text"
+                placeholder="Search inbox..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
+                className="pl-9"
               />
            </div>
-           
-           <div className="flex space-x-1 p-1 bg-slate-200/50 dark:bg-slate-800 rounded-lg">
+
+           <div className="flex space-x-1 p-1 bg-white/[0.03] rounded-full">
               {['ALL', 'UNREAD', 'INTERESTED'].map((f) => (
                 <button
                   key={f}
+                  type="button"
                   onClick={() => setFilter(f as any)}
-                  className={`flex-1 py-1.5 text-[10px] font-bold rounded-md transition-all ${
-                    filter === f 
-                      ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' 
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                  aria-pressed={filter === f}
+                  className={`flex-1 py-1.5 text-[10px] font-semibold rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${
+                    filter === f
+                      ? 'bg-white/[0.08] text-white'
+                      : 'text-neutral-500 hover:text-neutral-300'
                   }`}
                 >
                   {f === 'INTERESTED' ? 'HOT' : f}
@@ -191,69 +194,75 @@ export const UniboxView: React.FC = () => {
         {/* Thread List */}
         <div className="flex-1 overflow-y-auto custom-scrollbar">
            {isLoading ? (
-             <div className="p-8 text-center text-slate-400 text-sm">Loading threads...</div>
+             <div className="p-8 text-center text-neutral-400 text-sm">Loading threads...</div>
            ) : filteredThreads.length === 0 ? (
-             <div className="p-8 text-center text-slate-400 text-sm">No conversations found.</div>
+             <div className="p-8 text-center text-neutral-400 text-sm">No conversations found.</div>
            ) : (
              filteredThreads.map(thread => (
-               <div 
+               <button
                  key={thread.id}
+                 type="button"
                  onClick={() => handleSelectThread(thread)}
-                 className={`p-4 border-b border-slate-100 dark:border-slate-800 cursor-pointer hover:bg-white dark:hover:bg-slate-800/80 transition-colors relative group ${
-                   selectedThreadId === thread.id ? 'bg-white dark:bg-slate-800 shadow-[inset_3px_0_0_0_#0ea5e9]' : ''
+                 className={`w-full text-left p-4 border-b border-white/5 cursor-pointer hover:bg-white/[0.04] transition-colors relative group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-volt-text ${
+                   selectedThreadId === thread.id ? 'bg-white/[0.05] shadow-[inset_3px_0_0_0_var(--color-volt-text)]' : ''
                  }`}
                >
                   <div className="flex justify-between items-start mb-1">
-                     <h4 className={`text-sm font-semibold truncate pr-2 ${thread.status === 'UNREAD' ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-300'}`}>
+                     <h4 className={`text-sm font-semibold truncate pr-2 ${thread.status === 'UNREAD' ? 'text-white' : 'text-neutral-300'}`}>
                        {thread.leadName}
                      </h4>
-                     <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                     <span className="text-[10px] text-neutral-500 whitespace-nowrap">
                        {formatMessageDate(thread.lastMessageDate)}
                      </span>
                   </div>
-                  
-                  <div className="text-xs text-slate-500 dark:text-slate-400 truncate mb-1">
+
+                  <div className="text-xs text-neutral-400 truncate mb-1">
                      {thread.leadCompany}
                   </div>
 
-                  <p className={`text-xs truncate ${thread.status === 'UNREAD' ? 'text-slate-800 dark:text-slate-200 font-medium' : 'text-slate-500 dark:text-slate-500'}`}>
+                  <p className={`text-xs truncate ${thread.status === 'UNREAD' ? 'text-neutral-200 font-medium' : 'text-neutral-500'}`}>
                      {thread.messages[thread.messages.length - 1].content}
                   </p>
 
                   {thread.status === 'UNREAD' && (
-                    <div className="absolute right-4 top-1/2 -translate-y-1/2 w-2 h-2 bg-brand-500 rounded-full shadow-glow" />
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 w-2 h-2 bg-volt rounded-full shadow-glow" />
                   )}
-               </div>
+               </button>
              ))
            )}
         </div>
       </div>
 
       {/* RIGHT PANEL: CONVERSATION */}
-      <div className={`flex-1 flex flex-col bg-white dark:bg-slate-950 relative ${!selectedThreadId ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`flex-1 flex flex-col bg-noir relative ${!selectedThreadId ? 'hidden md:flex' : 'flex'}`}>
          {!selectedThread ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-slate-400 dark:text-slate-600 p-8">
-               <div className="w-16 h-16 bg-slate-100 dark:bg-slate-900 rounded-full flex items-center justify-center mb-4">
-                  <MessageSquare className="w-8 h-8 text-slate-300 dark:text-slate-600" />
+            <div className="flex-1 flex flex-col items-center justify-center text-neutral-500 p-8">
+               <div className="w-16 h-16 bg-white/[0.03] rounded-full flex items-center justify-center mb-4">
+                  <MessageSquare className="w-8 h-8 text-neutral-600" />
                </div>
                <p className="text-lg font-medium">Select a conversation</p>
             </div>
          ) : (
             <>
                {/* Header */}
-               <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-950 sticky top-0 z-10">
+               <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-noir sticky top-0 z-10">
                   <div className="flex items-center min-w-0">
-                     <button onClick={() => setSelectedThreadId(null)} className="md:hidden mr-3 text-slate-500">
+                     <button
+                       type="button"
+                       onClick={() => setSelectedThreadId(null)}
+                       className="md:hidden mr-3 text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text rounded-full"
+                       aria-label="Back to thread list"
+                     >
                         <ChevronDown className="w-5 h-5 rotate-90" />
                      </button>
-                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-700 dark:to-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 font-bold mr-3 shrink-0">
+                     <div className="w-10 h-10 rounded-full bg-white/[0.06] flex items-center justify-center text-neutral-300 font-semibold mr-3 shrink-0">
                         {selectedThread.leadName.charAt(0)}
                      </div>
                      <div className="min-w-0">
-                        <h3 className="text-base font-bold text-slate-900 dark:text-white truncate">
+                        <h3 className="text-base font-semibold text-white truncate">
                            {selectedThread.leadName}
                         </h3>
-                        <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                        <p className="text-xs text-neutral-400 truncate">
                            {selectedThread.leadCompany} • {selectedThread.subject}
                         </p>
                      </div>
@@ -261,51 +270,64 @@ export const UniboxView: React.FC = () => {
 
                   <div className="flex items-center space-x-2">
                      <div className="relative group">
-                        <button className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase flex items-center transition-all ${getStatusColor(selectedThread.leadStatus)}`}>
-                           {selectedThread.leadStatus.replace('_', ' ')} <ChevronDown className="w-3 h-3 ml-1.5" />
+                        <button
+                          type="button"
+                          className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text rounded-full"
+                          aria-haspopup="menu"
+                        >
+                          <Badge variant={getStatusVariant(selectedThread.leadStatus)} className="cursor-pointer">
+                             {selectedThread.leadStatus.replace('_', ' ')} <ChevronDown className="w-3 h-3 ml-1.5 inline" />
+                          </Badge>
                         </button>
-                        
+
                         {/* Dropdown */}
-                        <div className="absolute right-0 top-full mt-2 w-40 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 hidden group-hover:block z-20">
+                        <div className="absolute right-0 top-full mt-2 w-40 bg-noir/95 border border-white/10 backdrop-blur-xl rounded-2xl shadow-none py-1 hidden group-hover:block z-20" role="menu">
                            {['INTERESTED', 'NOT_INTERESTED', 'MEETING_BOOKED', 'LEFT_HANGING'].map(s => (
                               <button
                                 key={s}
+                                type="button"
                                 onClick={() => handleLeadStatusChange(s as ThreadLeadStatus)}
-                                className="block w-full text-left px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                className="block w-full text-left px-4 py-2 text-xs font-medium text-neutral-300 hover:bg-white/[0.05]"
                               >
                                  {s.replace('_', ' ')}
                               </button>
                            ))}
-                           <div className="my-1 border-t border-slate-200 dark:border-slate-800" />
+                           <div className="my-1 border-t border-white/10" />
                            <button
+                             type="button"
                              onClick={() => {
                                 if (window.confirm('Mark as Do Not Contact? All queued campaign sends and follow-ups to this lead will be cancelled, and it will never be contacted by a campaign again.')) {
                                    handleLeadStatusChange('DNC');
                                 }
                              }}
-                             className="block w-full text-left px-4 py-2 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+                             className="block w-full text-left px-4 py-2 text-xs font-semibold text-red-400 hover:bg-red-500/10"
                            >
                               DO NOT CONTACT
                            </button>
                         </div>
                      </div>
-                     <button className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+                     <button
+                       type="button"
+                       className="p-2 text-neutral-400 hover:text-neutral-200 rounded-full hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text"
+                       aria-label="Archive conversation"
+                       title="Archive"
+                     >
                         <Archive className="w-4 h-4" />
                      </button>
                   </div>
                </div>
 
                {/* Message Stream */}
-               <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50 dark:bg-slate-900/50 custom-scrollbar">
+               <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-white/[0.01] custom-scrollbar">
                   {selectedThread.messages.map((msg, idx) => (
                      <div key={msg.id} className={`flex ${msg.sender === 'ME' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[80%] md:max-w-[70%] rounded-2xl px-4 py-3 shadow-sm text-sm leading-relaxed ${
-                           msg.sender === 'ME' 
-                             ? 'bg-brand-600 text-white rounded-br-none' 
-                             : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-bl-none'
+                        <div className={`max-w-[80%] md:max-w-[70%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                           msg.sender === 'ME'
+                             ? 'bg-volt text-white rounded-br-none'
+                             : 'bg-white/[0.04] text-neutral-200 border border-white/10 rounded-bl-none'
                         }`}>
                            <p className="whitespace-pre-wrap">{msg.content}</p>
-                           <p className={`text-[10px] mt-1.5 text-right opacity-70 ${msg.sender === 'ME' ? 'text-brand-100' : 'text-slate-400'}`}>
+                           <p className={`text-[10px] mt-1.5 text-right opacity-70 ${msg.sender === 'ME' ? 'text-white/80' : 'text-neutral-400'}`}>
                               {new Date(msg.date).toLocaleString([], {weekday: 'short', hour: '2-digit', minute:'2-digit'})}
                            </p>
                         </div>
@@ -315,13 +337,13 @@ export const UniboxView: React.FC = () => {
                </div>
 
                {/* Reply Box */}
-               <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950">
+               <div className="p-4 border-t border-white/10 bg-noir">
                   <div className="relative">
-                     <textarea 
+                     <Textarea
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
                         placeholder="Type your reply..."
-                        className="w-full min-h-[100px] p-4 pr-32 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none resize-none text-sm text-slate-800 dark:text-slate-200"
+                        className="min-h-[100px] pr-32 resize-none"
                         onKeyDown={(e) => {
                            if (e.key === 'Enter' && e.metaKey) {
                               handleSendReply();
@@ -329,26 +351,28 @@ export const UniboxView: React.FC = () => {
                         }}
                      />
                      <div className="absolute bottom-3 right-3 flex items-center space-x-2">
-                        <button 
-                           className="p-2 text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/20 rounded-lg transition-colors"
+                        <button
+                           type="button"
+                           className="p-2 text-volt-text hover:bg-volt/10 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text"
                            title="AI Suggest"
+                           aria-label="Suggest reply with AI"
                            onClick={() => setReplyText("Hi " + selectedThread.leadName.split(' ')[0] + ",\n\nThanks for getting back to me. Let's schedule a time to chat about this further.\n\nBest,\nAlex")}
                         >
                            <Sparkles className="w-5 h-5" />
                         </button>
-                        <button 
+                        <Button
                            onClick={handleSendReply}
                            disabled={isSending || !replyText.trim()}
-                           className="flex items-center px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg font-bold shadow-md transition-all active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed"
+                           loading={isSending}
+                           rightIcon={!isSending ? <Send className="w-4 h-4" /> : undefined}
+                           size="sm"
                         >
-                           {isSending ? 'Sending...' : (
-                              <>Send <Send className="w-4 h-4 ml-2" /></>
-                           )}
-                        </button>
+                           {isSending ? 'Sending...' : 'Send'}
+                        </Button>
                      </div>
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-2 text-center">
-                     Press <span className="font-mono bg-slate-100 dark:bg-slate-800 px-1 rounded">Cmd + Enter</span> to send
+                  <p className="text-[10px] text-neutral-500 mt-2 text-center">
+                     Press <span className="font-mono bg-white/[0.05] px-1 rounded">Cmd + Enter</span> to send
                   </p>
                </div>
             </>

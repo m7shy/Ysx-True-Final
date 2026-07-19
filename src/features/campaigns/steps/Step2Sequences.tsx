@@ -108,7 +108,7 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
     <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6 max-w-6xl mx-auto">
       {/* Left sidebar: stages + variants */}
       <aside className="space-y-3">
-        <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 px-1">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500 px-1">
           Sequence
         </h3>
         <ol className="space-y-3">
@@ -117,7 +117,7 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
             return (
               <li key={stage.id}>
                 {idx > 0 && (
-                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-2 pl-2">
+                  <div className="flex items-center gap-2 text-xs text-neutral-500 mb-2 pl-2">
                     <Clock className="w-3 h-3" />
                     Wait
                     <input
@@ -135,13 +135,13 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
                           )
                         )
                       }
-                      className="w-12 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200"
+                      className="w-12 bg-white/[0.03] border border-white/10 rounded-lg px-1.5 py-0.5 text-neutral-200 focus:outline-none focus:border-volt-text"
                     />
                     day{stage.waitDays === 1 ? '' : 's'}
                     <button
                       type="button"
                       onClick={() => removeFollowUp(stage.id)}
-                      className="ml-auto text-slate-500 hover:text-red-400"
+                      className="ml-auto text-neutral-500 hover:text-red-400 transition-colors"
                       aria-label={`Remove ${stage.label}`}
                     >
                       <X className="w-3.5 h-3.5" />
@@ -154,34 +154,34 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
                     setActiveStageId(stage.id);
                     setActiveVariantId(stage.variants[0].id);
                   }}
-                  className={`w-full text-left rounded-lg border px-3 py-3 transition-colors ${
+                  className={`w-full text-left rounded-2xl border px-3 py-3 transition-colors ${
                     isActive
-                      ? 'border-brand-500 bg-brand-500/10'
-                      : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'
+                      ? 'border-volt-text/40 bg-volt/10'
+                      : 'border-white/10 bg-white/[0.02] hover:border-white/16'
                   }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
                     {stage.isThreadReply ? (
-                      <CornerDownRight className="w-4 h-4 text-slate-400" />
+                      <CornerDownRight className="w-4 h-4 text-neutral-400" />
                     ) : (
-                      <Mail className="w-4 h-4 text-brand-400" />
+                      <Mail className="w-4 h-4 text-volt-text" />
                     )}
                     <span className="text-sm font-semibold text-white">
                       {stage.label}
                     </span>
                     {stage.isThreadReply && (
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                      <span className="text-[10px] uppercase tracking-wider text-neutral-500">
                         Reply
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-slate-500 truncate">
+                  <p className="text-xs text-neutral-500 truncate">
                     {stage.variants[0].subject || '(no subject)'}
                   </p>
                 </button>
 
                 {isActive && (
-                  <div className="mt-2 ml-2 border-l border-slate-800 pl-3 space-y-1">
+                  <div className="mt-2 ml-2 border-l border-white/10 pl-3 space-y-1">
                     {stage.variants.map((v, vIdx) => (
                       <div
                         key={v.id}
@@ -190,10 +190,10 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
                         <button
                           type="button"
                           onClick={() => setActiveVariantId(v.id)}
-                          className={`flex-1 text-left text-xs px-2 py-1.5 rounded ${
+                          className={`flex-1 text-left text-xs px-2 py-1.5 rounded-full ${
                             v.id === activeVariant?.id
-                              ? 'text-brand-300 bg-brand-500/10'
-                              : 'text-slate-400 hover:text-white'
+                              ? 'text-volt-text bg-volt/10'
+                              : 'text-neutral-400 hover:text-white'
                           }`}
                         >
                           Variant {String.fromCharCode(65 + vIdx)}
@@ -202,7 +202,7 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
                           <button
                             type="button"
                             onClick={() => removeVariant(stage.id, v.id)}
-                            className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 p-1"
+                            className="opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-red-400 p-1"
                             aria-label="Remove variant"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -213,7 +213,7 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
                     <button
                       type="button"
                       onClick={() => addVariant(stage.id)}
-                      className="flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 px-2 py-1.5"
+                      className="flex items-center gap-1 text-xs text-volt-text hover:text-white px-2 py-1.5 transition-colors"
                     >
                       <Plus className="w-3 h-3" />
                       Add Variant
@@ -228,7 +228,7 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
           type="button"
           onClick={addFollowUp}
           disabled={followUpCount >= MAX_FOLLOW_UPS}
-          className="flex items-center gap-1.5 text-xs font-medium text-brand-400 hover:text-brand-300 disabled:opacity-40 disabled:cursor-not-allowed px-2 py-1.5"
+          className="flex items-center gap-1.5 text-xs font-medium text-volt-text hover:text-white disabled:opacity-40 disabled:cursor-not-allowed px-2 py-1.5 transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
           Add Follow-up ({followUpCount}/{MAX_FOLLOW_UPS})
@@ -238,13 +238,13 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
       {/* Right panel: editor */}
       <section className="min-w-0">
         {activeStage && activeVariant && (
-          <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 md:p-6">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 md:p-6">
             <div className="flex items-center gap-2 mb-4">
               <h2 className="text-lg font-semibold text-white">
                 {activeStage.label}
               </h2>
               {activeStage.isThreadReply && (
-                <span className="text-[10px] uppercase tracking-wider text-slate-400 bg-slate-800 rounded px-2 py-0.5">
+                <span className="text-[10px] uppercase tracking-wider text-neutral-300 bg-white/[0.06] border border-white/10 rounded-full px-2 py-0.5">
                   Thread Reply
                 </span>
               )}
@@ -252,7 +252,7 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                <label className="block text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-1.5">
                   Subject
                 </label>
                 <VariableHighlightEditor
@@ -266,7 +266,7 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                <label className="block text-xs font-semibold text-neutral-400 uppercase tracking-wider mb-1.5">
                   Body
                 </label>
                 <VariableHighlightEditor
@@ -276,8 +276,8 @@ export const Step2Sequences: React.FC<Step2Props> = ({ sequence, onChange }) => 
                   placeholder="Write your email…"
                   ariaLabel="Body"
                 />
-                <p className="text-xs text-slate-500 mt-2">
-                  Use <code className="px-1 py-0.5 bg-slate-800 rounded text-brand-300">{'{{variable_name}}'}</code> to
+                <p className="text-xs text-neutral-500 mt-2">
+                  Use <code className="px-1 py-0.5 bg-white/[0.06] rounded text-volt-text">{'{{variable_name}}'}</code> to
                   insert personalization tokens.
                 </p>
               </div>

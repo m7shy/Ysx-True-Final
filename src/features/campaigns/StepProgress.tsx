@@ -38,10 +38,10 @@ export const StepProgress: React.FC<StepProgressProps> = ({
               <span
                 className={`flex items-center justify-center w-8 h-8 rounded-full text-xs font-semibold transition-colors border ${
                   isDone
-                    ? 'bg-brand-600 border-brand-500 text-white'
+                    ? 'bg-volt border-volt-text/40 text-white'
                     : isActive
-                    ? 'bg-slate-900 border-brand-500 text-brand-300'
-                    : 'bg-slate-900/40 border-slate-700 text-slate-500'
+                    ? 'bg-white/[0.03] border-volt-text/40 text-volt-text'
+                    : 'bg-white/[0.02] border-white/10 text-neutral-500'
                 }`}
               >
                 {isDone ? <Check className="w-4 h-4" /> : step.id}
@@ -51,8 +51,8 @@ export const StepProgress: React.FC<StepProgressProps> = ({
                   isActive
                     ? 'text-white'
                     : isDone
-                    ? 'text-slate-200'
-                    : 'text-slate-500'
+                    ? 'text-neutral-300'
+                    : 'text-neutral-500'
                 }`}
               >
                 {step.label}
@@ -61,7 +61,7 @@ export const StepProgress: React.FC<StepProgressProps> = ({
             {idx < steps.length - 1 && (
               <span
                 className={`flex-1 h-px mx-2 md:mx-4 ${
-                  completed.has(step.id) ? 'bg-brand-500/60' : 'bg-slate-800'
+                  completed.has(step.id) ? 'bg-volt-text/50' : 'bg-white/10'
                 }`}
               />
             )}

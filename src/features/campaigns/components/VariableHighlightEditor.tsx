@@ -51,24 +51,24 @@ export const VariableHighlightEditor: React.FC<VariableHighlightEditorProps> = (
 
   return (
     <div
-      className="relative rounded-lg border border-slate-700 bg-slate-950 focus-within:ring-2 focus-within:ring-brand-500 focus-within:border-transparent"
+      className="relative rounded-xl border border-white/10 bg-white/[0.03] focus-within:border-volt-text transition-colors"
       style={{ minHeight }}
     >
       {/* Rendered highlighted text layer (visible). */}
       <div
         ref={overlayRef}
         aria-hidden
-        className={`${shared} absolute inset-0 pointer-events-none text-slate-200`}
+        className={`${shared} absolute inset-0 pointer-events-none text-neutral-300`}
         style={{ minHeight }}
       >
         {tokens.length === 0 && placeholder ? (
-          <span className="text-slate-500">{placeholder}</span>
+          <span className="text-neutral-500">{placeholder}</span>
         ) : (
           tokens.map((tok, idx) =>
             tok.kind === 'var' ? (
               <span
                 key={idx}
-                className="bg-brand-600/30 text-brand-200 border border-brand-500/40 rounded-md px-1"
+                className="bg-volt/20 text-volt-text border border-volt-text/40 rounded-md px-1"
               >
                 {'{{' + tok.value + '}}'}
               </span>

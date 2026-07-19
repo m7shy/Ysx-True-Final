@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Radar, Play, Square, Loader2, CheckCircle2, XCircle, Youtube, AlertTriangle, RefreshCw, Sparkles, Clock, KeyRound, Upload, Trash2, Download } from 'lucide-react';
+import { Radar, Play, Square, Loader2, CheckCircle2, XCircle, Youtube, RefreshCw, Sparkles, Clock, KeyRound, Upload, Trash2, Download } from 'lucide-react';
 import {
   ScrapeJob,
   AutoSchedule,
@@ -19,6 +19,7 @@ import {
 } from '../services/scraperApi';
 import { useNotification } from '../context/NotificationContext';
 import { EASE, AnimatedHeading, Stagger, StaggerItem, MaskedReveal } from './motion/primitives';
+import { Button, Textarea, Alert } from '../src/design/ui';
 
 /**
  * "Scraper" view — lets a logged-in user launch the YouTube lead scraper and
@@ -37,10 +38,10 @@ function formatBytes(n: number): string {
 }
 
 const STATUS_META: Record<ScrapeJob['status'], { label: string; className: string; Icon: any }> = {
-  running:   { label: 'Running',   className: 'text-amber-500',   Icon: Loader2 },
-  succeeded: { label: 'Done',      className: 'text-emerald-500', Icon: CheckCircle2 },
-  failed:    { label: 'Failed',    className: 'text-red-500',     Icon: XCircle },
-  cancelled: { label: 'Cancelled', className: 'text-slate-400',   Icon: Square },
+  running:   { label: 'Running',   className: 'text-amber-400',   Icon: Loader2 },
+  succeeded: { label: 'Done',      className: 'text-emerald-400', Icon: CheckCircle2 },
+  failed:    { label: 'Failed',    className: 'text-red-400',     Icon: XCircle },
+  cancelled: { label: 'Cancelled', className: 'text-neutral-400', Icon: Square },
 };
 
 export const ScraperView: React.FC = () => {
@@ -238,17 +239,13 @@ export const ScraperView: React.FC = () => {
   if (configured === false) {
     return (
       <div className="max-w-3xl mx-auto mt-8">
-        <MaskedReveal className="glass rounded-xl p-6 flex items-start gap-4">
-          <AlertTriangle className="w-6 h-6 text-amber-400 flex-shrink-0 mt-0.5" />
-          <div>
-            <h3 className="font-semibold text-slate-100">Scraper not configured</h3>
-            <p className="text-sm text-slate-300 mt-1">
-              The YouTube scraper isn’t wired up on this server yet. An admin needs to set
-              <code className="mx-1 px-1.5 py-0.5 rounded bg-white/10 text-xs">SCRAPER_DIR</code>
-              (and optionally <code className="mx-1 px-1.5 py-0.5 rounded bg-white/10 text-xs">PYTHON_BIN</code>)
-              in the backend environment, then restart the server.
-            </p>
-          </div>
+        <MaskedReveal>
+          <Alert variant="warning" title="Scraper not configured">
+            The YouTube scraper isn’t wired up on this server yet. An admin needs to set
+            <code className="mx-1 px-1.5 py-0.5 rounded bg-white/10 text-xs">SCRAPER_DIR</code>
+            (and optionally <code className="mx-1 px-1.5 py-0.5 rounded bg-white/10 text-xs">PYTHON_BIN</code>)
+            in the backend environment, then restart the server.
+          </Alert>
         </MaskedReveal>
       </div>
     );
@@ -258,14 +255,14 @@ export const ScraperView: React.FC = () => {
     <div className="max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div className="mb-2">
-        <AnimatedHeading as="h2" className="text-2xl font-bold text-white mb-2 tracking-tight">
+        <AnimatedHeading as="h2" className="text-2xl font-semibold text-white mb-2 tracking-tight">
           YouTube Scraper
         </AnimatedHeading>
         <motion.p
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, ease: EASE, delay: 0.15 }}
-          className="text-slate-400"
+          className="text-neutral-400"
         >
           Launch keyword-driven scrapes, rotate cookies, and pull fresh leads straight into the CRM.
         </motion.p>
@@ -273,14 +270,14 @@ export const ScraperView: React.FC = () => {
 
       <Stagger className="space-y-6">
         {/* Launcher */}
-        <StaggerItem className="glass rounded-xl p-6">
+        <StaggerItem className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-2xl bg-red-500/10 flex items-center justify-center">
               <Youtube className="w-6 h-6 text-red-400" />
             </div>
             <div>
               <h2 className="text-lg font-semibold text-white">Find YouTube Leads</h2>
-              <p className="text-sm text-slate-400">
+              <p className="text-sm text-neutral-400">
                 {importToCrm
                   ? 'Enter niche keywords — one per line. New leads land in your Leads list automatically.'
                   : 'Enter niche keywords — one per line. Results stay off the CRM until you download and review the CSV.'}
@@ -288,64 +285,67 @@ export const ScraperView: React.FC = () => {
             </div>
           </div>
 
-          <textarea
+          <Textarea
             value={keywords}
             onChange={(e) => setKeywords(e.target.value)}
             disabled={isRunning || starting}
             rows={5}
+            aria-label="Scrape keywords"
             placeholder={'faceless youtube automation\nfaceless channel course\nyoutube automation coaching'}
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-60 transition-shadow duration-300"
           />
 
-          <label className="flex items-center gap-2 mt-3 text-sm text-slate-300 select-none">
+          <label className="flex items-center gap-2 mt-3 text-sm text-neutral-300 select-none">
             <input
               type="checkbox"
               checked={importToCrm}
               onChange={(e) => setImportToCrm(e.target.checked)}
               disabled={isRunning || starting}
-              className="rounded border-white/10 bg-white/5 text-brand-500 focus:ring-brand-500 disabled:opacity-60"
+              className="rounded border-white/10 bg-white/[0.03] text-volt focus:ring-volt-text disabled:opacity-60"
             />
             Import results into the CRM automatically
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-neutral-500">
               {importToCrm ? '' : '— unchecked: download the CSV instead, qualify offline, import later'}
             </span>
           </label>
 
           <div className="flex items-center justify-between mt-4">
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-neutral-500">
               {keywords.split(/[\n,]/).map((k) => k.trim()).filter(Boolean).length} keyword(s)
             </span>
             {isRunning ? (
-              <button
+              <Button
+                variant="danger"
+                size="sm"
                 onClick={handleCancel}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500 hover:bg-red-400 text-white text-sm font-medium transition-colors duration-300 active:scale-95"
+                leftIcon={<Square className="w-4 h-4" />}
               >
-                <Square className="w-4 h-4" /> Stop
-              </button>
+                Stop
+              </Button>
             ) : (
-              <button
+              <Button
+                size="sm"
                 onClick={handleStart}
                 disabled={starting}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-sm font-medium shadow-glow transition-all duration-300 active:scale-95"
+                loading={starting}
+                leftIcon={<Play className="w-4 h-4" />}
               >
-                {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                 {starting ? 'Starting…' : 'Start scrape'}
-              </button>
+              </Button>
             )}
           </div>
         </StaggerItem>
 
         {/* Auto-scrape */}
         {autoSchedule && (
-          <StaggerItem className="glass rounded-xl p-6">
+          <StaggerItem className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-brand-500/10 flex items-center justify-center">
-                  <Sparkles className="w-5 h-5 text-brand-400" />
+                <div className="w-10 h-10 rounded-2xl bg-volt/10 flex items-center justify-center">
+                  <Sparkles className="w-5 h-5 text-volt-text" />
                 </div>
                 <div>
                   <h2 className="text-lg font-semibold text-white">Auto-scrape</h2>
-                  <p className="text-sm text-slate-400">
+                  <p className="text-sm text-neutral-400">
                     Runs on its own with fresh Gemini-generated keywords, spread across the day.
                   </p>
                 </div>
@@ -355,8 +355,9 @@ export const ScraperView: React.FC = () => {
                 disabled={autoSaving}
                 role="switch"
                 aria-checked={autoSchedule.enabled}
+                aria-label="Toggle auto-scrape"
                 className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-300 disabled:opacity-60 ${
-                  autoSchedule.enabled ? 'bg-brand-500 shadow-glow' : 'bg-white/10'
+                  autoSchedule.enabled ? 'bg-volt shadow-[0_0_20px_rgb(2_1_255/0.55)]' : 'bg-white/10'
                 }`}
               >
                 <span
@@ -369,16 +370,16 @@ export const ScraperView: React.FC = () => {
 
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500">Runs per day:</span>
+                <span className="text-xs text-neutral-500">Runs per day:</span>
                 {[3, 5].map((n) => (
                   <button
                     key={n}
                     onClick={() => handleRunsPerDay(n as 3 | 5)}
                     disabled={autoSaving || !autoSchedule.enabled}
-                    className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors duration-300 disabled:opacity-50 ${
+                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors duration-300 disabled:opacity-50 ${
                       autoSchedule.runsPerDay === n
-                        ? 'bg-brand-500 text-white shadow-glow'
-                        : 'bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10'
+                        ? 'bg-volt text-white shadow-[0_0_20px_rgb(2_1_255/0.55)]'
+                        : 'bg-white/[0.03] border border-white/10 text-neutral-300 hover:bg-white/[0.06]'
                     }`}
                   >
                     {n}x
@@ -387,14 +388,14 @@ export const ScraperView: React.FC = () => {
               </div>
 
               {autoSchedule.enabled && autoSchedule.nextRunAt && (
-                <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                <span className="flex items-center gap-1.5 text-xs text-neutral-400">
                   <Clock className="w-3.5 h-3.5" /> Next run: {new Date(autoSchedule.nextRunAt).toLocaleString()}
                 </span>
               )}
             </div>
 
             {autoSchedule.lastRunAt && (
-              <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between text-xs text-slate-400">
+              <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between text-xs text-neutral-400">
                 <span>Last auto-run: {new Date(autoSchedule.lastRunAt).toLocaleString()}</span>
                 {autoSchedule.lastRunSummary && (
                   autoSchedule.lastRunSummary.error ? (
@@ -411,15 +412,15 @@ export const ScraperView: React.FC = () => {
         )}
 
         {/* Cookie rotation pool */}
-        <StaggerItem className="glass rounded-xl p-6">
+        <StaggerItem className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
                 <KeyRound className="w-5 h-5 text-emerald-400" />
               </div>
               <div>
                 <h2 className="text-lg font-semibold text-white">YouTube cookies</h2>
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-neutral-400">
                   Upload a Netscape <code className="px-1 rounded bg-white/10 text-xs">cookies.txt</code> per
                   account. The scraper rotates across them so no single account gets rate-limited — more cookies, longer runs, more leads.
                 </p>
@@ -428,19 +429,21 @@ export const ScraperView: React.FC = () => {
             <div className="flex items-center gap-2">
               <button
                 onClick={loadCookies}
-                className="text-slate-400 hover:text-white transition-colors duration-300"
+                className="p-1.5 text-neutral-400 hover:text-white rounded-full hover:bg-white/[0.05] transition-colors duration-300"
                 title="Refresh"
+                aria-label="Refresh cookie files"
               >
                 <RefreshCw className="w-4 h-4" />
               </button>
-              <button
+              <Button
+                size="sm"
                 onClick={() => cookieInputRef.current?.click()}
                 disabled={cookieBusy}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-sm font-medium shadow-glow transition-all duration-300 active:scale-95"
+                loading={cookieBusy}
+                leftIcon={<Upload className="w-4 h-4" />}
               >
-                {cookieBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                 Upload
-              </button>
+              </Button>
               <input
                 ref={cookieInputRef}
                 type="file"
@@ -453,27 +456,28 @@ export const ScraperView: React.FC = () => {
           </div>
 
           {cookies.length === 0 ? (
-            <p className="py-6 text-center text-sm text-slate-500">
+            <p className="py-6 text-center text-sm text-neutral-500">
               No cookie files yet — the scraper runs unauthenticated and may hit YouTube’s bot check sooner.
             </p>
           ) : (
-            <ul className="divide-y divide-white/10 border border-white/10 rounded-lg overflow-hidden">
+            <ul className="divide-y divide-white/10 border border-white/10 rounded-xl overflow-hidden">
               {cookies.map((c) => (
-                <li key={c.name} className="px-4 py-2.5 flex items-center justify-between text-sm bg-white/5">
+                <li key={c.name} className="px-4 py-2.5 flex items-center justify-between text-sm bg-white/[0.03]">
                   <div className="flex items-center gap-2 min-w-0">
                     <KeyRound className="w-4 h-4 flex-shrink-0 text-emerald-400" />
-                    <span className="truncate text-slate-200">{c.name}</span>
+                    <span className="truncate text-neutral-200">{c.name}</span>
                   </div>
                   <div className="flex items-center gap-4 flex-shrink-0">
-                    <span className="text-xs text-slate-500">{formatBytes(c.sizeBytes)}</span>
-                    <span className="hidden sm:inline text-xs text-slate-500">
+                    <span className="text-xs text-neutral-500">{formatBytes(c.sizeBytes)}</span>
+                    <span className="hidden sm:inline text-xs text-neutral-500">
                       {new Date(c.uploadedAt).toLocaleDateString()}
                     </span>
                     <button
                       onClick={() => handleDeleteCookie(c.name)}
                       disabled={cookieBusy}
-                      className="text-slate-500 hover:text-red-400 disabled:opacity-40 transition-colors duration-300"
+                      className="text-neutral-500 hover:text-red-400 disabled:opacity-40 transition-colors duration-300"
                       title={`Remove ${c.name}`}
+                      aria-label={`Remove ${c.name}`}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -486,7 +490,7 @@ export const ScraperView: React.FC = () => {
 
         {/* Live run */}
         {current && (
-          <StaggerItem className="glass rounded-xl overflow-hidden">
+          <StaggerItem className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
             <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
               <div className="flex items-center gap-2">
                 {(() => {
@@ -499,11 +503,11 @@ export const ScraperView: React.FC = () => {
                     </>
                   );
                 })()}
-                <span className="text-xs text-slate-500">· {current.keywords.length} keyword(s)</span>
+                <span className="text-xs text-neutral-500">· {current.keywords.length} keyword(s)</span>
               </div>
               <div className="flex items-center gap-3">
                 {current.summary && (
-                  <span className="text-xs text-slate-400">
+                  <span className="text-xs text-neutral-400">
                     {current.imported === false
                       ? `${current.summary.created} lead(s) scraped, not imported`
                       : `+${current.summary.created} new · ${current.summary.updated} refreshed · ${current.summary.skipped} skipped`}
@@ -513,7 +517,7 @@ export const ScraperView: React.FC = () => {
                   <button
                     onClick={() => handleDownload(current)}
                     disabled={downloadingId === current.id}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 disabled:opacity-60 text-xs font-medium text-slate-300 transition-colors duration-300"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.03] border border-white/10 hover:bg-white/[0.06] disabled:opacity-60 text-xs font-medium text-neutral-300 transition-colors duration-300"
                   >
                     {downloadingId === current.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
                     Download CSV
@@ -524,10 +528,10 @@ export const ScraperView: React.FC = () => {
             <MaskedReveal className="bg-canvas/80">
               <div
                 ref={logRef}
-                className="text-slate-300 font-mono text-xs leading-relaxed px-4 py-3 h-64 overflow-y-auto custom-scrollbar"
+                className="text-neutral-300 font-mono text-xs leading-relaxed px-4 py-3 h-64 overflow-y-auto custom-scrollbar"
               >
                 {current.log.length === 0 ? (
-                  <span className="text-slate-500">Waiting for output…</span>
+                  <span className="text-neutral-500">Waiting for output…</span>
                 ) : (
                   current.log.map((line, i) => <div key={i} className="whitespace-pre-wrap break-all">{line}</div>)
                 )}
@@ -537,38 +541,38 @@ export const ScraperView: React.FC = () => {
         )}
 
         {/* History */}
-        <StaggerItem className="glass rounded-xl overflow-hidden">
+        <StaggerItem className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
           <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
-            <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-              <Radar className="w-4 h-4" /> Past runs
+            <h3 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
+              <Radar className="w-4 h-4 text-volt-text" /> Past runs
             </h3>
-            <button onClick={loadHistory} className="text-slate-400 hover:text-white transition-colors duration-300">
+            <button onClick={loadHistory} aria-label="Refresh past runs" className="p-1.5 text-neutral-400 hover:text-white rounded-full hover:bg-white/[0.05] transition-colors duration-300">
               <RefreshCw className="w-4 h-4" />
             </button>
           </div>
           {history.length === 0 ? (
-            <p className="px-6 py-8 text-center text-sm text-slate-500">No scrapes yet.</p>
+            <p className="px-6 py-8 text-center text-sm text-neutral-500">No scrapes yet.</p>
           ) : (
             <ul className="divide-y divide-white/10">
               {history.map((job) => {
                 const meta = STATUS_META[job.status];
                 const Icon = meta.Icon;
                 return (
-                  <li key={job.id} className="px-6 py-3 flex items-center justify-between text-sm hover:bg-white/5 transition-colors duration-300">
+                  <li key={job.id} className="px-6 py-3 flex items-center justify-between text-sm hover:bg-white/[0.03] transition-colors duration-300">
                     <div className="flex items-center gap-3 min-w-0">
                       <Icon className={`w-4 h-4 flex-shrink-0 ${meta.className}`} />
                       {job.source === 'auto' && (
-                        <span className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-900/30 border border-brand-800 text-brand-400 text-[10px] font-medium uppercase tracking-wide">
+                        <span className="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-volt/15 border border-volt-text/25 text-volt-text text-[10px] font-medium uppercase tracking-wide">
                           <Sparkles className="w-3 h-3" /> Auto
                         </span>
                       )}
-                      <span className="truncate text-slate-200">
+                      <span className="truncate text-neutral-200">
                         {job.keywords.length > 0 ? job.keywords.join(', ') : '(generating…)'}
                       </span>
                     </div>
-                    <div className="flex items-center gap-3 flex-shrink-0 text-slate-500">
+                    <div className="flex items-center gap-3 flex-shrink-0 text-neutral-500">
                       {job.summary && (
-                        <span className={job.imported === false ? 'text-slate-500' : 'text-emerald-400'}>
+                        <span className={job.imported === false ? 'text-neutral-500' : 'text-emerald-400'}>
                           {job.imported === false ? `${job.summary.created} scraped` : `+${job.summary.created}`}
                         </span>
                       )}
@@ -578,7 +582,8 @@ export const ScraperView: React.FC = () => {
                           onClick={() => handleDownload(job)}
                           disabled={downloadingId === job.id}
                           title="Download CSV"
-                          className="text-slate-500 hover:text-brand-400 disabled:opacity-40 transition-colors duration-300"
+                          aria-label="Download CSV"
+                          className="text-neutral-500 hover:text-volt-text disabled:opacity-40 transition-colors duration-300"
                         >
                           {downloadingId === job.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                         </button>

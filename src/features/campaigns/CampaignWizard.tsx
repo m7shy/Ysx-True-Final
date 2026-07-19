@@ -178,14 +178,14 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col h-full bg-slate-950 text-slate-200">
+    <div className="fixed inset-0 z-50 flex flex-col h-full bg-noir text-neutral-300">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-950/70 backdrop-blur-sm px-4 md:px-6 py-4 flex items-center gap-4">
+      <header className="border-b border-white/10 bg-noir/70 backdrop-blur-sm px-4 md:px-6 py-4 flex items-center gap-4">
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="bg-transparent text-white text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-brand-500 rounded px-2 py-1 -ml-2 w-64"
+          className="bg-transparent text-white text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-volt-text rounded-xl px-2 py-1 -ml-2 w-64"
           aria-label="Campaign name"
         />
         <div className="flex-1 min-w-0">
@@ -200,7 +200,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
             }}
           />
         </div>
-        <button type="button" onClick={onClose} className="text-sm text-slate-400 hover:text-white">
+        <button type="button" onClick={onClose} className="text-sm text-neutral-400 hover:text-white transition-colors">
           Close
         </button>
       </header>
@@ -247,8 +247,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
       </div>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800 bg-slate-950/70 backdrop-blur-sm px-4 md:px-6 py-3 flex items-center justify-between gap-3">
-        <div className="text-xs text-slate-500 min-w-0 truncate">
+      <footer className="border-t border-white/10 bg-noir/70 backdrop-blur-sm px-4 md:px-6 py-3 flex items-center justify-between gap-3">
+        <div className="text-xs text-neutral-500 min-w-0 truncate">
           {submitError && <span className="text-red-400">Error: {submitError}</span>}
         </div>
         <div className="flex items-center gap-2">
@@ -256,7 +256,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
             type="button"
             onClick={() => setStep((s) => Math.max(1, s - 1))}
             disabled={step === 1}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-neutral-300 bg-white/[0.03] border border-white/10 hover:bg-white/[0.06] hover:border-white/16 disabled:opacity-40 disabled:cursor-not-allowed rounded-full transition-all"
           >
             <ArrowLeft className="w-4 h-4" />
             Back
@@ -266,7 +266,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
               type="button"
               onClick={() => setStep((s) => Math.min(4, s + 1))}
               disabled={!canAdvance(step)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-volt hover:shadow-[0_0_20px_rgb(2_1_255/0.55)] disabled:opacity-40 disabled:cursor-not-allowed rounded-full transition-all"
             >
               Next
               <ArrowRight className="w-4 h-4" />
@@ -276,7 +276,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
               type="button"
               onClick={() => void submit(true)}
               disabled={submitting}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-neutral-300 bg-white/[0.03] border border-white/10 hover:bg-white/[0.06] hover:border-white/16 disabled:opacity-40 disabled:cursor-not-allowed rounded-full transition-all"
             >
               Save as Draft
             </button>
