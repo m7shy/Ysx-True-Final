@@ -7,6 +7,11 @@ import tailwindcss from '@tailwindcss/vite';
 // backend at /portal (see server/src/index.ts). Shares src/design (tokens,
 // motion, ui primitives) with the CRM via the '@' alias to the repo root.
 export default defineConfig({
+  // Vite's default `root` is process.cwd(), NOT this config file's directory —
+  // without this, running `vite build --config portal/vite.config.ts` from the
+  // repo root silently builds the CRM's root index.html/index.tsx instead of
+  // portal/index.html. Pin it explicitly so the entry is always this app.
+  root: path.resolve(__dirname),
   base: '/portal/',
   server: {
     port: 3002,
