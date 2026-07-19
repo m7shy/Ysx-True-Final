@@ -1,3 +1,13 @@
+ysxvisuals.com, www.ysxvisuals.com {
+	root * C:\sites\portfolio
+	file_server
+	try_files {path} /index.html
+}
+
+crm.ysxvisuals.com {
+	reverse_proxy localhost:3001
+}
+
 ysxvisuals.online, www.ysxvisuals.online {
 	reverse_proxy localhost:3001
 }
