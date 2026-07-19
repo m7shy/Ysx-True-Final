@@ -32,6 +32,31 @@
 **Standing reminder for next session:** Claude's shell on this VM is never elevated — every `nssm` mutation (`set`/`restart`/`start`/`stop`) and any action needing admin rights must be done by the user in their own elevated PowerShell. Always verify the result afterward (`nssm get`/`nssm status`/a live health check) rather than trusting the command output alone, since misquoting is easy to miss.
 
 ---
+## 2026-07-19 — Client Portal built end-to-end (schema → backend → portal SPA → admin view), NOT yet deployed
+
+**⚠️ Written before discovering the entry above:** this portal work was done in the **`C:\Users\banjigum1\Documents\YSXXS\YSXXS` checkout — NOT the production repo** (`C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS`, per the entry above). The commits are rebased onto the pushed noir/domain work and pushed to `origin/phase5-frontend-wiring`; **deploying means pulling in the Desktop production repo and building there.** All `ysxvisuals.online` references below should read `crm.ysxvisuals.com`. The prod-DB migration IS already applied (shared Neon DB — that part is checkout-independent).
+
+**What this is:** the YSX Visuals client portal (premium noir, served at `/portal` on crm.ysxvisuals.com) per the user's product brief. Full architecture + Future Enhancements + CTO review in **`docs/client-portal.md`** — read that first. Plan file: `C:\Users\banjigum1\.claude\plans\kind-stirring-karp.md`.
+
+**Shipped (6 commits on `phase5-frontend-wiring`, NOT pushed, NOT live):**
+1. Schema: 11 new models (Client/ClientUser/ClientLoginToken/Project/FileLink/Revision/Message/ActivityEvent/Invoice/Payment/Receipt) + enums. Migration `20260719120000_client_portal` — additive-only, **already applied to the prod DB**. `Client/Project/Invoice` added to `TENANT_MODELS`.
+2. Client auth: `aud:'client'` JWTs (`auth/clientJwt.ts` + `clientMiddleware.ts` — CRM and portal tokens are mutually invalid), password + magic-link + invite set-password (`portal/auth.ts`), single-use SHA-256-hashed tokens, own rate limiter. Emails go out via the owner's first active mailbox (`portal/mailer.ts`, fails loud on NO_MAILBOX).
+3. Admin API `/api/clients|projects|invoices` + client API `/api/portal/*` (every query clientId-filtered), activity feed writes, Invoice→Payment→Receipt with manual bank-transfer mark-paid (provider-extensible enum). FAQ/bank details config in `server/src/portal/content.ts` (`PORTAL_BANK_*`/`PORTAL_CONTACT_*` env).
+4. Portal SPA in `portal/` (second Vite app, base `/portal/`, outputs `dist-portal/`, gitignored): 5 pages (login, dashboard, project detail, invoices, help) reusing `src/design` via `@` alias. Express serves it at `/portal` ahead of the CRM catch-all.
+5. Admin CRM view `CLIENT_PORTAL` (`components/ClientPortalView.tsx`, sidebar "Client Portal").
+6. `docs/client-portal.md` + this entry.
+
+**Verified:** server `tsc` clean, vitest **117/117** (17 new: aud separation, IDOR, single-use tokens, revision rounds, invoice lifecycle); root `tsc --noEmit` clean (added `@types/node` + `@/*` paths — root vite.config errors were from the node_modules wipe, see below). Full **live end-to-end API QA** on a second backend instance (:3005, workers disabled via NODE_ENV=test): admin login → client/project/invoice creation → **real invite + invoice emails sent through the Microsoft mailbox** → magic-link consume (replay correctly 401s) → dashboard/revision/message/approve/VIEWED-flip/mark-paid (RCPT-0001) → activity feed correct. Test client `[CLAUDE-TEST]` deleted after (cascade verified). CRM frontend scratch-build contains the new view. **Portal UI not yet visually QA'd in a browser** (user's Chrome is not on this VM; sandboxed Browser pane denies localhost) — do this right after deploy at `https://ysxvisuals.online/portal`.
+
+**⚠️ Found + fixed in passing: `server/node_modules` had been emptied** (only `.cache`/`.vite` remained — a restart would have crashed prod). Reinstalled from lockfile; `prisma generate` + copy into `server/node_modules/.prisma/client` done. Root also lost `@types/node` (reinstalled).
+
+**To deploy (Phase 7, needs the user — in the PRODUCTION repo `C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS`):**
+1. `git pull` on `phase5-frontend-wiring`.
+2. `npm install` (new devDep @types/node; verify node_modules health — the Documents checkout's server/node_modules had been emptied) and `cd server && npm install && npm run build`.
+3. `VITE_API_URL="" npx vite build` (CRM, per standing gotcha) and `npx vite build --config portal/vite.config.ts` (portal → `dist-portal/`).
+4. `nssm restart ysx-backend` (elevated).
+5. Smoke: `/api/health`, `https://crm.ysxvisuals.com/portal/login` renders, CRM unaffected, then create a real client + invite via the new "Client Portal" sidebar view and click through the portal.
+6. Optional first: set `PORTAL_BANK_NAME/BENEFICIARY/IBAN/SWIFT`, `PORTAL_CONTACT_EMAIL`, `PORTAL_OFFICE_HOURS` in `server/.env`.
 
 ## 2026-07-18 — Finished the stalled release cycle: reviewed+committed undocumented WIP, pushed, rebuilt
 
