@@ -21,6 +21,11 @@ import scraperRouter from './scraper/routes.js';
 import analyticsRouter from './analytics/routes.js';
 import trackingRouter from './campaigns/trackingRoutes.js';
 import portalAuthRouter from './portal/auth.js';
+import portalRouter from './portal/routes.js';
+import { requireClientAuth } from './auth/clientMiddleware.js';
+import clientsRouter from './clients/routes.js';
+import projectsRouter from './projects/routes.js';
+import invoicesRouter from './invoices/routes.js';
 import { unsubscribeHeaders, unsubscribeUrlForRecipient } from './campaigns/trackedHtml.js';
 
 import { LeadStatus } from '@prisma/client';
@@ -129,6 +134,11 @@ const portalAuthLimiter = rateLimit({
 });
 app.use('/api/portal/auth', portalAuthLimiter, portalAuthRouter);
 
+// Client-facing portal API — gated by requireClientAuth (aud:'client' tokens
+// only; CRM tokens are rejected). Every handler additionally filters by the
+// token's clientId, so a crafted :id can only 404.
+app.use('/api/portal', requireClientAuth, portalRouter);
+
 // Tenant-scoped routers: every request must carry a valid access token, and
 // each handler resolves credentials/data from the DB using req.auth.userId.
 // requireActiveTenant additionally blocks all mutations (POST/PUT/PATCH/DELETE)
@@ -147,6 +157,12 @@ app.use('/api/unibox', requireAuth, requireActiveTenant, uniboxRouter);
 // leads land in their own tenant (see scraper/service.ts).
 app.use('/api/scraper', requireAuth, requireActiveTenant, scraperRouter);
 app.use('/api/analytics', requireAuth, requireActiveTenant, analyticsRouter);
+
+// Client-portal admin management (clients / projects / invoices) — CRM-side,
+// tenant-scoped like every other router above.
+app.use('/api/clients', requireAuth, requireActiveTenant, clientsRouter);
+app.use('/api/projects', requireAuth, requireActiveTenant, projectsRouter);
+app.use('/api/invoices', requireAuth, requireActiveTenant, invoicesRouter);
 
 // Billing reads (tier / status / metered usage). Auth-gated but deliberately
 // NOT behind requireActiveTenant: a lapsed tenant must still see its usage
