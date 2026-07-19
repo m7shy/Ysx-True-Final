@@ -1,0 +1,183 @@
+import express, { Request, Response } from 'express';
+import { z } from 'zod';
+
+import { prisma } from '../db/prisma.js';
+import { logger } from '../logger.js';
+import { hashPassword, verifyPassword } from '../auth/password.js';
+import {
+  signClientAccessToken,
+  signClientRefreshToken,
+  verifyClientRefreshToken,
+  type ClientTokenInput,
+} from '../auth/clientJwt.js';
+import { createLoginToken, consumeLoginToken } from './tokens.js';
+import { sendPortalEmail, portalBaseUrl } from './mailer.js';
+
+/**
+ * Client-portal auth: password login, passwordless magic link, invite/set-
+ * password, refresh. Unauthenticated by design (mounted behind its own tight
+ * rate limiter in index.ts). Every response that could reveal whether an email
+ * exists is deliberately uniform.
+ */
+
+const router = express.Router();
+
+const loginSchema = z.object({
+  email: z.string().trim().toLowerCase().email('A valid email is required'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+const emailSchema = z.object({
+  email: z.string().trim().toLowerCase().email('A valid email is required'),
+});
+
+const tokenSchema = z.object({ token: z.string().min(1, 'token is required') });
+
+const setPasswordSchema = z.object({
+  token: z.string().min(1, 'token is required'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
+const refreshSchema = z.object({ refreshToken: z.string().min(1, 'refreshToken is required') });
+
+function badRequest(res: Response, err: z.ZodError): void {
+  res.status(400).json({ code: 'VALIDATION', message: err.issues.map((i) => i.message).join('; ') });
+}
+
+type ClientUserRow = {
+  id: string;
+  clientId: string;
+  userId: string;
+  email: string;
+  tokenVersion: number;
+};
+
+function tokenInput(cu: ClientUserRow): ClientTokenInput {
+  return {
+    clientUserId: cu.id,
+    clientId: cu.clientId,
+    userId: cu.userId,
+    email: cu.email,
+    tokenVersion: cu.tokenVersion,
+  };
+}
+
+async function issueSession(cu: ClientUserRow, res: Response, status = 200): Promise<void> {
+  await prisma.clientUser.update({ where: { id: cu.id }, data: { lastLoginAt: new Date() } });
+  const client = await prisma.client.findUnique({
+    where: { id: cu.clientId },
+    select: { id: true, name: true, companyName: true },
+  });
+  res.status(status).json({
+    accessToken: signClientAccessToken(tokenInput(cu)),
+    refreshToken: signClientRefreshToken(tokenInput(cu)),
+    clientUser: { id: cu.id, email: cu.email },
+    client,
+  });
+}
+
+/** POST /api/portal/auth/login — email + password. */
+router.post('/login', async (req: Request, res: Response) => {
+  const parsed = loginSchema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, parsed.error);
+
+  const { email, password } = parsed.data;
+  const cu = await prisma.clientUser.findUnique({ where: { email } });
+  const ok = cu?.passwordHash ? await verifyPassword(password, cu.passwordHash) : false;
+  if (!cu || !ok) {
+    res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' });
+    return;
+  }
+
+  logger.info({ clientUserId: cu.id }, 'Client logged in (password)');
+  await issueSession(cu, res);
+});
+
+/**
+ * POST /api/portal/auth/magic-link — request a passwordless login link.
+ * Always 200 with the same body, whether or not the email exists (no account
+ * enumeration). Send failures for real accounts are logged, not surfaced.
+ */
+router.post('/magic-link', async (req: Request, res: Response) => {
+  const parsed = emailSchema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, parsed.error);
+
+  const cu = await prisma.clientUser.findUnique({ where: { email: parsed.data.email } });
+  if (cu) {
+    try {
+      const raw = await createLoginToken(cu.id, 'MAGIC_LINK');
+      const link = `${portalBaseUrl()}/login?token=${raw}`;
+      await sendPortalEmail(cu.userId, {
+        to: cu.email,
+        subject: 'Your YSX Visuals sign-in link',
+        text: `Click to sign in to your client portal (valid for 15 minutes):\n\n${link}\n\nIf you didn't request this, you can ignore this email.`,
+      });
+    } catch (err) {
+      logger.error({ err, clientUserId: cu.id }, 'Failed to send magic link');
+    }
+  }
+  res.json({ ok: true, message: 'If that email has portal access, a sign-in link is on its way.' });
+});
+
+/** POST /api/portal/auth/magic-link/consume — exchange the emailed token for a session. */
+router.post('/magic-link/consume', async (req: Request, res: Response) => {
+  const parsed = tokenSchema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, parsed.error);
+
+  const cu = await consumeLoginToken(parsed.data.token, 'MAGIC_LINK');
+  if (!cu) {
+    res.status(401).json({ code: 'AUTH', message: 'This sign-in link is invalid or has expired — request a new one' });
+    return;
+  }
+
+  logger.info({ clientUserId: cu.id }, 'Client logged in (magic link)');
+  await issueSession(cu, res);
+});
+
+/**
+ * POST /api/portal/auth/set-password — consume an INVITE token, set the first
+ * password, and log straight in (the invite doubles as first login).
+ */
+router.post('/set-password', async (req: Request, res: Response) => {
+  const parsed = setPasswordSchema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, parsed.error);
+
+  const cu = await consumeLoginToken(parsed.data.token, 'INVITE');
+  if (!cu) {
+    res.status(401).json({ code: 'AUTH', message: 'This invite link is invalid or has expired — ask for a new invite' });
+    return;
+  }
+
+  const passwordHash = await hashPassword(parsed.data.password);
+  await prisma.clientUser.update({ where: { id: cu.id }, data: { passwordHash } });
+
+  logger.info({ clientUserId: cu.id }, 'Client set password via invite');
+  await issueSession(cu, res, 201);
+});
+
+/** POST /api/portal/auth/refresh — rotate the token pair; rejects bumped tokenVersion. */
+router.post('/refresh', async (req: Request, res: Response) => {
+  const parsed = refreshSchema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, parsed.error);
+
+  let claims;
+  try {
+    claims = verifyClientRefreshToken(parsed.data.refreshToken);
+  } catch {
+    res.status(401).json({ code: 'AUTH', message: 'Invalid or expired refresh token' });
+    return;
+  }
+
+  const cu = await prisma.clientUser.findUnique({ where: { id: claims.sub } });
+  if (!cu || cu.tokenVersion !== claims.ver) {
+    res.status(401).json({ code: 'AUTH', message: 'Refresh token has been revoked' });
+    return;
+  }
+
+  res.json({
+    accessToken: signClientAccessToken(tokenInput(cu)),
+    refreshToken: signClientRefreshToken(tokenInput(cu)),
+  });
+});
+
+export default router;

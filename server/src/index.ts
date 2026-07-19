@@ -20,6 +20,7 @@ import uniboxRouter from './unibox/routes.js';
 import scraperRouter from './scraper/routes.js';
 import analyticsRouter from './analytics/routes.js';
 import trackingRouter from './campaigns/trackingRoutes.js';
+import portalAuthRouter from './portal/auth.js';
 import { unsubscribeHeaders, unsubscribeUrlForRecipient } from './campaigns/trackedHtml.js';
 
 import { LeadStatus } from '@prisma/client';
@@ -114,6 +115,19 @@ app.use('/api/auth/signup', authLimiter);
 
 // Public auth endpoints (signup / login / refresh).
 app.use('/api/auth', authRouter);
+
+// Client-portal auth (login / magic link / invite set-password / refresh).
+// Same tight failed-attempt budget as the CRM's, but a separate limiter
+// instance so client brute-force attempts can't exhaust the admin's budget.
+const portalAuthLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { code: 'RATE_LIMITED', message: 'Too many attempts — try again in a few minutes' },
+});
+app.use('/api/portal/auth', portalAuthLimiter, portalAuthRouter);
 
 // Tenant-scoped routers: every request must carry a valid access token, and
 // each handler resolves credentials/data from the DB using req.auth.userId.
