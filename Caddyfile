@@ -1,3 +1,19 @@
+# Portfolio — static site, served directly by Caddy.
+# Deploy: build "once in a lifetime" (npm run build) and copy its dist/ contents
+# to the path below on the VM (adjust root if you place it elsewhere).
+ysxvisuals.com, www.ysxvisuals.com {
+	root * C:\sites\portfolio
+	file_server
+	try_files {path} /index.html
+}
+
+# CRM — reverse-proxied to the backend, which also serves its own built frontend.
+crm.ysxvisuals.com {
+	reverse_proxy localhost:3001
+}
+
+# Legacy domain — keep serving the CRM here too until DNS/OAuth are fully migrated,
+# then delete this block once crm.ysxvisuals.com is confirmed working end-to-end.
 ysxvisuals.online, www.ysxvisuals.online {
 	reverse_proxy localhost:3001
 }
