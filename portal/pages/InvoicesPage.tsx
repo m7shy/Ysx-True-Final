@@ -46,7 +46,7 @@ const InvoiceList: React.FC = () => {
   const currency = data.invoices[0]?.currency ?? 'usd';
 
   return (
-    <motion.div {...blurIn}>
+    <motion.div variants={blurIn} initial="hidden" animate="show">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-white">Invoices</h1>
@@ -127,7 +127,7 @@ const InvoiceDetail: React.FC<{ id: string }> = ({ id }) => {
   const receipt = invoice.payments.find((p) => p.receipt)?.receipt ?? null;
 
   return (
-    <motion.div {...blurIn} className="mx-auto max-w-2xl">
+    <motion.div variants={blurIn} initial="hidden" animate="show" className="mx-auto max-w-2xl">
       <button
         onClick={() => navigate('/invoices')}
         className="mb-6 inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white transition-colors"

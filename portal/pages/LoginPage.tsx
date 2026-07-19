@@ -64,7 +64,7 @@ export const LoginPage: React.FC<{ setPasswordMode?: boolean }> = ({ setPassword
 
   return (
     <div className="relative z-10 flex h-full items-center justify-center overflow-y-auto px-4">
-      <motion.div {...blurIn} className="w-full max-w-sm shrink-0 py-10">
+      <motion.div variants={blurIn} initial="hidden" animate="show" className="w-full max-w-sm shrink-0 py-10">
         <div className="mb-8 text-center">
           <p className="text-lg font-semibold tracking-tight text-white">
             YSX<span className="text-volt-text"> Visuals</span>

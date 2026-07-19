@@ -106,7 +106,7 @@ export const DashboardPage: React.FC = () => {
           }
         />
       ) : (
-        <motion.div {...staggerContainer} className="grid gap-4 sm:grid-cols-2">
+        <motion.div variants={staggerContainer()} initial="hidden" animate="show" className="grid gap-4 sm:grid-cols-2">
           {projects.map((p) => (
             <motion.div key={p.id} variants={staggerItem}>
               <Card

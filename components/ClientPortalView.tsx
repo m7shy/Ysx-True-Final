@@ -82,7 +82,7 @@ const ClientPortalView: React.FC = () => {
   const [projectId, setProjectId] = React.useState<string | null>(null);
 
   return (
-    <motion.div {...blurIn} className="space-y-6">
+    <motion.div variants={blurIn} initial="hidden" animate="show" className="space-y-6">
       {projectId ? (
         <ProjectDetail id={projectId} onBack={() => setProjectId(null)} />
       ) : (

@@ -23,7 +23,7 @@ export const FaqPage: React.FC = () => {
     );
 
   return (
-    <motion.div {...blurIn} className="mx-auto max-w-2xl">
+    <motion.div variants={blurIn} initial="hidden" animate="show" className="mx-auto max-w-2xl">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight text-white">Help & contact</h1>
         <p className="mt-1 text-sm text-neutral-400">Quick answers first — and a direct line if you need us.</p>

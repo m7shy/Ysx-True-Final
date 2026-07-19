@@ -115,7 +115,7 @@ export const ProjectPage: React.FC<{ id: string }> = ({ id }) => {
   };
 
   return (
-    <motion.div {...blurIn}>
+    <motion.div variants={blurIn} initial="hidden" animate="show">
       <button
         onClick={() => navigate('/')}
         className="mb-6 inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white transition-colors"
