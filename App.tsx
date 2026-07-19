@@ -66,17 +66,18 @@ interface NavButtonProps {
 const NavButton: React.FC<NavButtonProps> = ({ view, icon: Icon, label, isActive, onSelect, indicatorId }) => (
   <button
     onClick={() => onSelect(view)}
-    className={`relative w-full flex items-center px-3 py-3 md:py-2 text-sm font-medium rounded-lg transition-colors duration-300 group
-      ${isActive ? 'text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}
+    aria-current={isActive ? 'page' : undefined}
+    className={`relative w-full flex items-center px-3 py-3 md:py-2 text-sm font-medium rounded-full transition-colors duration-300 group
+      ${isActive ? 'text-white' : 'text-neutral-400 hover:bg-white/[0.04] hover:text-white'}`}
   >
     {isActive && (
       <motion.div
         layoutId={indicatorId}
         transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
-        className="absolute inset-0 rounded-lg bg-white/10 border border-white/10 shadow-glow"
+        className="absolute inset-0 rounded-full bg-volt/10 border border-volt/40 shadow-volt-soft"
       />
     )}
-    <Icon className={`relative z-10 w-5 h-5 md:w-4 md:h-4 mr-3 transition-colors duration-300 ${isActive ? 'text-brand-400' : 'text-slate-500 group-hover:text-slate-300'}`} />
+    <Icon className={`relative z-10 w-5 h-5 md:w-4 md:h-4 mr-3 transition-colors duration-300 ${isActive ? 'text-volt-text' : 'text-neutral-500 group-hover:text-neutral-300'}`} />
     <span className="relative z-10">{label}</span>
   </button>
 );
@@ -110,12 +111,12 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
     <>
       <div className="p-6 flex items-center justify-between space-x-3 text-white">
         <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center shadow-lg shadow-brand-900/50">
+          <div className="w-8 h-8 bg-volt rounded-2xl flex items-center justify-center shadow-volt-soft">
             <Layout className="w-5 h-5" />
           </div>
-          <span className="font-bold text-lg tracking-tight">YSX Flow</span>
+          <span className="font-semibold text-lg tracking-tight">YSX Flow</span>
         </div>
-        <button onClick={onCloseMobile} className="md:hidden text-slate-400 hover:text-white p-2">
+        <button onClick={onCloseMobile} aria-label="Close menu" className="md:hidden text-neutral-400 hover:text-white p-2 rounded-full transition-colors duration-300">
           <X className="w-6 h-6" />
         </button>
       </div>
@@ -123,7 +124,7 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
       <div className="px-4 mb-6">
         <button
           onClick={onCompose}
-          className="w-full flex items-center justify-center px-4 py-3 bg-white text-brand-900 font-semibold rounded-lg shadow hover:bg-brand-50 transition-all duration-300 transform hover:scale-105 active:scale-95"
+          className="w-full flex items-center justify-center px-4 py-3 bg-volt text-white font-medium rounded-full transition-all duration-300 hover:shadow-volt active:scale-95"
         >
           <Plus className="w-5 h-5 mr-2" />
           Compose
@@ -132,14 +133,14 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
 
       <div className="flex-1 overflow-y-auto px-3 space-y-6 custom-scrollbar">
         <div>
-          <h3 className="px-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Inbox</h3>
+          <h3 className="px-3 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-2">Inbox</h3>
           <nav className="space-y-1">
             {nav('UNIBOX', MessageSquare, 'Unified Inbox')}
           </nav>
         </div>
 
         <div>
-          <h3 className="px-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Campaigns</h3>
+          <h3 className="px-3 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-2">Campaigns</h3>
           <nav className="space-y-1">
             {nav('DASHBOARD', Mail, 'Dashboard')}
             {nav('CAMPAIGNS', Megaphone, 'All Campaigns', currentView === 'CAMPAIGNS' || currentView === 'CAMPAIGN_DETAIL')}
@@ -147,7 +148,7 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
         </div>
 
         <div>
-          <h3 className="px-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Workspace</h3>
+          <h3 className="px-3 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-2">Workspace</h3>
           <nav className="space-y-1">
             {nav('LEADS', Users, 'Leads')}
             {nav('SCRAPER', Radar, 'Scraper')}
@@ -161,34 +162,35 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
         </div>
 
         <div>
-          <h3 className="px-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Settings</h3>
+          <h3 className="px-3 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-2">Settings</h3>
           <nav className="space-y-1">
             <button
               onClick={onOpenSettings}
-              className="w-full flex items-center px-3 py-3 md:py-2 text-sm font-medium rounded-lg text-slate-400 hover:bg-white/5 hover:text-white transition-colors duration-300 group"
+              className="w-full flex items-center px-3 py-3 md:py-2 text-sm font-medium rounded-full text-neutral-400 hover:bg-white/[0.04] hover:text-white transition-colors duration-300 group"
             >
-              <Settings className="w-5 h-5 md:w-4 md:h-4 mr-3 text-slate-500 group-hover:text-slate-300" />
+              <Settings className="w-5 h-5 md:w-4 md:h-4 mr-3 text-neutral-500 group-hover:text-neutral-300" />
               Configuration
             </button>
           </nav>
         </div>
       </div>
 
-      <div className="p-4 border-t border-white/10 space-y-4 bg-white/5 backdrop-blur-xl">
+      <div className="p-4 border-t border-white/10 space-y-4 bg-white/[0.02] backdrop-blur-xl">
         <div className="flex items-center justify-between group pb-safe">
           <div className="flex items-center min-w-0">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-brand-400 to-purple-500 flex items-center justify-center text-white font-bold text-xs shadow-lg shrink-0">
+            <div className="w-8 h-8 rounded-full bg-volt flex items-center justify-center text-white font-medium text-xs shadow-volt-soft shrink-0">
               {(user?.email ?? '?').charAt(0).toUpperCase()}
             </div>
             <div className="ml-3 min-w-0">
               <p className="text-sm font-medium text-white truncate">{user?.email}</p>
-              <p className="text-xs text-slate-500">Logged in</p>
+              <p className="text-xs text-neutral-500">Logged in</p>
             </div>
           </div>
           <button
             onClick={logout}
             title="Log out"
-            className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors duration-300 shrink-0"
+            aria-label="Log out"
+            className="p-2 text-neutral-400 hover:text-white hover:bg-white/10 rounded-full transition-colors duration-300 shrink-0"
           >
             <LogOut className="w-4 h-4" />
           </button>
@@ -346,6 +348,12 @@ const AppContent: React.FC = () => {
 
   return (
     <div className="flex h-screen overflow-hidden font-sans relative">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2 focus:rounded-full focus:bg-volt focus:text-white focus:text-sm focus:font-medium focus:shadow-volt"
+      >
+        Skip to content
+      </a>
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
@@ -375,7 +383,7 @@ const AppContent: React.FC = () => {
         initial={{ x: -24, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-        className="w-64 bg-white/5 backdrop-blur-xl text-slate-300 flex-shrink-0 hidden md:flex flex-col border-r border-white/10 z-20 relative"
+        className="w-64 bg-white/[0.02] backdrop-blur-xl text-neutral-300 flex-shrink-0 hidden md:flex flex-col border-r border-white/10 z-20 relative"
       >
         <SidebarContent
           currentView={currentView}
@@ -397,7 +405,7 @@ const AppContent: React.FC = () => {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.25 }}
-              className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm"
+              className="fixed inset-0 bg-noir/70 backdrop-blur-sm"
               onClick={() => setIsMobileMenuOpen(false)}
             />
             <motion.aside
@@ -405,7 +413,7 @@ const AppContent: React.FC = () => {
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-              className="relative w-72 h-full bg-canvas/95 backdrop-blur-xl text-slate-300 flex flex-col border-r border-white/10 shadow-2xl"
+              className="relative w-72 h-full bg-noir/95 backdrop-blur-xl text-neutral-300 flex flex-col border-r border-white/10 shadow-2xl"
             >
               <SidebarContent
                 currentView={currentView}
@@ -422,12 +430,13 @@ const AppContent: React.FC = () => {
         )}
       </AnimatePresence>
 
-      <main className="flex-1 flex flex-col min-w-0 bg-transparent relative z-10">
-        <header className="h-14 md:h-16 border-b border-white/10 flex items-center justify-between px-4 md:px-6 bg-white/5 backdrop-blur-xl z-20 relative gap-3 md:gap-4">
+      <main id="main-content" className="flex-1 flex flex-col min-w-0 bg-transparent relative z-10">
+        <header className="h-14 md:h-16 border-b border-white/10 flex items-center justify-between px-4 md:px-6 bg-white/[0.02] backdrop-blur-xl z-20 relative gap-3 md:gap-4">
           <div className="flex items-center gap-3 md:gap-4 overflow-hidden">
             <button
               onClick={() => setIsMobileMenuOpen(true)}
-              className="md:hidden p-2 -ml-2 text-slate-400 hover:text-white rounded-lg active:bg-white/10 transition-colors duration-300"
+              aria-label="Open menu"
+              className="md:hidden p-2 -ml-2 text-neutral-400 hover:text-white rounded-full active:bg-white/10 transition-colors duration-300"
             >
               <Menu className="w-6 h-6" />
             </button>
@@ -439,7 +448,7 @@ const AppContent: React.FC = () => {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                className="text-lg md:text-xl font-semibold tracking-tight text-white truncate"
+                className="text-lg md:text-xl font-medium tracking-tight text-white truncate"
               >
                 {VIEW_TITLES[currentView]}
               </motion.h1>
@@ -448,19 +457,19 @@ const AppContent: React.FC = () => {
 
           <div className="flex items-center space-x-1 md:space-x-4 shrink-0">
              {userSettings.useRealApi ? (
-                <span className="hidden md:flex text-xs font-medium text-purple-300 bg-purple-500/10 px-2 py-1 rounded items-center animate-pulse-slow border border-purple-400/20">
+                <span className="hidden md:flex text-xs font-medium text-volt-text bg-volt/10 px-2.5 py-1 rounded-full items-center animate-pulse-slow border border-volt/40">
                   <PlugZap className="w-3 h-3 mr-1" />
                   {userSettings.activeProvider === 'GMAIL' ? 'Gmail Live' :
                    userSettings.activeProvider === 'MICROSOFT' ? 'Outlook Live' :
                    'Zoho Live'}
                 </span>
              ) : (
-                <span className="hidden md:flex text-xs font-medium text-slate-400 bg-white/5 px-2 py-1 rounded items-center border border-white/10">
+                <span className="hidden md:flex text-xs font-medium text-neutral-400 bg-white/[0.02] px-2.5 py-1 rounded-full items-center border border-white/10">
                   <span className="w-2 h-2 bg-green-500 rounded-full mr-2 shadow-[0_0_5px_rgba(34,197,94,0.5)]"></span>
                   Simulated
                 </span>
              )}
-             <button className="p-2 text-slate-400 hover:text-brand-400 transition-all hover:rotate-180 duration-500 rounded-lg active:bg-white/10" title="Sync Now">
+             <button aria-label="Sync now" className="p-2 text-neutral-400 hover:text-volt-text transition-all hover:rotate-180 duration-500 rounded-full active:bg-white/10" title="Sync Now">
              <RefreshCcw className="w-5 h-5" />
             </button>
          </div>
