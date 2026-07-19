@@ -88,7 +88,8 @@ import {
   signClientRefreshToken,
   verifyClientAccessToken,
 } from '../auth/clientJwt.js';
-import { signAccessToken } from '../auth/jwt.js';
+import { signAccessToken, verifyAccessToken, verifyRefreshToken } from '../auth/jwt.js';
+import { createLoginToken, consumeLoginToken } from '../portal/tokens.js';
 import { requireClientAuth } from '../auth/clientMiddleware.js';
 import express from 'express';
 import type { Response } from 'express';
@@ -107,6 +108,25 @@ describe('client JWT audience separation', () => {
   it('rejects a CRM access token on client verification', () => {
     const crmToken = signAccessToken({ userId: 'owner1', email: 'admin@agency.com' });
     expect(() => verifyClientAccessToken(crmToken)).toThrow();
+  });
+
+  it('rejects a CLIENT access token on CRM verification (reverse direction)', () => {
+    // Regression guard: jwt.verify ignores `aud` unless asked, so the CRM
+    // verifier must explicitly reject audience-scoped (portal) tokens.
+    const clientToken = signClientAccessToken(cu);
+    expect(() => verifyAccessToken(clientToken)).toThrow();
+  });
+
+  it('rejects a CLIENT refresh token on CRM refresh verification', () => {
+    const clientRefresh = signClientRefreshToken(cu);
+    expect(() => verifyRefreshToken(clientRefresh)).toThrow();
+  });
+
+  it('a client token gets 401 on a CRM route over HTTP', async () => {
+    const res = await request(app)
+      .get('/api/mail/health')
+      .set('Authorization', `Bearer ${signClientAccessToken(cu)}`);
+    expect(res.status).toBe(401);
   });
 
   it('rejects a client refresh token where an access token is expected', () => {
@@ -181,5 +201,26 @@ describe('portal auth HTTP flow', () => {
       .post('/api/portal/auth/refresh')
       .send({ refreshToken: signClientRefreshToken({ ...cu, tokenVersion: 9 }) });
     expect(stale.status).toBe(401);
+  });
+
+  it('rejects an expired magic-link token', async () => {
+    const raw = await createLoginToken('cu1', 'MAGIC_LINK');
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(16 * 60 * 1000); // past the 15-minute TTL
+      expect(await consumeLoginToken(raw, 'MAGIC_LINK')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+    // Still consumable is what we're guarding against — after real-time restore
+    // the row was never marked used, but its expiry has genuinely NOT passed,
+    // so a fresh consume succeeds; that's fine (the guard above is the point).
+  });
+
+  it('rejects a garbage token outright', async () => {
+    const res = await request(app)
+      .post('/api/portal/auth/magic-link/consume')
+      .send({ token: 'definitely-not-a-real-token' });
+    expect(res.status).toBe(401);
   });
 });

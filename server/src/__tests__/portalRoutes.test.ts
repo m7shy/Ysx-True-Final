@@ -159,7 +159,9 @@ function makeModel(model: string) {
             ? { status: 'OPEN' }
             : model === 'fileLink'
               ? { version: 1, type: 'FILE_LINK' }
-              : {};
+              : model === 'clientLoginToken'
+                ? { usedAt: null }
+                : {};
       const row: Row = { id: nextId(model), createdAt: new Date(), updatedAt: new Date(), ...defaults, ...data };
       db[model].push(row);
       if (model === 'payment' && receipt?.create) {
@@ -394,6 +396,165 @@ describe('invoice lifecycle', () => {
   });
 });
 
+describe('cross-audience token rejection (client token on CRM routes)', () => {
+  it('a portal client token is rejected by CRM-side auth', async () => {
+    for (const path of ['/api/clients', '/api/projects', '/api/invoices']) {
+      const res = await request(app).get(path).set('Authorization', clientA);
+      expect(res.status).toBe(401);
+    }
+  });
+
+  it('a portal client token cannot mutate CRM data', async () => {
+    const res = await request(app)
+      .post('/api/clients')
+      .set('Authorization', clientA)
+      .send({ name: 'Sneaky Client' });
+    expect(res.status).toBe(401);
+    expect(db.client.some((c) => c.name === 'Sneaky Client')).toBe(false);
+  });
+});
+
+describe('invite → set-password → password login flow', () => {
+  let inviteToken: string;
+
+  it('admin invites a new email; invite email carries a set-password link', async () => {
+    const res = await request(app)
+      .post('/api/clients/cA/invite')
+      .set('Authorization', adminA)
+      .send({ email: 'newuser@x.com' });
+    expect(res.status).toBe(201);
+    const mail = sentEmails.at(-1);
+    expect(mail.to).toBe('newuser@x.com');
+    inviteToken = mail.text.match(/set-password\?token=([A-Za-z0-9_-]+)/)![1];
+  });
+
+  it('an INVITE token cannot be consumed as a magic link (kind separation)', async () => {
+    const res = await request(app)
+      .post('/api/portal/auth/magic-link/consume')
+      .send({ token: inviteToken });
+    expect(res.status).toBe(401);
+  });
+
+  it('set-password consumes the invite, logs in, and the token is single-use', async () => {
+    const set = await request(app)
+      .post('/api/portal/auth/set-password')
+      .send({ token: inviteToken, password: 'brand-new-pass-1' });
+    expect(set.status).toBe(201);
+    expect(set.body.accessToken).toBeTruthy();
+    expect(set.body.client.name).toBe('Client A');
+
+    const replay = await request(app)
+      .post('/api/portal/auth/set-password')
+      .send({ token: inviteToken, password: 'other-pass-123' });
+    expect(replay.status).toBe(401);
+
+    const login = await request(app)
+      .post('/api/portal/auth/login')
+      .send({ email: 'newuser@x.com', password: 'brand-new-pass-1' });
+    expect(login.status).toBe(200);
+
+    const bad = await request(app)
+      .post('/api/portal/auth/login')
+      .send({ email: 'newuser@x.com', password: 'wrong-password' });
+    expect(bad.status).toBe(401);
+  });
+
+  it('rejects a short password on set-password', async () => {
+    const res = await request(app)
+      .post('/api/portal/auth/set-password')
+      .send({ token: 'whatever', password: 'short' });
+    expect(res.status).toBe(400);
+  });
+
+  it('re-homing an email attached to another client is a 409 EMAIL_TAKEN', async () => {
+    const res = await request(app)
+      .post('/api/clients/cA/invite')
+      .set('Authorization', adminA)
+      .send({ email: 'clientb@x.com' });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('EMAIL_TAKEN');
+  });
+
+  it('invite fails loud with NO_MAILBOX when the tenant has no active mailbox', async () => {
+    const res = await request(app)
+      .post('/api/clients/cB/invite')
+      .set('Authorization', adminB)
+      .send({ email: 'freshclient@x.com' });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('NO_MAILBOX');
+  });
+});
+
+describe('input validation + ownership edges', () => {
+  it('empty revision note and empty message are 400s', async () => {
+    const rev = await request(app)
+      .post('/api/portal/projects/pA/revisions')
+      .set('Authorization', clientA)
+      .send({ note: '   ' });
+    expect(rev.status).toBe(400);
+
+    const msg = await request(app)
+      .post('/api/portal/projects/pA/messages')
+      .set('Authorization', clientA)
+      .send({ body: '' });
+    expect(msg.status).toBe(400);
+  });
+
+  it('invoice creation rejects non-positive amounts and foreign projects', async () => {
+    const zero = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', amountCents: 0 });
+    expect(zero.status).toBe(400);
+
+    // pB belongs to tenant B / client B — cannot be attached to an A invoice.
+    const foreign = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', projectId: 'pB', amountCents: 1000 });
+    expect(foreign.status).toBe(404);
+  });
+
+  it('file link URL must be a valid URL; foreign admin cannot delete files', async () => {
+    const bad = await request(app)
+      .post('/api/projects/pA/files')
+      .set('Authorization', adminA)
+      .send({ label: 'Notes', url: 'not-a-url' });
+    expect(bad.status).toBe(400);
+
+    const file = db.fileLink.find((f) => f.projectId === 'pA');
+    expect(file).toBeTruthy();
+    const del = await request(app)
+      .delete(`/api/projects/pA/files/${file!.id}`)
+      .set('Authorization', adminB);
+    expect(del.status).toBe(404);
+    expect(db.fileLink.some((f) => f.id === file!.id)).toBe(true);
+  });
+});
+
+describe('messages', () => {
+  it('client and admin messages carry the right author label and write activity', async () => {
+    const c = await request(app)
+      .post('/api/portal/projects/pA/messages')
+      .set('Authorization', clientA)
+      .send({ body: 'Looks great so far!' });
+    expect(c.status).toBe(201);
+    expect(c.body.message.authorType).toBe('CLIENT');
+    expect(c.body.message.authorLabel).toBe('Client A');
+
+    const a = await request(app)
+      .post('/api/projects/pA/messages')
+      .set('Authorization', adminA)
+      .send({ body: 'Thanks — new cut tomorrow.' });
+    expect(a.status).toBe(201);
+    expect(a.body.message.authorType).toBe('ADMIN');
+    expect(a.body.message.authorLabel).toBe('YSX Visuals');
+
+    const acts = db.activityEvent.filter((x) => x.projectId === 'pA' && x.type === 'MESSAGE_POSTED');
+    expect(acts.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('portal dashboard + requests', () => {
   it('dashboard lists own active projects with trust signals', async () => {
     const res = await request(app).get('/api/portal/projects').set('Authorization', clientA);
@@ -422,5 +583,24 @@ describe('portal dashboard + requests', () => {
     expect(res.status).toBe(200);
     expect(res.body.faq.length).toBeGreaterThan(3);
     expect(res.body.contact.email).toBeTruthy();
+  });
+});
+
+// Runs LAST — archiving pA would break the dashboard/messaging tests above.
+describe('project archival', () => {
+  it('archived projects leave the default dashboard but appear under ?status=ARCHIVED', async () => {
+    const arch = await request(app).post('/api/projects/pA/archive').set('Authorization', adminA);
+    expect(arch.status).toBe(200);
+    expect(arch.body.project.status).toBe('ARCHIVED');
+
+    const active = await request(app).get('/api/portal/projects').set('Authorization', clientA);
+    expect(active.body.projects).toHaveLength(0);
+
+    const archived = await request(app)
+      .get('/api/portal/projects?status=ARCHIVED')
+      .set('Authorization', clientA);
+    expect(archived.body.projects.map((p: any) => p.id)).toEqual(['pA']);
+
+    expect(db.activityEvent.some((a) => a.projectId === 'pA' && a.type === 'PROJECT_ARCHIVED')).toBe(true);
   });
 });

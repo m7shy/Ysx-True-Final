@@ -1,5 +1,25 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-19 (latest) — Client-portal bug hunt + test expansion (pre-migration audit)
+
+**Context:** User asked for a deep review of the newly built client portal. Full read of `server/src/portal/*`, `auth/clientJwt.ts`, `clientMiddleware.ts`, `clients|projects|invoices/routes.ts`, index.ts mounting, and both portal test files. Done in the **Documents checkout**. ⚠️ Written concurrently with the deploy entry below (discovered on push): **the portal is already live, so the jwt.ts fix here is committed but NOT yet deployed** — prod needs one more `git pull` + `cd server && npm run build` + user-run `nssm restart ysx-backend` in the Desktop repo to pick it up (backend-only; no frontend rebuild needed).
+
+**🔴 Real security bug found + FIXED — cross-audience token acceptance (CRM side):**
+`verifyClientAccessToken` enforces `aud:'client'`, but the CRM's `verifyAccessToken`/`verifyRefreshToken` (`server/src/auth/jwt.ts`) only checked `typ` — and `jsonwebtoken`'s `verify()` ignores the `aud` claim unless you pass an `audience` option. A portal client token (also `typ:'access'`) therefore **passed CRM `requireAuth` on every route**, with `req.auth.userId` set to the clientUserId. Blast radius was limited (tenant filters used the bogus id → empty results; `requireActiveTenant` blocks mutations for nonexistent users) but GET routes sailed straight through since `requireActiveTenant` short-circuits on safe methods, and any future route keyed off `req.auth.email` or not tenant-filtered would have been exposed. **Fix:** CRM verifiers now reject any token carrying an `aud` claim (`assertNoAudience` in `jwt.ts`). The client→CRM direction was the only hole; CRM→portal was already tight.
+
+**Tests added (117 → 135, all passing; server `tsc` clean):**
+- `portalAuth.test.ts`: client access/refresh tokens rejected by CRM verifiers (regression guard for the fix above), client token 401s on a CRM HTTP route, expired magic-link token rejected (fake timers on `consumeLoginToken`), garbage token rejected.
+- `portalRoutes.test.ts`: client token 401 on `/api/clients|projects|invoices` (read + mutate); full invite → set-password → password-login flow incl. single-use replay and INVITE≠MAGIC_LINK kind separation; short-password 400; `EMAIL_TAKEN` 409 (re-homing an email attached to another client); `NO_MAILBOX` 409 fails loud; validation edges (empty note/message, zero-amount invoice, foreign-project invoice 404, bad file URL, foreign admin file delete); message author labels + activity writes; project archival hides from portal dashboard / shows under `?status=ARCHIVED`. (Mock gained a `usedAt: null` default on `clientLoginToken.create`.)
+
+**Reviewed and judged acceptable for MVP (NOT changed — most already in `docs/client-portal.md`'s CTO review):**
+- `mark-paid` creates Payment+Receipt then flips status non-transactionally, and `nextNumber()` is count+1 (documented race; single-admin scale).
+- `mark-paid` is allowed on a DRAFT invoice, and a partial `amountCents` still flips status to PAID — deliberate admin shortcuts, but know they exist.
+- Invoice send emails all client users in one `to:` (they see each other's addresses — same client, low risk).
+- `outstandingCents` ignores partial payments (sums full invoice amounts).
+- Portal invoice VIEWED-flip and revision round-numbering have benign read-then-write races.
+
+---
+
 ## 2026-07-19 (later) — Client Portal deployed to crm.ysxvisuals.com, 2 real bugs found + fixed live, full click-through QA passed
 
 **Context:** Continuation of the portal build below — this entry covers the actual production deploy (steps 1–3 done by Claude, step 4 restart by the user) plus everything found once it went live.

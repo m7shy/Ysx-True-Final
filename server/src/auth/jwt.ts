@@ -89,11 +89,21 @@ export function signRefreshToken(input: {
   return jwt.sign(claims, getSecret(), signOptions(config.JWT_REFRESH_TTL));
 }
 
+// CRM tokens carry no `aud`; client-portal tokens carry aud:'client'. jwt.verify
+// only validates `aud` when asked to, so an explicit rejection is required here —
+// otherwise a portal token (also typ:'access') would authorize CRM routes.
+function assertNoAudience(decoded: jwt.JwtPayload): void {
+  if (decoded.aud !== undefined) {
+    throw new Error('Audience-scoped token is not valid for CRM routes');
+  }
+}
+
 export function verifyAccessToken(token: string): AccessTokenClaims {
   const decoded = jwt.verify(token, getSecret());
   if (typeof decoded === 'string' || (decoded as jwt.JwtPayload).typ !== 'access') {
     throw new Error('Not an access token');
   }
+  assertNoAudience(decoded as jwt.JwtPayload);
   return decoded as unknown as AccessTokenClaims;
 }
 
@@ -102,6 +112,7 @@ export function verifyRefreshToken(token: string): RefreshTokenClaims {
   if (typeof decoded === 'string' || (decoded as jwt.JwtPayload).typ !== 'refresh') {
     throw new Error('Not a refresh token');
   }
+  assertNoAudience(decoded as jwt.JwtPayload);
   return decoded as unknown as RefreshTokenClaims;
 }
 
