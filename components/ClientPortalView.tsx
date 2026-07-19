@@ -386,6 +386,9 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
 
   const [file, setFile] = React.useState({ type: 'DELIVERABLE' as FileType, label: '', url: '' });
   const [msg, setMsg] = React.useState('');
+  const [deliverTarget, setDeliverTarget] = React.useState<{ id: string; roundNumber: number } | null>(null);
+  const [deliverNote, setDeliverNote] = React.useState('');
+  const [deliverBusy, setDeliverBusy] = React.useState(false);
 
   const load = React.useCallback(() => {
     fetchAdminProject(id)
@@ -456,6 +459,24 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
       load();
     } catch (err: any) {
       setError(err.message);
+    }
+  };
+
+  const confirmDeliver = async () => {
+    if (!deliverTarget) return;
+    setDeliverBusy(true);
+    try {
+      await updateRevision(id, deliverTarget.id, {
+        status: 'SUBMITTED',
+        ...(deliverNote.trim() ? { respondedNote: deliverNote.trim() } : {}),
+      });
+      setDeliverTarget(null);
+      setDeliverNote('');
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setDeliverBusy(false);
     }
   };
 
@@ -609,8 +630,8 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
                         <Button
                           size="sm"
                           onClick={() => {
-                            const note = window.prompt('Note to the client (what changed)?', r.respondedNote ?? '');
-                            setRevision(r.id, { status: 'SUBMITTED', ...(note ? { respondedNote: note } : {}) });
+                            setDeliverTarget({ id: r.id, roundNumber: r.roundNumber });
+                            setDeliverNote(r.respondedNote ?? '');
                           }}
                         >
                           Mark delivered
@@ -651,6 +672,30 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
           </ul>
         </Card>
       </div>
+
+      <Modal
+        isOpen={Boolean(deliverTarget)}
+        onClose={() => setDeliverTarget(null)}
+        title={deliverTarget ? `Mark round ${deliverTarget.roundNumber} delivered` : ''}
+      >
+        <div className="space-y-4">
+          <Textarea
+            label="Note to the client (what changed) — optional"
+            rows={3}
+            value={deliverNote}
+            onChange={(e) => setDeliverNote(e.target.value)}
+            placeholder="e.g. Tightened the intro by 2s, swapped the music track"
+          />
+          <div className="flex gap-2">
+            <Button variant="secondary" fullWidth onClick={() => setDeliverTarget(null)}>
+              Cancel
+            </Button>
+            <Button fullWidth loading={deliverBusy} onClick={confirmDeliver}>
+              Mark delivered
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };
@@ -665,6 +710,9 @@ const InvoicesTab: React.FC = () => {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [form, setForm] = React.useState({ clientId: '', projectId: '', amount: '', dueAt: '', notes: '' });
+  const [payTarget, setPayTarget] = React.useState<{ id: string; number: string } | null>(null);
+  const [payReference, setPayReference] = React.useState('');
+  const [payBusy, setPayBusy] = React.useState(false);
 
   const load = React.useCallback(() => {
     fetchAdminInvoices().then((r) => setInvoices(r.invoices)).catch((e) => setError(e.message));
@@ -672,6 +720,21 @@ const InvoicesTab: React.FC = () => {
     fetchAdminProjects().then((r) => setProjects(r.projects)).catch(() => {});
   }, []);
   React.useEffect(load, [load]);
+
+  const confirmMarkPaid = async () => {
+    if (!payTarget) return;
+    setPayBusy(true);
+    try {
+      await markInvoicePaid(payTarget.id, payReference.trim() || undefined);
+      setPayTarget(null);
+      setPayReference('');
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setPayBusy(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -740,8 +803,8 @@ const InvoicesTab: React.FC = () => {
                         <Button
                           size="sm"
                           onClick={() => {
-                            const ref = window.prompt('Payment reference (optional)') ?? undefined;
-                            markInvoicePaid(inv.id, ref || undefined).then(load).catch((e) => setError(e.message));
+                            setPayTarget({ id: inv.id, number: inv.number });
+                            setPayReference('');
                           }}
                         >
                           Mark paid
@@ -777,6 +840,32 @@ const InvoicesTab: React.FC = () => {
           <Textarea label="Notes (client-visible)" rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
           <Button type="submit" fullWidth loading={busy}>Create draft</Button>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(payTarget)}
+        onClose={() => setPayTarget(null)}
+        title={payTarget ? `Mark ${payTarget.number} paid` : ''}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-neutral-400">
+            Records a bank-transfer payment for the full invoice amount and generates a receipt.
+          </p>
+          <Input
+            label="Payment reference (optional)"
+            value={payReference}
+            onChange={(e) => setPayReference(e.target.value)}
+            placeholder="e.g. wire confirmation number"
+          />
+          <div className="flex gap-2">
+            <Button variant="secondary" fullWidth onClick={() => setPayTarget(null)}>
+              Cancel
+            </Button>
+            <Button fullWidth loading={payBusy} onClick={confirmMarkPaid}>
+              Mark paid
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
