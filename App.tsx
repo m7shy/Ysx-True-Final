@@ -29,10 +29,11 @@ import { UniboxView } from './components/UniboxView';
 import { ScraperView } from './components/ScraperView';
 
 // Icons & UI
-import { Mail, RefreshCcw, Layout, Plus, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle, LogOut, Radar } from 'lucide-react';
+import { Mail, RefreshCcw, Layout, Plus, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle, LogOut, Radar, Briefcase } from 'lucide-react';
+import ClientPortalView from './components/ClientPortalView';
 import { gwHealth } from './services/mailGateway';
 
-type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'SCRAPER' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX';
+type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'SCRAPER' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX' | 'CLIENT_PORTAL';
 
 // Campaign-creation overlay flow: name popup first, then the 4-step wizard.
 type WizardFlow = 'closed' | 'naming' | 'wizard';
@@ -51,6 +52,7 @@ const VIEW_TITLES: Record<View, string> = {
   CAMPAIGNS: 'Campaigns',
   CAMPAIGN_DETAIL: 'Campaign Details',
   UNIBOX: 'Unified Inbox',
+  CLIENT_PORTAL: 'Client Portal',
 };
 
 interface NavButtonProps {
@@ -151,6 +153,7 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
           <h3 className="px-3 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-2">Workspace</h3>
           <nav className="space-y-1">
             {nav('LEADS', Users, 'Leads')}
+            {nav('CLIENT_PORTAL', Briefcase, 'Client Portal')}
             {nav('SCRAPER', Radar, 'Scraper')}
             {nav('STORY_VAULT', Film, 'Story Vault')}
             {nav('BRAND_OS', Palette, 'Brand OS')}
@@ -323,6 +326,7 @@ const AppContent: React.FC = () => {
       case 'PERFORMANCE': return <PerformanceView />;
       case 'STORY_VAULT': return <StoryVaultView />;
       case 'UNIBOX': return <UniboxView />;
+      case 'CLIENT_PORTAL': return <ClientPortalView />;
       case 'SCRAPER': return <ScraperView />;
       case 'CAMPAIGNS':
         return (

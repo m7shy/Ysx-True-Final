@@ -173,6 +173,14 @@ app.use('/api/billing', requireAuth, billingRouter);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDistPath = path.join(__dirname, '../../dist');
+const portalDistPath = path.join(__dirname, '../../dist-portal');
+
+// Client portal SPA — must be mounted BEFORE the CRM static/catch-all so
+// /portal/* never falls through to the CRM's index.html.
+app.use('/portal', express.static(portalDistPath));
+app.get('/portal/*', (_req, res) => {
+  res.sendFile(path.join(portalDistPath, 'index.html'));
+});
 
 app.use(express.static(clientDistPath));
 
