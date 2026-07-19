@@ -55,3 +55,4 @@ types.ts - original.ts
 .idea/
 .DS_Store
 Thumbs.db
+dist-portal/

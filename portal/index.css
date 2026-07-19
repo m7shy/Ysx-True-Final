@@ -1,0 +1,65 @@
+@import "tailwindcss" source(none);
+@import "../src/design/tokens.css";
+
+/* Explicit class-scanning roots (source(none) disables auto-detection). */
+@source "./index.html";
+@source "./index.tsx";
+@source "./App.tsx";
+@source "./pages";
+@source "./components";
+@source "../src/design";
+
+@layer base {
+  body {
+    background-color: var(--color-noir);
+    color: var(--color-neutral-400);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Single subtle volt bloom behind everything — same as the CRM/portfolio. */
+  body::before {
+    content: "";
+    position: fixed;
+    top: -20vw;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 70vw;
+    height: 55vw;
+    border-radius: 9999px;
+    pointer-events: none;
+    z-index: 0;
+    filter: blur(140px);
+    background: radial-gradient(circle, rgb(2 1 255 / 0.10), transparent 65%);
+  }
+
+  h1, h2, h3 {
+    letter-spacing: -0.025em;
+  }
+
+  ::selection {
+    background-color: var(--color-volt);
+    color: #ffffff;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-volt-text);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(255 255 255 / 0.1);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(255 255 255 / 0.18);
+  }
+}

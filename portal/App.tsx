@@ -1,0 +1,48 @@
+import React from 'react';
+import { RouterProvider, useRouter, useQueryParam } from './router';
+import { loadAuth } from './services/apiClient';
+import { PortalShell } from './components/PortalShell';
+import { LoginPage } from './pages/LoginPage';
+import { DashboardPage } from './pages/DashboardPage';
+import { ProjectPage } from './pages/ProjectPage';
+import { InvoicesPage } from './pages/InvoicesPage';
+import { FaqPage } from './pages/FaqPage';
+
+const Routes: React.FC = () => {
+  const { path, navigate } = useRouter();
+  const token = useQueryParam('token');
+  const authed = Boolean(loadAuth());
+  const isPublic = path.startsWith('/login') || path.startsWith('/set-password');
+
+  // Unauthenticated deep links bounce to /login (preserving a magic-link token).
+  React.useEffect(() => {
+    if (!authed && !isPublic) {
+      navigate(token ? `/login?token=${token}` : '/login');
+    }
+  }, [authed, isPublic, token, navigate]);
+
+  // Public routes (and magic-link/invite landings, which sign the user in).
+  if (path.startsWith('/set-password')) return <LoginPage setPasswordMode />;
+  if (path.startsWith('/login')) return <LoginPage />;
+  if (!authed) return null;
+
+  let page: React.ReactNode;
+  const projectMatch = path.match(/^\/projects\/([^/]+)$/);
+  const invoiceMatch = path.match(/^\/invoices\/([^/]+)$/);
+
+  if (projectMatch) page = <ProjectPage id={projectMatch[1]} />;
+  else if (invoiceMatch) page = <InvoicesPage id={invoiceMatch[1]} />;
+  else if (path.startsWith('/invoices')) page = <InvoicesPage />;
+  else if (path.startsWith('/faq')) page = <FaqPage />;
+  else page = <DashboardPage />;
+
+  return <PortalShell>{page}</PortalShell>;
+};
+
+const App: React.FC = () => (
+  <RouterProvider>
+    <Routes />
+  </RouterProvider>
+);
+
+export default App;
