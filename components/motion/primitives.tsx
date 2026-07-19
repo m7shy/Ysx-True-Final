@@ -1,12 +1,19 @@
 import React from 'react';
-import { motion, type Variants } from 'motion/react';
+import { motion, useReducedMotion, type Variants } from 'motion/react';
+import {
+  EASE,
+  staggerDelay,
+  blurIn,
+  STAGGER,
+  VIEWPORT,
+} from '../../src/design/motion';
 
-/** Signature keynote ease used by every entrance in the app. */
-export const EASE = [0.22, 1, 0.36, 1] as const;
-
-/** Cap stagger delays so long lists (200+ rows) appear near-instantly. */
-export const staggerDelay = (index: number, step = 0.05, cap = 15) =>
-  Math.min(index, cap) * step;
+/**
+ * Signature keynote ease + stagger helpers now live in the shared design
+ * system (src/design/motion.ts). Re-exported here for back-compat so existing
+ * `import { EASE, staggerDelay } from './primitives'` call sites keep working.
+ */
+export { EASE, staggerDelay, blurIn, STAGGER, VIEWPORT };
 
 interface AnimatedHeadingProps {
   as?: 'h1' | 'h2' | 'h3';
@@ -91,13 +98,24 @@ interface ViewTransitionProps {
 }
 
 /** Per-view wrapper under <AnimatePresence mode="wait">; fast exit to avoid blank gaps. */
-export const ViewTransition: React.FC<ViewTransitionProps> = ({ className, children }) => (
-  <motion.div
-    initial={{ opacity: 0, y: 12, filter: 'blur(6px)' }}
-    animate={{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 0.45, ease: EASE } }}
-    exit={{ opacity: 0, y: -8, filter: 'blur(4px)', transition: { duration: 0.18, ease: 'easeIn' } }}
-    className={className ?? 'flex-1 flex flex-col min-h-0 overflow-hidden'}
-  >
-    {children}
-  </motion.div>
-);
+export const ViewTransition: React.FC<ViewTransitionProps> = ({ className, children }) => {
+  const reduce = useReducedMotion();
+  return (
+    <motion.div
+      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 12, filter: 'blur(6px)' }}
+      animate={
+        reduce
+          ? { opacity: 1, transition: { duration: 0.2 } }
+          : { opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 0.45, ease: EASE } }
+      }
+      exit={
+        reduce
+          ? { opacity: 0, transition: { duration: 0.12 } }
+          : { opacity: 0, y: -8, filter: 'blur(4px)', transition: { duration: 0.18, ease: 'easeIn' } }
+      }
+      className={className ?? 'flex-1 flex flex-col min-h-0 overflow-hidden'}
+    >
+      {children}
+    </motion.div>
+  );
+};

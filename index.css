@@ -1,4 +1,5 @@
 @import "tailwindcss" source(none);
+@import "./src/design/tokens.css";
 
 /* Explicit class-scanning roots (source(none) disables auto-detection). */
 @source "./index.html";
@@ -9,40 +10,43 @@
 @source "./hooks";
 @source "./src";
 
-/* Bridging shim while views are migrated off light-first classes:
-   `dark:` variants always apply (the app is dark-only now). Remove once
-   every view has its light classes stripped. */
-@custom-variant dark (&);
-
 @theme {
-  --color-canvas: #080b14;
+  /* Canvas flipped to SaaS Noir OLED black. */
+  --color-canvas: #050505;
 
-  --color-brand-50: #f0f9ff;
-  --color-brand-100: #e0f2fe;
-  --color-brand-200: #bae6fd;
-  --color-brand-300: #7dd3fc;
-  --color-brand-400: #38bdf8;
-  --color-brand-500: #0ea5e9;
-  --color-brand-600: #0284c7;
-  --color-brand-700: #0369a1;
-  --color-brand-800: #075985;
-  --color-brand-900: #0c4a6e;
-  --color-brand-primary: #0284c7;
+  /* ---- Transitional brand ramp -----------------------------------------
+     ~350 component class references still point at brand-*. Rather than edit
+     every view in Phase 1, the ramp stays DEFINED but is repointed into the
+     volt hue family so brand-classed UI shifts to the new accent. Retire these
+     aliases per-view as migration proceeds (see src/design/README.md). */
+  --color-brand-50: #eeeeff;
+  --color-brand-100: #dcdcff;
+  --color-brand-200: #bcbcff;
+  --color-brand-300: #a5a4ff;
+  --color-brand-400: #8a89ff;
+  --color-brand-500: #6b6aff; /* → volt-text (a11y-safe accent, heavy text use) */
+  --color-brand-600: #4a48ff;
+  --color-brand-700: #2a28ff;
+  --color-brand-800: #0201ff;
+  --color-brand-900: #0100b8;
+  --color-brand-primary: #0201ff; /* → volt */
 
   --color-zoho-yellow: #ffd400;
   --color-zoho-blue: #2c72b8;
 
-  --shadow-glow: 0 0 15px rgb(14 165 233 / 0.3);
+  /* No drop shadows in SaaS Noir — the legacy shadow-glow utility now emits a
+     volt glow so existing `shadow-glow` class sites read on-brand. */
+  --shadow-glow: 0 0 20px rgb(2 1 255 / 0.35);
 
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* System sans stack (Inter dropped). */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
 
-  --ease-cinematic: cubic-bezier(0.22, 1, 0.36, 1);
-
+  /* ---- Named animations still referenced by components — keep. ---------- */
   --animate-float: float 6s ease-in-out infinite;
   --animate-float-delayed: float 6s ease-in-out 3s infinite;
   --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-slide-up: slideUp 0.5s ease-out forwards;
-  --animate-fade-in-up: fadeInUp 0.5s ease-out forwards;
 
   @keyframes float {
     0%, 100% { transform: translateY(0); }
@@ -52,52 +56,53 @@
     0% { transform: translateY(10px); opacity: 0; }
     100% { transform: translateY(0); opacity: 1; }
   }
-  @keyframes fadeInUp {
-    0% { transform: translateY(20px); opacity: 0; }
-    100% { transform: translateY(0); opacity: 1; }
-  }
 }
 
-/* Translucent, blurred surface used across the dark UI. */
+/* Translucent surface used across the dark UI — SaaS Noir: white/[0.02] fill,
+   white/10 hairline border. */
 @utility glass {
-  background-color: rgb(255 255 255 / 0.05);
+  background-color: rgb(255 255 255 / 0.02);
   border: 1px solid rgb(255 255 255 / 0.1);
   backdrop-filter: blur(24px);
 }
 
 @layer base {
   body {
-    background-color: var(--color-canvas);
-    color: var(--color-slate-100);
+    background-color: var(--color-noir);
+    color: var(--color-neutral-400);
     font-family: var(--font-sans);
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* Atmospheric blooms behind everything. */
-  body::before,
-  body::after {
+  /* Single subtle volt bloom behind everything (replaces the old sky/violet
+     dual gradients). */
+  body::before {
     content: "";
     position: fixed;
-    width: 55vw;
+    top: -20vw;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 70vw;
     height: 55vw;
     border-radius: 9999px;
     pointer-events: none;
     z-index: 0;
-    filter: blur(120px);
-  }
-  body::before {
-    top: -18vw;
-    left: -14vw;
-    background: radial-gradient(circle, rgb(14 165 233 / 0.10), transparent 65%);
-  }
-  body::after {
-    bottom: -18vw;
-    right: -14vw;
-    background: radial-gradient(circle, rgb(139 92 246 / 0.09), transparent 65%);
+    filter: blur(140px);
+    background: radial-gradient(circle, rgb(2 1 255 / 0.10), transparent 65%);
   }
 
   h1, h2, h3 {
     letter-spacing: -0.025em;
+  }
+
+  ::selection {
+    background-color: var(--color-volt);
+    color: #ffffff;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-volt-text);
+    outline-offset: 2px;
   }
 
   ::-webkit-scrollbar {
@@ -108,11 +113,11 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #334155;
+    background: rgb(255 255 255 / 0.1);
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #475569;
+    background: rgb(255 255 255 / 0.18);
   }
 }
 
@@ -124,9 +129,9 @@
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background-color: #334155;
+  background-color: rgb(255 255 255 / 0.1);
   border-radius: 3px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background-color: #475569;
+  background-color: rgb(255 255 255 / 0.18);
 }

@@ -1,0 +1,39 @@
+/* ============================================================================
+   SaaS Noir — design tokens (Phase 1 foundation)
+   Self-contained Tailwind v4 @theme. No imports from app code.
+   Ported from the portfolio's index.css "SaaS Noir" language.
+   ============================================================================ */
+
+@theme {
+  /* --- Core palette ------------------------------------------------------ */
+  --color-noir: #050505; /* OLED canvas */
+  --color-volt: #0201ff; /* accent: fills / strokes / glows ONLY (2.38:1 on noir — never small text) */
+  --color-volt-text: #6b6aff; /* same-hue tint, 5.0:1 on noir — safe for text/icons */
+
+  /* Volt hue ramp — used to repoint the legacy brand-* aliases (see root index.css). */
+  --color-volt-50: #eeeeff;
+  --color-volt-100: #dcdcff;
+  --color-volt-200: #bcbcff;
+  --color-volt-300: #a5a4ff;
+  --color-volt-400: #8a89ff;
+  --color-volt-500: #6b6aff;
+  --color-volt-600: #4a48ff;
+  --color-volt-700: #2a28ff;
+  --color-volt-800: #0201ff;
+  --color-volt-900: #0100b8;
+
+  /* --- Surfaces & borders ------------------------------------------------ */
+  --color-surface: rgb(255 255 255 / 0.02); /* card / panel fill */
+  --color-surface-hover: rgb(255 255 255 / 0.04);
+  --color-border: rgb(255 255 255 / 0.1); /* hairline dividers / card edges */
+  --color-border-strong: rgb(255 255 255 / 0.16);
+
+  /* --- Motion ------------------------------------------------------------ */
+  --ease-cinematic: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* --- Glows (no drop shadows in SaaS Noir — volt glows only) ------------ */
+  --shadow-volt: 0 0 36px rgb(2 1 255 / 0.55); /* signature focus/emphasis glow */
+  --shadow-volt-soft: 0 0 20px rgb(2 1 255 / 0.35);
+  --glow-volt: 0 0 36px rgb(2 1 255 / 0.55);
+  --glow-volt-soft: 0 0 20px rgb(2 1 255 / 0.35);
+}
