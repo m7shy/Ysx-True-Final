@@ -7,7 +7,3 @@ ysxvisuals.com, www.ysxvisuals.com {
 crm.ysxvisuals.com {
 	reverse_proxy localhost:3001
 }
-
-ysxvisuals.online, www.ysxvisuals.online {
-	reverse_proxy localhost:3001
-}
