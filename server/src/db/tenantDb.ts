@@ -41,6 +41,9 @@ const TENANT_MODELS = new Set<string>([
   'FollowupJob',
   'CampaignRecipient',
   'ScraperSchedule',
+  'Client',
+  'Project',
+  'Invoice',
 ]);
 
 /** Operations whose `where` is a plain filter that can be AND-merged. */

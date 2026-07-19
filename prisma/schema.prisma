@@ -145,6 +145,9 @@ model User {
   followupJobs    FollowupJob[]
   usageRecords    UsageRecord[]
   scraperSchedule ScraperSchedule?
+  clients         Client[]
+  projects        Project[]
+  invoices        Invoice[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -507,6 +510,313 @@ model ScraperSchedule {
 
   // Scheduler tick: due tenants across all accounts.
   @@index([enabled, status, nextRunAt])
+}
+
+// ── Client Portal ─────────────────────────────────────────────────────────────
+// Everything below powers the client-facing portal (served at /portal) and its
+// admin management views inside the CRM. All portal data is tenant-scoped under
+// the agency User, either directly (Client/Project/Invoice carry userId and are
+// in tenantDb's TENANT_MODELS) or through their parent row (FileLink, Revision,
+// Message, ActivityEvent, Payment, Receipt, ClientUser, ClientLoginToken —
+// handlers must join through the parent's userId/clientId explicitly).
+
+enum ClientStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// The client-visible pipeline. Deliberately short — each stage must be
+// meaningful to a paying client, not an internal production step.
+enum ProjectStage {
+  ONBOARDING
+  EDITING
+  REVISION
+  FINAL_DELIVERY
+  COMPLETE
+}
+
+enum DeliverableType {
+  BRAND_ASSET // client-provided brand files (logos, fonts, guidelines)
+  FILE_LINK // client uploads / raw footage links
+  DELIVERABLE // agency output the client receives
+}
+
+enum RevisionStatus {
+  OPEN // client submitted, agency hasn't started
+  IN_PROGRESS // agency working on it
+  SUBMITTED // agency delivered the revised cut, awaiting client verdict
+  APPROVED // client signed off
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  VIEWED
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+// Provider extension point: adding Stripe/PayPal later = new enum value plus a
+// providerRef column on Payment. Bank-transfer instructions live in config, not
+// the DB (no provider table needed while there's one manual provider).
+enum PaymentMethod {
+  BANK_TRANSFER
+}
+
+enum ClientTokenKind {
+  INVITE // set-password onboarding link (7-day TTL)
+  MAGIC_LINK // passwordless login (15-min TTL)
+}
+
+enum ActivityType {
+  PROJECT_CREATED
+  STAGE_CHANGED
+  FILE_ADDED
+  REVISION_REQUESTED
+  REVISION_UPDATED
+  REVISION_APPROVED
+  INVOICE_SENT
+  INVOICE_PAID
+  MESSAGE_POSTED
+  WAITING_ON_CLIENT
+  PROJECT_ARCHIVED
+  PROJECT_REQUESTED
+}
+
+model Client {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  companyName String?
+  status      ClientStatus @default(ACTIVE)
+
+  clientUsers ClientUser[]
+  projects    Project[]
+  invoices    Invoice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+}
+
+// A person who can log into the portal for a Client. Separate from the CRM's
+// User table on purpose: client JWTs carry aud:'client' and are verified by a
+// separate code path (auth/clientJwt.ts) so neither token type ever works on
+// the other side's routes.
+model ClientUser {
+  id       String @id @default(cuid())
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Agency owner, denormalized for fast auth-scope checks without a join.
+  userId   String
+
+  email        String  @unique
+  passwordHash String? // null until first set via INVITE token (magic-link-only until then)
+  tokenVersion Int     @default(0)
+  lastLoginAt  DateTime?
+
+  loginTokens ClientLoginToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId])
+}
+
+// Single-use short-lived tokens for both invite/set-password and magic-link
+// login (kind discriminates). Only the SHA-256 hash is stored — a DB leak
+// never yields a usable login link.
+model ClientLoginToken {
+  id           String     @id @default(cuid())
+  clientUserId String
+  clientUser   ClientUser @relation(fields: [clientUserId], references: [id], onDelete: Cascade)
+
+  tokenHash String          @unique
+  kind      ClientTokenKind
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([clientUserId, kind])
+}
+
+model Project {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name   String
+  status ProjectStatus @default(ACTIVE)
+  stage  ProjectStage  @default(ONBOARDING)
+
+  // Admin-set, not computed — the portal shows exactly what the agency says.
+  progressPct Int       @default(0)
+  etaAt       DateTime?
+
+  // "What happens next" card — free text the admin keeps current.
+  nextStepNote String?
+
+  // Blocker indicator: the portal surfaces this prominently so the client
+  // knows the ball is in their court.
+  waitingOnClient     Boolean @default(false)
+  waitingOnClientNote String?
+
+  // Scope / included-deliverables blob (plaintext or markdown). MVP: no
+  // structured line items.
+  scopeSummary String?
+
+  archivedAt DateTime?
+
+  fileLinks  FileLink[]
+  revisions  Revision[]
+  messages   Message[]
+  activities ActivityEvent[]
+  invoices   Invoice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([clientId, status])
+}
+
+// External-link file record (Drive/Dropbox/Frame.io/etc.) — the portal stores
+// no binaries. Versioning = multiple rows sharing a label, sorted by version.
+model FileLink {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  type         DeliverableType @default(FILE_LINK)
+  label        String
+  url          String
+  version      Int             @default(1)
+  addedByAdmin Boolean         @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@index([projectId, type])
+}
+
+model Revision {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // 1, 2, 3… — the client-visible revision-round counter.
+  roundNumber   Int
+  note          String // client's request text
+  status        RevisionStatus @default(OPEN)
+  respondedNote String? // agency response / what changed
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId, status])
+}
+
+model Message {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  authorType  String // 'ADMIN' | 'CLIENT'
+  authorLabel String // display-name snapshot at write time
+  body        String
+
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+// Append-only, human-readable project history — the portal's activity feed and
+// its "last updated" trust signal. summary is pre-rendered at write time so
+// the feed never needs joins.
+model ActivityEvent {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  type    ActivityType
+  summary String
+
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+model Invoice {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  // e.g. INV-0007, sequential per tenant.
+  number String
+  status InvoiceStatus @default(DRAFT)
+
+  amountCents Int
+  currency    String @default("usd")
+
+  dueAt    DateTime?
+  sentAt   DateTime?
+  viewedAt DateTime?
+  paidAt   DateTime?
+
+  // [{ label, amountCents }] — freeform for MVP, not normalized.
+  lineItemsJson Json?
+  notes         String?
+
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, number])
+  @@index([userId, status])
+  @@index([clientId, status])
+}
+
+model Payment {
+  id        String  @id @default(cuid())
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  method            PaymentMethod @default(BANK_TRANSFER)
+  amountCents       Int
+  reference         String? // bank ref / note entered on mark-paid
+  markedPaidByAdmin Boolean       @default(true)
+
+  receipt Receipt?
+
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId])
+}
+
+model Receipt {
+  id        String  @id @default(cuid())
+  paymentId String  @unique
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  number String // e.g. RCPT-0007
+
+  createdAt DateTime @default(now())
 }
 
 // The YouTube cookie rotation pool the Python scraper reads (cookie_manager.py)
