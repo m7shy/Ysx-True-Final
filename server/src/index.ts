@@ -36,6 +36,8 @@ import { hasRecipientReplied } from './mail/replyCheck.js';
 import { startCampaignWorker } from './campaigns/worker.js';
 import { startReplyPoller } from './unibox/replyPoller.js';
 import { startAutoScraperScheduler } from './scraper/autoScheduler.js';
+import { runDeepChecks, startWatchdog } from './health/monitor.js';
+import { configReport } from './config.js';
 
 export const app = express();
 
@@ -96,6 +98,14 @@ app.use(express.json({ limit: '20mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+// Deep health for humans + external uptime monitors (UptimeRobot etc.):
+// DB round-trip, worker tick freshness, mailbox health, disk, alerting.
+// 503 only on critical (DB down) so uptime monitors page on real outages.
+app.get('/api/health/deep', async (_req, res) => {
+  const health = await runDeepChecks();
+  res.status(health.status === 'critical' ? 503 : 200).json(health);
 });
 
 // OAuth connect/callback flow (multi-account mailbox consent). Mounted before
@@ -315,6 +325,14 @@ if (config.DATABASE_URL && config.NODE_ENV !== 'test') {
   startCampaignWorker({ tickMs: Number(process.env.CAMPAIGN_TICK_MS ?? 60_000) });
   startReplyPoller({ pollMs: Number(process.env.UNIBOX_POLL_MS ?? 300_000) });
 }
+
+// Self-alerting watchdog: re-runs the deep health checks every 15 min and
+// emails ALERT_EMAIL via the PORTAL_SMTP_* fallback on new failures/recoveries.
+startWatchdog();
+
+// Redacted config fingerprint report — makes NSSM-env-vs-.env drift visible in
+// the log on every boot (two prior outages came from exactly that drift).
+logger.info({ config: configReport() }, 'Effective config (redacted fingerprints)');
 
 // Auto-scraper: 3-5x/day per tenant, staggered across 24h (see autoScheduler.ts).
 // Separately gated on SCRAPER_DIR inside startAutoScraperScheduler itself.

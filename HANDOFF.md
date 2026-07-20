@@ -1,5 +1,28 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-20 — Migration-readiness hardening: recovery runbook, SMTP fallback, deep health + watchdog, config report, backups, checkout cleanup
+
+**Context:** User's answers to the migration-readiness questions: everything free-tier, VM is disposable (GCP free trial), campaigns must survive VM death. Plan file: `C:\Users\banjigum1\.claude\plans\for-q1-if-vm-enchanted-knuth.md`. All work in the Documents checkout on `phase5-frontend-wiring`. **Confirmed by code reading: campaign/follow-up state is entirely in Neon; a new VM pointed at the same DB resumes automatically** (stale-SENDING reapers run every tick).
+
+**Shipped (server tsc clean, vitest 142/142 — 7 new tests in `monitor.test.ts`):**
+1. **`docs/RECOVERY.md`** — full new-VM rebuild runbook: secrets inventory (keys only + cost-of-loss table, incl. the MAILBOX_ENCRYPTION_KEY=unrecoverable warning), toolchain, exact NSSM commands, backup/restore, config rules, monitoring setup, Brevo/Gmail fallback SMTP setup.
+2. **Portal SMTP fallback (`portal/mailer.ts`)** — `sendPortalEmail` now falls back to plain SMTP via new `PORTAL_SMTP_HOST/PORT/USER/PASS/FROM` env keys when the OAuth mailbox is missing OR its send fails. `NO_MAILBOX` 409 behavior unchanged when no fallback is configured. New exports `smtpFallbackConfigured()`/`sendViaFallbackSmtp()`.
+3. **Deep health + watchdog (`health/monitor.ts`)** — `GET /api/health/deep` (DB round-trip, campaign-worker + follow-up tick freshness via new `lastCampaignTickAt()`/`lastFollowupTickAt()` exports, mailbox active/deactivated counts, disk free, alerting config); 503 only when DB is critical. In-process watchdog every 15 min emails `ALERT_EMAIL` via the SMTP fallback (deliberately not the OAuth mailbox) on new failures/recoveries, throttled 6h per check. Plain `/api/health` untouched.
+4. **Config drift report (`config.ts` `configReport()`)** — every boot logs `Effective config (redacted fingerprints)`: per-key sha256-prefix fingerprints, never values. Makes NSSM-vs-.env overrides visible (two prior outages).
+5. **`server/scripts/backup-db.mjs`** — daily-able Neon dump: pg_dump custom-format when available, otherwise a Prisma-based JSON-gz fallback (works today, no new deps). **Ran for real against prod: `C:\backups\ysx\ysx-2026-07-20.json.gz`, 22 tables** (7 users, 2 leads, 1 campaign, 1 mailbox, 12 migrations — matches expectations).
+6. **Checkout cleanup (partial — needs you):** audited all 6 YSXXS dirs. `Desktop\YT-Scraper\YSXXS` = prod, `Documents\YSXXS\YSXXS` = working copy (now has a `THIS-IS-NOT-PROD.md` marker). The other three (`Desktop\YSXXS`, `Desktop\New folder (2)\YSXXS`, `Documents\drive-download-...\YSXXS`) are confirmed stale: identical June-era stash in all three, all commits superseded by the post-filter-repo history, only unique file (`hooks/useDarkSide.ts`, dead dark-toggle hook) archived to the session scratchpad. **Deletion was blocked by the tool permission classifier** — user runs:
+   `Remove-Item -Recurse -Force "C:\Users\banjigum1\Desktop\New folder (2)\YSXXS","C:\Users\banjigum1\Desktop\YSXXS","C:\Users\banjigum1\Documents\drive-download-20260602T171112Z-3-002-006\YSXXS"`
+
+**USER TO-DO list (everything needing you, in order):**
+1. Prod deploy (Desktop repo): `git pull`, `cd server && npm install && npm run build`, then elevated `nssm restart ysx-backend`. (Backend-only; also picks up the still-undeployed jwt.ts aud fix from 2026-07-19. No frontend rebuild needed.) Smoke: `/api/health/deep`.
+2. Elevated: strip NSSM env to only NODE_ENV — `nssm set ysx-backend AppEnvironmentExtra NODE_ENV=production`, then full `nssm stop` + `nssm start` (NOT just restart). Verify with the new boot config-report log vs `server/.env`.
+3. Add to prod `server/.env`: `PORTAL_SMTP_*` (Brevo free or Gmail app password — RECOVERY.md §8) + `ALERT_EMAIL=<your email>` → activates fallback email + watchdog alerts.
+4. Elevated: create the daily backup task — command in RECOVERY.md §5 (adjust the repo path to the Desktop prod repo!). Occasionally copy a dump off-VM.
+5. Free UptimeRobot account → monitor `https://crm.ysxvisuals.com/api/health/deep` (RECOVERY.md §7).
+6. Run the stale-checkout `Remove-Item` above.
+7. **Keep an offline copy of prod `server/.env`** (password manager / private drive) — it is the only truly unrecoverable piece (see RECOVERY.md §1).
+8. Optional, for proper pg_dump backups + restore tests: install PostgreSQL client tools (elevated) so `pg_dump`/`pg_restore` are on PATH; the script auto-upgrades from JSON to pg_dump format.
+
 ## 2026-07-19 (latest) — Client-portal bug hunt + test expansion (pre-migration audit)
 
 **Context:** User asked for a deep review of the newly built client portal. Full read of `server/src/portal/*`, `auth/clientJwt.ts`, `clientMiddleware.ts`, `clients|projects|invoices/routes.ts`, index.ts mounting, and both portal test files. Done in the **Documents checkout**. ⚠️ Written concurrently with the deploy entry below (discovered on push): **the portal is already live, so the jwt.ts fix here is committed but NOT yet deployed** — prod needs one more `git pull` + `cd server && npm run build` + user-run `nssm restart ysx-backend` in the Desktop repo to pick it up (backend-only; no frontend rebuild needed).

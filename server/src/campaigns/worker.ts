@@ -542,6 +542,12 @@ export async function campaignTickOnce(): Promise<void> {
 
 let started = false;
 let ticking = false;
+let lastTickAt: Date | null = null;
+
+/** When the campaign worker last completed a tick (null = never). For health checks. */
+export function lastCampaignTickAt(): Date | null {
+  return lastTickAt;
+}
 
 export function startCampaignWorker(options?: { tickMs?: number }): void {
   if (started) return;
@@ -554,6 +560,7 @@ export function startCampaignWorker(options?: { tickMs?: number }): void {
     ticking = true;
     try {
       await campaignTickOnce();
+      lastTickAt = new Date();
     } catch (err) {
       logger.error({ err }, 'Campaign worker tick failed');
     } finally {

@@ -386,9 +386,17 @@ export async function tickOnce(
         }
       }
     }
+    lastTickAt = new Date();
   } finally {
     ticking = false;
   }
+}
+
+let lastTickAt: Date | null = null;
+
+/** When the follow-up scheduler last completed a tick (null = never). For health checks. */
+export function lastFollowupTickAt(): Date | null {
+  return lastTickAt;
 }
 
 export function startFollowupScheduler(

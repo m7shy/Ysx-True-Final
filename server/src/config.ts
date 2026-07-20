@@ -1,5 +1,6 @@
 
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import { z } from 'zod';
 
 const configSchema = z.object({
@@ -81,6 +82,18 @@ const configSchema = z.object({
   // image) and its Python deps must be installed (scraper/requirements.txt).
   // When unset, /api/scraper returns 503. PYTHON_BIN defaults to `python`
   // (the Docker image uses the venv at /opt/venv/bin/python).
+  // ── Portal transactional-email fallback + monitoring alerts ────────────────
+  // Plain-SMTP fallback (e.g. Brevo free tier / Gmail app password) used by
+  // sendPortalEmail() when the tenant's OAuth mailbox is missing or failing,
+  // and by the watchdog for alert emails. All optional: unset = no fallback.
+  PORTAL_SMTP_HOST: z.string().optional(),
+  PORTAL_SMTP_PORT: z.coerce.number().default(587),
+  PORTAL_SMTP_USER: z.string().optional(),
+  PORTAL_SMTP_PASS: z.string().optional(),
+  PORTAL_SMTP_FROM: z.string().optional(), // defaults to PORTAL_SMTP_USER
+  // Where watchdog alerts go. Unset = watchdog logs only, never emails.
+  ALERT_EMAIL: z.string().optional(),
+
   SCRAPER_DIR: z.string().optional(),
   PYTHON_BIN: z.string().default('python'),
   // Path to a Netscape-format cookies.txt from a logged-in Google/YouTube
@@ -115,4 +128,26 @@ export const config = parsed.data;
 // (and insecure) without a real, stable secret.
 if (config.NODE_ENV === 'production' && !config.JWT_SECRET) {
   throw new Error('JWT_SECRET is required in production');
+}
+
+/**
+ * Redacted boot-time config report. NSSM's AppEnvironmentExtra silently
+ * overrides server/.env and has caused two production incidents; logging a
+ * per-key fingerprint on every start makes that drift visible without ever
+ * logging a value. Fingerprint = first 6 hex chars of sha256(value): enough
+ * to see "this key changed / differs from .env", useless to an attacker.
+ */
+export function configReport(): Record<string, string> {
+  const { createHash } = crypto;
+  const report: Record<string, string> = {};
+  for (const key of Object.keys(configSchema.shape)) {
+    const raw = process.env[key];
+    if (raw === undefined || raw === '') {
+      report[key] = 'unset';
+    } else {
+      const fp = createHash('sha256').update(raw).digest('hex').slice(0, 6);
+      report[key] = `set(${fp})`;
+    }
+  }
+  return report;
 }
