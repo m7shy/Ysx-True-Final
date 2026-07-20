@@ -1,5 +1,18 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-20 (later) — Deploy #1 confirmed live; Brevo sender-limit gotcha to handle next session
+
+**Deploy confirmed:** pulled the 2 pending commits (`c8126ed` JWT aud fix + `44127a0` hardening) into the prod repo (`Desktop\YT-Scraper\YSXXS`), `server: npm install` (no new deps needed, lockfile already matched — no Prisma-generate gotcha this time), `npm run build` clean, user ran elevated `nssm restart ysx-backend`. Verified live via `GET /api/health/deep`: `db ok`, `campaignWorker ok (2s)`, `followupScheduler ok (2s)`, `mailboxes ok (1 active)`, `disk ok (34GB free)`, `alerting degraded` (expected — `PORTAL_SMTP_*`/`ALERT_EMAIL` not set yet). Plain `/api/health` unaffected. The cross-audience JWT fix from 2026-07-19 is now actually live (previously only pushed, not deployed).
+
+**⚠️ Open item for next session — Brevo's real free-tier limit is NOT a flat 300/day.** RECOVERY.md §8 currently just says "Brevo free 300/day" — user flagged that Brevo (and most transactional-email free tiers) also caps **new/low-reputation senders around 30/day** until the sending domain builds reputation, separate from the account-wide 300/day ceiling. Needs a look next session before actually wiring up `PORTAL_SMTP_*`:
+- Confirm Brevo's current actual new-sender ramp limit (their docs / dashboard, not assumed).
+- Decide: is 30/day enough for portal transactional volume (invites + magic links + invoice notices — should be low-volume, but verify) — if not, consider a Gmail app password instead (RECOVERY.md §8 already documents this as the alternative) or verifying/warming the Brevo sender domain first.
+- Update `docs/RECOVERY.md` §8 with whatever the real number turns out to be, and note the ramp-up mechanic so a future session doesn't get surprised by throttled sends.
+
+**Still open (unchanged from below):** NSSM env-var strip to NODE_ENV-only, PORTAL_SMTP_*/ALERT_EMAIL setup (blocked on the item above), backup Scheduled Task, UptimeRobot signup, stale-checkout `Remove-Item`, offline `.env` copy.
+
+---
+
 ## 2026-07-20 — Migration-readiness hardening: recovery runbook, SMTP fallback, deep health + watchdog, config report, backups, checkout cleanup
 
 **Context:** User's answers to the migration-readiness questions: everything free-tier, VM is disposable (GCP free trial), campaigns must survive VM death. Plan file: `C:\Users\banjigum1\.claude\plans\for-q1-if-vm-enchanted-knuth.md`. All work in the Documents checkout on `phase5-frontend-wiring`. **Confirmed by code reading: campaign/follow-up state is entirely in Neon; a new VM pointed at the same DB resumes automatically** (stale-SENDING reapers run every tick).

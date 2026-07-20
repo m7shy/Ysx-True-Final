@@ -106,6 +106,6 @@ schtasks /Create /TN "YSX DB Backup" /SC DAILY /ST 03:00 /RU SYSTEM `
 
 Portal invites/magic links/invoice emails and watchdog alerts use the owner's connected mailbox first, then fall back to plain SMTP. To enable the fallback (recommended — the OAuth mailbox has broken twice):
 
-- **Brevo** (free 300/day): Settings → SMTP & API → SMTP: host `smtp-relay.brevo.com`, port 587, login + SMTP key → `PORTAL_SMTP_HOST/PORT/USER/PASS`, `PORTAL_SMTP_FROM` = a sender you verified in Brevo.
-- Or **Gmail app password**: enable 2FA → App passwords → `PORTAL_SMTP_HOST=smtp.gmail.com`, `PORTAL_SMTP_PORT=465`, user = the Gmail address, pass = the 16-char app password.
+- **Brevo** (free tier, 300/day account-wide): Settings → SMTP & API → SMTP: host `smtp-relay.brevo.com`, port 587, login + SMTP key → `PORTAL_SMTP_HOST/PORT/USER/PASS`, `PORTAL_SMTP_FROM` = a sender you verified in Brevo. ⚠️ **Unconfirmed as of 2026-07-20: new/low-reputation senders may be capped well below 300/day (e.g. ~30/day) until the sending domain builds reputation** — verify the actual current ramp-up limit in Brevo's dashboard/docs before relying on this for real volume, and update this line with the real number. If portal transactional volume (invites/magic-links/invoice notices) could exceed whatever that ramp limit is, use the Gmail option below instead, or warm the Brevo sender first.
+- Or **Gmail app password**: enable 2FA → App passwords → `PORTAL_SMTP_HOST=smtp.gmail.com`, `PORTAL_SMTP_PORT=465`, user = the Gmail address, pass = the 16-char app password. (Gmail's own daily send cap applies — ~500/day for a regular account — but no new-sender ramp-up the way Brevo has.)
 - Set `ALERT_EMAIL` to your personal address to activate watchdog emails.
