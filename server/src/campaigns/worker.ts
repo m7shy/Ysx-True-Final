@@ -347,14 +347,40 @@ async function processCampaign(campaign: Campaign): Promise<void> {
       });
       continue;
     }
-    if (lead.status !== LeadStatus.NEW) {
-      // Already contacted/replied/lost via another path since this row was queued.
+    // Only skip leads whose status constitutes an unconditional or conditional
+    // block — NOT merely because they've been contacted before. Skipping every
+    // non-NEW lead was the bug: a second campaign built from the same audience
+    // would silently skip 100% of recipients and report itself COMPLETED.
+    //
+    // Hard compliance stops — never mail these regardless of campaign settings:
+    if (lead.status === LeadStatus.DNC) {
       await prisma.campaignRecipient.update({
         where: { id: recipient.id },
-        data: { status: RecipientStatus.SKIPPED, lastError: `Lead status is ${lead.status}, not NEW` },
+        data: { status: RecipientStatus.SKIPPED, lastError: 'Lead is DNC (do-not-contact)' },
       });
       continue;
     }
+    if (lead.status === LeadStatus.LOST) {
+      await prisma.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: { status: RecipientStatus.SKIPPED, lastError: 'Lead status is LOST' },
+      });
+      continue;
+    }
+    // Skip REPLIED leads only when the campaign explicitly requests it — the
+    // field already drives follow-up scheduling (see scheduleFollowup call
+    // below); applying it here keeps the initial-send and follow-up behaviour
+    // consistent and prevents unsolicited re-engagement of replied leads.
+    if (lead.status === LeadStatus.REPLIED && campaign.stopOnReply) {
+      await prisma.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: { status: RecipientStatus.SKIPPED, lastError: 'Lead has replied and campaign stopOnReply is enabled' },
+      });
+      continue;
+    }
+    // All other statuses (NEW, CONTACTED, INTERESTED, CALL_BOOKED, TRIAL,
+    // CLIENT_CLOSED, …) are allowed to proceed — a second campaign targeting
+    // the same audience must be able to reach already-contacted leads.
 
     try {
       await dispatchRecipient(campaign, recipient, lead);

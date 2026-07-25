@@ -31,6 +31,25 @@ export async function createLoginToken(clientUserId: string, kind: ClientTokenKi
 }
 
 /**
+ * True when an unexpired, unused MAGIC_LINK token already exists for this
+ * ClientUser.  Called by the magic-link handler to avoid minting (and sending)
+ * a duplicate token before the previous one has had a chance to be used,
+ * which would otherwise let a single IP exhaust the tenant's email quota.
+ */
+export async function hasUnexpiredMagicLink(clientUserId: string): Promise<boolean> {
+  const existing = await prisma.clientLoginToken.findFirst({
+    where: {
+      clientUserId,
+      kind: 'MAGIC_LINK',
+      usedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    select: { id: true },
+  });
+  return existing !== null;
+}
+
+/**
  * Atomically consume a token: valid kind + unexpired + unused, marked used in
  * the same conditional update so two concurrent consumes can never both win.
  * Returns the owning ClientUser (with client) or null if invalid.

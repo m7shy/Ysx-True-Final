@@ -47,7 +47,24 @@ const patchSchema = z.object({
 const fileSchema = z.object({
   type: z.enum(['BRAND_ASSET', 'FILE_LINK', 'DELIVERABLE']).default('FILE_LINK'),
   label: z.string().trim().min(1, 'label is required'),
-  url: z.string().trim().url('A valid URL is required'),
+  // Zod's .url() accepts any syntactically valid URI, including javascript: and
+  // data: — both of which would execute as XSS when the portal renders the href.
+  // The .refine() step restricts the stored scheme to the safe web-only set.
+  url: z
+    .string()
+    .trim()
+    .url('A valid URL is required')
+    .refine(
+      (v) => {
+        try {
+          const { protocol } = new URL(v);
+          return protocol === 'http:' || protocol === 'https:';
+        } catch {
+          return false;
+        }
+      },
+      { message: 'URL must use http or https' }
+    ),
 });
 
 const revisionPatchSchema = z.object({

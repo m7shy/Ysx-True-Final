@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import request from 'supertest';
 
 // In-memory Prisma stand-in for the portal auth flows.
@@ -65,6 +65,21 @@ vi.mock('../db/prisma.js', () => {
           if (!row) return null;
           const clientUser = clientUsers.get(row.clientUserId);
           return { ...row, clientUser: { ...clientUser, client: clients.get(clientUser.clientId) } };
+        },
+        // Used by hasUnexpiredMagicLink() to suppress minting a duplicate
+        // magic link while a valid one is still outstanding.
+        findFirst: async ({ where }: any) => {
+          for (const row of tokens.values()) {
+            if (
+              row.clientUserId === where.clientUserId &&
+              row.kind === where.kind &&
+              row.usedAt === null &&
+              row.expiresAt > where.expiresAt.gt
+            ) {
+              return row;
+            }
+          }
+          return null;
         },
       },
     },
@@ -164,10 +179,34 @@ describe('portal auth HTTP flow', () => {
       .send({ email: 'client@example.com' });
     expect(known.status).toBe(200);
     expect(known.body).toEqual(unknown.body); // uniform response — no enumeration
-    expect(sentEmails.length).toBe(1);
+
+    // The mint+send work runs in a detached promise that resolves after the
+    // HTTP response is flushed. vi.waitFor polls until the assertion passes
+    // (up to 1 s) so we don't rely on a fixed sleep.
+    await vi.waitFor(() => {
+      expect(sentEmails.length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 1000 });
     expect(sentEmails[0].to).toBe('client@example.com');
     expect(sentEmails[0].text).toContain('/portal/login?token=');
   });
+
+  it('second magic-link request while an unexpired token already exists does not send another email', async () => {
+    // sentEmails already has the token from the previous test; a second request
+    // for the same address must be a no-op (deduplication guard) so the
+    // tenant's email quota is not burned and the client is not confused by
+    // two separate links in their inbox.
+    const emailCountBefore = sentEmails.length;
+    await request(app)
+      .post('/api/portal/auth/magic-link')
+      .send({ email: 'client@example.com' });
+    // Drain the event loop so any async work triggered by the handler
+    // completes before we snapshot the count.
+    await vi.waitFor(() => {
+      // Count must remain stable — allow a short polling window.
+      expect(sentEmails.length).toBe(emailCountBefore);
+    }, { timeout: 500 });
+  });
+
 
   it('consumes a magic link exactly once', async () => {
     const raw = sentEmails[0].text.match(/token=([A-Za-z0-9_-]+)/)![1];

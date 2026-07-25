@@ -10,7 +10,7 @@ import {
   verifyClientRefreshToken,
   type ClientTokenInput,
 } from '../auth/clientJwt.js';
-import { createLoginToken, consumeLoginToken } from './tokens.js';
+import { createLoginToken, consumeLoginToken, hasUnexpiredMagicLink } from './tokens.js';
 import { sendPortalEmail, portalBaseUrl } from './mailer.js';
 
 /**
@@ -95,16 +95,42 @@ router.post('/login', async (req: Request, res: Response) => {
 
 /**
  * POST /api/portal/auth/magic-link — request a passwordless login link.
- * Always 200 with the same body, whether or not the email exists (no account
- * enumeration). Send failures for real accounts are logged, not surfaced.
+ *
+ * Security properties maintained:
+ *   1. Uniform response body + status on every path — no account enumeration.
+ *   2. Respond BEFORE doing any token-mint/send work so that response latency
+ *      is O(1 indexed DB read) for every caller, not O(SMTP round-trip) for
+ *      known addresses. This eliminates the timing oracle that let an attacker
+ *      reliably distinguish "email exists" from "email unknown".
+ *   3. If a valid, unused MAGIC_LINK token already exists for this account we
+ *      silently skip minting a second one. This prevents an authenticated-IP
+ *      attacker from burning the tenant's paid email quota through repeated
+ *      requests, while still letting the user click the original link.
  */
 router.post('/magic-link', async (req: Request, res: Response) => {
   const parsed = emailSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, parsed.error);
 
+  // Single indexed lookup — same cost for existing and nonexistent addresses.
   const cu = await prisma.clientUser.findUnique({ where: { email: parsed.data.email } });
-  if (cu) {
+
+  // Respond immediately so all callers see the same latency regardless of
+  // whether the address has portal access. The mint+send work below is
+  // deliberately fire-and-forget.
+  res.json({ ok: true, message: 'If that email has portal access, a sign-in link is on its way.' });
+
+  if (!cu) return;
+
+  // Detached: must never rethrow (process backstop is a last resort, not a
+  // substitute for an explicit catch here).
+  void (async () => {
     try {
+      // If the client already has an unexpired magic-link token (e.g. they
+      // clicked "send again" immediately), don't burn another email quota slot
+      // or land a second identical link in their inbox.
+      const alreadyPending = await hasUnexpiredMagicLink(cu.id);
+      if (alreadyPending) return;
+
       const raw = await createLoginToken(cu.id, 'MAGIC_LINK');
       const link = `${portalBaseUrl()}/login?token=${raw}`;
       await sendPortalEmail(cu.userId, {
@@ -115,8 +141,7 @@ router.post('/magic-link', async (req: Request, res: Response) => {
     } catch (err) {
       logger.error({ err, clientUserId: cu.id }, 'Failed to send magic link');
     }
-  }
-  res.json({ ok: true, message: 'If that email has portal access, a sign-in link is on its way.' });
+  })();
 });
 
 /** POST /api/portal/auth/magic-link/consume — exchange the emailed token for a session. */

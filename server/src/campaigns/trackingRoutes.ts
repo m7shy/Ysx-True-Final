@@ -122,10 +122,15 @@ router.get('/c/:token', async (req: Request, res: Response) => {
 });
 
 // ── One-click unsubscribe ─────────────────────────────────────────────────────
-// GET renders a confirmation page for humans clicking the footer link; POST is
-// the RFC 8058 one-click endpoint mail providers hit from the List-Unsubscribe
-// header. Both flip the lead to DNC and enforce it (cancel scheduled
-// follow-ups, skip pending campaign recipients). Idempotent.
+// GET renders a human-facing confirmation *form* — it mutates NOTHING.
+// Corporate mail gateways (Microsoft Defender Safe Links, Proofpoint URL
+// Defense, etc.) issue an automated GET against every URL in an inbound
+// message for reputation scanning. If GET performed the unsubscribe, those
+// prefetch requests would silently DNC leads who never clicked anything.
+//
+// POST is the RFC 8058 List-Unsubscribe-Post target that mail providers hit
+// programmatically, and the action the confirmation form submits to. Only
+// POST actually mutates the lead.
 
 const UNSUB_PAGE = (message: string) => `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -134,6 +139,21 @@ const UNSUB_PAGE = (message: string) => `<!doctype html>
 <div style="max-width:420px;padding:40px;text-align:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px">
 <h1 style="font-size:20px;margin:0 0 12px">${message}</h1>
 <p style="font-size:14px;color:#94a3b8;margin:0">You will not receive further emails from this sender.</p>
+</div></body></html>`;
+
+// Renders a "click to confirm" form whose action POSTs to the same token URL.
+// Shown by GET so that human-facing clicks arrive at a real confirmation
+// step, not an immediate mutation that a link scanner could also trigger.
+const UNSUB_CONFIRM_FORM = (token: string) => `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Unsubscribe</title></head>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#080b14;color:#e2e8f0;font-family:system-ui,sans-serif">
+<div style="max-width:420px;padding:40px;text-align:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px">
+<h1 style="font-size:20px;margin:0 0 12px">Unsubscribe</h1>
+<p style="font-size:14px;color:#94a3b8;margin:0 0 24px">Click the button below to confirm you no longer want to receive these emails.</p>
+<form method="POST" action="/t/u/${token}">
+  <button type="submit" style="background:#6366f1;color:#fff;border:none;border-radius:8px;padding:12px 28px;font-size:15px;cursor:pointer">Confirm unsubscribe</button>
+</form>
 </div></body></html>`;
 
 async function unsubscribeByToken(token: string): Promise<boolean> {
@@ -156,29 +176,51 @@ async function unsubscribeByToken(token: string): Promise<boolean> {
   return true;
 }
 
-/** GET /t/u/:token — human-facing unsubscribe link from the email footer. */
+/**
+ * GET /t/u/:token — human-facing link from the email footer.
+ *
+ * READ-ONLY: verifies the token and renders a confirmation form. The form
+ * POSTs back to this same URL; only that POST mutates the lead. This keeps
+ * automated link-scanner prefetches (Safe Links, Proofpoint, etc.) harmless.
+ */
 router.get('/u/:token', async (req: Request, res: Response) => {
   try {
-    const ok = await unsubscribeByToken(req.params.token);
-    if (!ok) {
+    // Verify the token is structurally valid (signed, not tampered) without
+    // touching the lead — we just want to know if the link is legit enough
+    // to show a confirmation form vs. an error page.
+    const recipientId = verifyTrackingToken(req.params.token);
+    if (!recipientId) {
       res.status(404).send(UNSUB_PAGE('This unsubscribe link is invalid or expired'));
       return;
     }
-    res.status(200).send(UNSUB_PAGE("You've been unsubscribed"));
+    res.status(200).send(UNSUB_CONFIRM_FORM(req.params.token));
   } catch (err) {
     logger.error({ err }, 'Unsubscribe (GET) failed');
     res.status(500).send(UNSUB_PAGE('Something went wrong — please try again'));
   }
 });
 
-/** POST /t/u/:token — RFC 8058 one-click unsubscribe (mail-provider initiated). */
+/**
+ * POST /t/u/:token — RFC 8058 List-Unsubscribe-Post target (mail-provider
+ * initiated) and the action for the human-facing confirmation form above.
+ *
+ * Returns HTML so a human who submitted the form sees a proper confirmation
+ * page. Mail providers issuing the one-click POST discard the body, so the
+ * HTML response is invisible to them — only the 200 status code matters.
+ */
 router.post('/u/:token', async (req: Request, res: Response) => {
   try {
     const ok = await unsubscribeByToken(req.params.token);
-    res.status(ok ? 200 : 404).end();
+    if (!ok) {
+      // Token was invalid/expired — mail providers get a 404 (idempotent
+      // failure), humans see a readable error page.
+      res.status(404).send(UNSUB_PAGE('This unsubscribe link is invalid or expired'));
+      return;
+    }
+    res.status(200).send(UNSUB_PAGE("You've been unsubscribed"));
   } catch (err) {
     logger.error({ err }, 'Unsubscribe (POST) failed');
-    res.status(500).end();
+    res.status(500).send(UNSUB_PAGE('Something went wrong — please try again'));
   }
 });
 

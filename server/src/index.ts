@@ -1,3 +1,8 @@
+// Patch Express 4 to forward rejected promises from async route handlers to
+// the error-handling middleware below. Must be imported before any routes are
+// defined — Express 4 otherwise silently swallows the rejection, leaving the
+// client hanging and eventually triggering --unhandled-rejections=throw.
+import 'express-async-errors';
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -7,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { toHttp } from './httpErrors.js';
 
 import { authRouter, oauthRouter, requireAuth, requireActiveTenant } from './auth/index.js';
 import { billingWebhookRouter, billingRouter } from './billing/index.js';
@@ -142,6 +148,36 @@ const portalAuthLimiter = rateLimit({
   legacyHeaders: false,
   message: { code: 'RATE_LIMITED', message: 'Too many attempts — try again in a few minutes' },
 });
+
+// Dedicated limiter for the magic-link endpoint.
+//
+// Why a second limiter and not the one above?
+// portalAuthLimiter.skipSuccessfulRequests=true is correct for login/refresh
+// (only failed guesses should count against the budget), but the magic-link
+// handler ALWAYS returns 200 regardless of whether the email exists — so
+// every request looks "successful" and skipSuccessfulRequests means the
+// budget is never decremented. An unauthenticated attacker can therefore
+// spam this route at the global 120/min rate, burning the tenant's paid
+// email quota and eventually exhausting it so CRM campaign sends fail.
+//
+// This limiter keys on IP + normalized email together so rotating either
+// alone is not sufficient to escape the window.  3 per 15 min gives a
+// genuine user two retries before the window resets while making bulk
+// abuse uneconomical.
+const magicLinkLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 3,
+  // Do NOT set skipSuccessfulRequests — every response is 200 by design.
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const ip = (req.ip ?? req.socket.remoteAddress ?? 'unknown').toLowerCase();
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    return `${ip}:${email}`;
+  },
+  message: { code: 'RATE_LIMITED', message: 'Too many sign-in link requests — try again in 15 minutes' },
+});
+app.post('/api/portal/auth/magic-link', magicLinkLimiter);
 app.use('/api/portal/auth', portalAuthLimiter, portalAuthRouter);
 
 // Client-facing portal API — gated by requireClientAuth (aud:'client' tokens
@@ -197,6 +233,35 @@ app.use(express.static(clientDistPath));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api')) return next();
   res.sendFile(path.join(clientDistPath, 'index.html'));
+});
+
+// ---- Terminal error-handling middleware ----
+// Express 4 requires exactly four arguments to recognise this as an error
+// handler. express-async-errors (imported at the top) ensures rejected async
+// route promises land here instead of crashing the process.
+// Uses toHttp from httpErrors.ts to derive a client-safe status/payload for
+// known error types; unknown errors get a generic 500 with no leaked details.
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // If headers are already flushed there is nothing useful we can do — hand
+  // off to Express's built-in finaliser so it can tear down the socket.
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  logger.error({ err }, 'Unhandled error in request pipeline');
+  const http = toHttp(err);
+  res.status(http.status).json({ code: http.code, message: http.message });
+});
+
+// ---- Process-level backstops ----
+// Prevent Node's default --unhandled-rejections=throw from silently killing
+// the API, campaign worker, follow-up scheduler and reply poller together.
+// We log with full detail so the root cause is diagnosable from the logs.
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, 'Unhandled promise rejection (process backstop)');
+});
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, 'Uncaught exception (process backstop)');
 });
 
 // ---- Followup scheduler boot wiring ----

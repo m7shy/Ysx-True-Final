@@ -17,12 +17,14 @@ import { sendPortalEmail, portalBaseUrl } from '../portal/mailer.js';
 
 const router = express.Router();
 
-const lineItem = z.object({ label: z.string().trim().min(1), amountCents: z.number().int().min(0) });
+// Postgres integer max is ~2.1B; cap at $1,000,000.00 (100 000 000 cents) as
+// a sane business-logic bound that also stays well inside the DB column range.
+const lineItem = z.object({ label: z.string().trim().min(1), amountCents: z.number().int().min(0).max(100_000_000) });
 
 const createSchema = z.object({
   clientId: z.string().min(1),
   projectId: z.string().min(1).optional(),
-  amountCents: z.number().int().positive('amountCents must be positive'),
+  amountCents: z.number().int().positive('amountCents must be positive').max(100_000_000),
   currency: z.string().trim().toLowerCase().length(3).default('usd'),
   dueAt: z.coerce.date().optional(),
   lineItems: z.array(lineItem).optional(),
@@ -30,7 +32,7 @@ const createSchema = z.object({
 });
 
 const patchSchema = z.object({
-  amountCents: z.number().int().positive().optional(),
+  amountCents: z.number().int().positive().max(100_000_000).optional(),
   dueAt: z.coerce.date().nullable().optional(),
   lineItems: z.array(lineItem).optional(),
   notes: z.string().trim().nullable().optional(),
@@ -39,7 +41,7 @@ const patchSchema = z.object({
 
 const markPaidSchema = z.object({
   reference: z.string().trim().optional(),
-  amountCents: z.number().int().positive().optional(), // defaults to invoice total
+  amountCents: z.number().int().positive().max(100_000_000).optional(), // defaults to invoice total
 });
 
 function badRequest(res: Response, err: z.ZodError): void {
