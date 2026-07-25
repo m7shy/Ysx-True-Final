@@ -89,9 +89,20 @@ the `/magic-link` handler unclosed (`TS1005` — would not compile), and it adde
 test it never ran, missing that the test's Prisma mock had no `findFirst` for the
 `hasUnexpiredMagicLink` its own code calls. Both fixed directly (§5.14). See `known-failures.md`.
 
-**Nothing is committed, built, or deployed.** All changes sit uncommitted in the Documents working
-copy. Prod (`Desktop\YT-Scraper\YSXXS`) has not been touched and does not have any of these fixes.
+**Batch E required a repair too, caught before it landed:** portal `/set-password` minted the
+returned session from the pre-update row, so tokens carried `ver=N` while the DB held `N+1` and
+every newly invited client would have been logged out on their first refresh. Fixed to issue from
+the updated row, and the accompanying test was checked to actually fail without the fix rather
+than passing either way. The CRM `change-password` path already did this correctly.
 
-**To resume:** `agy` quota resets ~4h40m after 2026-07-25 end-of-session. Then run, in order:
-`batch.sh batchD promptD.txt`, then `review.sh` for units 5 / 6a / 6b. Both scripts live in the
-session scratchpad; re-create from this file's batch descriptions if the scratchpad is gone.
+**All work is committed on `phase5-frontend-wiring`, NOT pushed:**
+`d27ae7b` (batches A–C) → `1bec156` (.plans) → `da460da` (batch D) → `e2ce8c9` (batch E) →
+`9069a8b` (frontend review findings + this status).
+
+**Nothing is built or deployed.** Prod (`Desktop\YT-Scraper\YSXXS`) has not been touched and runs
+none of these fixes. Deploying means: pull there, `cd server && npm install` (new dep:
+`express-async-errors`) `&& npm run build`, then an elevated `nssm restart ysx-backend`. No
+frontend rebuild is needed — every change is backend-only.
+
+**What is left:** the frontend/portal findings in `REVIEW-2026-07-25-frontend.md` are all
+unfixed, and the review coverage gaps listed at the end of that file were never read at all.
