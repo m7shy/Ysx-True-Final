@@ -1,5 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
+import { ClientStatus } from '@prisma/client';
 import { verifyClientAccessToken } from './clientJwt.js';
+import { prisma } from '../db/prisma.js';
+import { logger } from '../logger.js';
 
 export interface ClientAuthContext {
   clientUserId: string;
@@ -30,26 +33,52 @@ function extractBearer(req: Request): string | null {
  * (a CRM token is rejected here, and vice versa). Handlers must read the scope
  * from req.clientAuth and additionally filter every query by clientId — the
  * token alone never selects rows.
+ *
+ * Also enforces Client.status === ACTIVE on every request. This can't be
+ * baked into the JWT (an already-issued access token would keep working
+ * until it naturally expired), so it costs one indexed lookup by id here —
+ * the only DB round-trip this middleware makes. Only mounted on /api/portal
+ * (not /api/portal/auth), so an archived client still gets a clean 403 from
+ * login/refresh/etc rather than this check running before they even have a
+ * token.
  */
-export function requireClientAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireClientAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractBearer(req);
   if (!token) {
     res.status(401).json({ code: 'AUTH', message: 'Missing or malformed Authorization header' });
     return;
   }
 
+  let claims;
   try {
-    const claims = verifyClientAccessToken(token);
-    req.clientAuth = {
-      clientUserId: claims.sub,
-      clientId: claims.clientId,
-      userId: claims.userId,
-      email: claims.email,
-    };
-    next();
+    claims = verifyClientAccessToken(token);
   } catch {
     res.status(401).json({ code: 'AUTH', message: 'Invalid or expired access token' });
+    return;
   }
+
+  try {
+    const client = await prisma.client.findUnique({
+      where: { id: claims.clientId },
+      select: { status: true },
+    });
+    if (!client || client.status !== ClientStatus.ACTIVE) {
+      res.status(403).json({ code: 'ACCESS_DENIED', message: 'This portal account is no longer active' });
+      return;
+    }
+  } catch (err) {
+    logger.error({ err, clientId: claims.clientId }, 'Client status lookup failed');
+    res.status(503).json({ code: 'DB_UNAVAILABLE', message: 'Could not verify portal access' });
+    return;
+  }
+
+  req.clientAuth = {
+    clientUserId: claims.sub,
+    clientId: claims.clientId,
+    userId: claims.userId,
+    email: claims.email,
+  };
+  next();
 }
 
 /** Read the authenticated client scope, or throw if the route wasn't gated. */

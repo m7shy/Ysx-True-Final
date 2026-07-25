@@ -124,6 +124,64 @@ router.post('/refresh', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/auth/logout-all
+ * Bump tokenVersion so every access/refresh token issued before this call —
+ * including the one used to call it — stops verifying (tenantGate.ts and the
+ * /refresh handler above both check `ver` against this column).
+ */
+router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+  await prisma.user.update({
+    where: { id: userId },
+    data: { tokenVersion: { increment: 1 } },
+  });
+  logger.info({ userId }, 'User logged out of all sessions');
+  res.json({ ok: true });
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'currentPassword is required'),
+  // Reuse signup's exact rule rather than re-deriving it — one minimum length
+  // to keep in sync, not two.
+  newPassword: credentialsSchema.shape.password,
+});
+
+/**
+ * POST /api/auth/change-password
+ * Verifies the current password, then writes the new hash and bumps
+ * tokenVersion in the SAME update so a password change evicts every other
+ * session. That also invalidates the token the caller used to get here, so
+ * we hand back a fresh pair — otherwise the user would be logged out of the
+ * very tab that just changed their password.
+ */
+router.post('/change-password', requireAuth, async (req: Request, res: Response) => {
+  const parsed = changePasswordSchema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, parsed.error);
+
+  const userId = requireUserId(req);
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    res.status(404).json({ code: 'NOT_FOUND', message: 'User not found' });
+    return;
+  }
+
+  const ok = await verifyPassword(parsed.data.currentPassword, user.passwordHash);
+  if (!ok) {
+    res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect' });
+    return;
+  }
+
+  const passwordHash = await hashPassword(parsed.data.newPassword);
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { passwordHash, tokenVersion: { increment: 1 } },
+  });
+
+  logger.info({ userId }, 'User changed password (all other sessions evicted)');
+  res.json({ user: publicUser(updated), ...issueTokens(updated) });
+});
+
+/**
  * GET /api/auth/me
  * Return the authenticated tenant's profile. Used by the frontend to hydrate
  * the session from a stored access token.

@@ -174,10 +174,20 @@ router.post('/set-password', async (req: Request, res: Response) => {
   }
 
   const passwordHash = await hashPassword(parsed.data.password);
-  await prisma.clientUser.update({ where: { id: cu.id }, data: { passwordHash } });
+  // Bump tokenVersion alongside the password write — setting a new password
+  // (e.g. after a suspected compromise) must evict any session an attacker
+  // already holds, not just block them from logging in again.
+  const updated = await prisma.clientUser.update({
+    where: { id: cu.id },
+    data: { passwordHash, tokenVersion: { increment: 1 } },
+  });
 
   logger.info({ clientUserId: cu.id }, 'Client set password via invite');
-  await issueSession(cu, res, 201);
+  // Issue from the UPDATED row, not the pre-update one: the bump above means a
+  // session minted from the stale tokenVersion would carry ver=N while the DB
+  // holds N+1, so the client's first refresh would 401 and log them straight
+  // back out.
+  await issueSession(updated, res, 201);
 });
 
 /** POST /api/portal/auth/refresh — rotate the token pair; rejects bumped tokenVersion. */

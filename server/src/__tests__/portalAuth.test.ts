@@ -10,7 +10,7 @@ vi.mock('../db/prisma.js', () => {
   const clients = new Map<string, any>();
   let seq = 1;
 
-  clients.set('c1', { id: 'c1', name: 'Acme Client', companyName: 'Acme Co' });
+  clients.set('c1', { id: 'c1', name: 'Acme Client', companyName: 'Acme Co', status: 'ACTIVE' });
   clientUsers.set('cu1', {
     id: 'cu1',
     clientId: 'c1',
@@ -42,7 +42,11 @@ vi.mock('../db/prisma.js', () => {
         },
         update: async ({ where, data }: any) => {
           const u = clientUsers.get(where.id);
-          Object.assign(u, data);
+          // Mirror Prisma's { increment } numeric update operator so routes
+          // that bump tokenVersion (e.g. set-password) work against this stand-in.
+          for (const [k, v] of Object.entries(data)) {
+            u[k] = v && typeof v === 'object' && 'increment' in (v as any) ? (u[k] ?? 0) + (v as any).increment : v;
+          }
           return u;
         },
       },
@@ -261,5 +265,25 @@ describe('portal auth HTTP flow', () => {
       .post('/api/portal/auth/magic-link/consume')
       .send({ token: 'definitely-not-a-real-token' });
     expect(res.status).toBe(401);
+  });
+
+  it('the session handed back by set-password survives a refresh', async () => {
+    // Regression guard. set-password bumps tokenVersion to evict any session an
+    // attacker already holds. If the response were minted from the pre-update
+    // row it would carry the OLD ver, so the client's very first refresh would
+    // 401 and log them straight back out — a freshly invited client would be
+    // unable to stay signed in.
+    const invite = await createLoginToken('cu1', 'INVITE');
+    const setPw = await request(app)
+      .post('/api/portal/auth/set-password')
+      .send({ token: invite, password: 'a-real-password' });
+    expect(setPw.status).toBe(201);
+    expect(setPw.body.refreshToken).toBeTruthy();
+
+    const refreshed = await request(app)
+      .post('/api/portal/auth/refresh')
+      .send({ refreshToken: setPw.body.refreshToken });
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.accessToken).toBeTruthy();
   });
 });

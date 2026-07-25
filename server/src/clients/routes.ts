@@ -147,4 +147,35 @@ router.post('/:id/invite', async (req: Request, res: Response) => {
   res.status(201).json({ clientUser: { id: clientUser.id, email: clientUser.email } });
 });
 
+/**
+ * POST /api/clients/:id/portal-users/:clientUserId/revoke — bump the target
+ * ClientUser's tokenVersion so every outstanding portal session (access +
+ * refresh) for that person stops verifying immediately. Resolved through the
+ * owning Client exactly like invite above, so one tenant can never revoke
+ * another tenant's client users even by guessing a clientUserId.
+ */
+router.post('/:id/portal-users/:clientUserId/revoke', async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+
+  const client = await tenantDb(userId).client.findUnique({ where: { id: req.params.id } });
+  if (!client) {
+    res.status(404).json({ code: 'NOT_FOUND', message: 'Client not found' });
+    return;
+  }
+
+  const clientUser = await prisma.clientUser.findUnique({ where: { id: req.params.clientUserId } });
+  if (!clientUser || clientUser.clientId !== client.id) {
+    res.status(404).json({ code: 'NOT_FOUND', message: 'Portal user not found' });
+    return;
+  }
+
+  await prisma.clientUser.update({
+    where: { id: clientUser.id },
+    data: { tokenVersion: { increment: 1 } },
+  });
+
+  logger.info({ userId, clientUserId: clientUser.id }, 'Portal user session revoked');
+  res.json({ ok: true });
+});
+
 export default router;

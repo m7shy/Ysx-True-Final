@@ -30,7 +30,11 @@ vi.mock('../db/prisma.js', () => {
         },
         update: async ({ where, data }: any) => {
           const u = users.get(where.id);
-          Object.assign(u, data);
+          // Mirror Prisma's { increment } numeric update operator so routes
+          // that bump tokenVersion (logout-all, change-password) work here.
+          for (const [k, v] of Object.entries(data)) {
+            u[k] = v && typeof v === 'object' && 'increment' in (v as any) ? (u[k] ?? 0) + (v as any).increment : v;
+          }
           return u;
         },
       },
@@ -125,5 +129,92 @@ describe('auth HTTP flow', () => {
     const stale = signRefreshToken({ userId: 'ghost', email: 'g@h.com', tokenVersion: 5 });
     const res = await request(app).post('/api/auth/refresh').send({ refreshToken: stale });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('logout-all', () => {
+  const email = 'logout-all@example.com';
+  const password = 'sup3rsecret!';
+
+  it('invalidates a previously issued refresh token', async () => {
+    const signup = await request(app).post('/api/auth/signup').send({ email, password });
+    const { accessToken, refreshToken } = signup.body;
+
+    const before = await request(app).post('/api/auth/refresh').send({ refreshToken });
+    expect(before.status).toBe(200);
+
+    const logout = await request(app)
+      .post('/api/auth/logout-all')
+      .set('Authorization', `Bearer ${accessToken}`);
+    expect(logout.status).toBe(200);
+    expect(logout.body.ok).toBe(true);
+
+    // Same refresh token, minted against the pre-logout tokenVersion, is now revoked.
+    const after = await request(app).post('/api/auth/refresh').send({ refreshToken });
+    expect(after.status).toBe(401);
+  });
+
+  it('requires authentication', async () => {
+    const res = await request(app).post('/api/auth/logout-all');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('change-password', () => {
+  const email = 'change-password@example.com';
+  const password = 'original-pass-1';
+
+  it('rejects a wrong current password with 401', async () => {
+    const signup = await request(app).post('/api/auth/signup').send({ email, password });
+    const { accessToken } = signup.body;
+
+    const res = await request(app)
+      .post('/api/auth/change-password')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ currentPassword: 'not-the-password', newPassword: 'new-password-1' });
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('rejects a new password shorter than signup requires', async () => {
+    const login = await request(app).post('/api/auth/login').send({ email, password });
+    const res = await request(app)
+      .post('/api/auth/change-password')
+      .set('Authorization', `Bearer ${login.body.accessToken}`)
+      .send({ currentPassword: password, newPassword: 'short' });
+    expect(res.status).toBe(400);
+  });
+
+  it('on success, evicts every other session but returns a fresh working pair', async () => {
+    const login = await request(app).post('/api/auth/login').send({ email, password });
+    const oldAccessToken = login.body.accessToken;
+    const oldRefreshToken = login.body.refreshToken;
+
+    const change = await request(app)
+      .post('/api/auth/change-password')
+      .set('Authorization', `Bearer ${oldAccessToken}`)
+      .send({ currentPassword: password, newPassword: 'brand-new-pass-1' });
+    expect(change.status).toBe(200);
+    expect(change.body.accessToken).toBeTruthy();
+    expect(change.body.refreshToken).toBeTruthy();
+
+    // The old refresh token (pre-change tokenVersion) is now revoked.
+    const oldRefresh = await request(app).post('/api/auth/refresh').send({ refreshToken: oldRefreshToken });
+    expect(oldRefresh.status).toBe(401);
+
+    // The freshly issued pair from the change-password response still works.
+    const me = await request(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${change.body.accessToken}`);
+    expect(me.status).toBe(200);
+
+    // New password now logs in; old password no longer does.
+    const loginNew = await request(app)
+      .post('/api/auth/login')
+      .send({ email, password: 'brand-new-pass-1' });
+    expect(loginNew.status).toBe(200);
+
+    const loginOld = await request(app).post('/api/auth/login').send({ email, password });
+    expect(loginOld.status).toBe(401);
   });
 });

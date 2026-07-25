@@ -172,7 +172,14 @@ function makeModel(model: string) {
     update: async (args: any) => {
       const row = db[model].find((r) => matches(r, args.where));
       if (!row) throw Object.assign(new Error('Record not found'), { code: 'P2025' });
-      Object.assign(row, args.data, { updatedAt: new Date() });
+      // Mirror Prisma's { increment } numeric update operator (used by
+      // tokenVersion bumps on logout-all / change-password / set-password).
+      for (const [k, v] of Object.entries(args.data)) {
+        row[k] = v && typeof v === 'object' && !(v instanceof Date) && 'increment' in (v as any)
+          ? (row[k] ?? 0) + (v as any).increment
+          : v;
+      }
+      row.updatedAt = new Date();
       return expand(model, { ...row }, args.include);
     },
     updateMany: async (args: any) => {
@@ -231,7 +238,7 @@ vi.mock('../mail/smtpGateway.js', async (importOriginal) => {
 
 import { app } from '../index.js';
 import { signAccessToken } from '../auth/jwt.js';
-import { signClientAccessToken } from '../auth/clientJwt.js';
+import { signClientAccessToken, signClientRefreshToken } from '../auth/clientJwt.js';
 
 const adminA = `Bearer ${signAccessToken({ userId: 'ownerA', email: 'a@agency.com' })}`;
 const adminB = `Bearer ${signAccessToken({ userId: 'ownerB', email: 'b@agency.com' })}`;
@@ -416,6 +423,7 @@ describe('cross-audience token rejection (client token on CRM routes)', () => {
 
 describe('invite → set-password → password login flow', () => {
   let inviteToken: string;
+  let newClientUserId: string;
 
   it('admin invites a new email; invite email carries a set-password link', async () => {
     const res = await request(app)
@@ -423,6 +431,7 @@ describe('invite → set-password → password login flow', () => {
       .set('Authorization', adminA)
       .send({ email: 'newuser@x.com' });
     expect(res.status).toBe(201);
+    newClientUserId = res.body.clientUser.id;
     const mail = sentEmails.at(-1);
     expect(mail.to).toBe('newuser@x.com');
     inviteToken = mail.text.match(/set-password\?token=([A-Za-z0-9_-]+)/)![1];
@@ -457,6 +466,47 @@ describe('invite → set-password → password login flow', () => {
       .post('/api/portal/auth/login')
       .send({ email: 'newuser@x.com', password: 'wrong-password' });
     expect(bad.status).toBe(401);
+  });
+
+  it('set-password bumped tokenVersion — a refresh token minted against the old version is rejected', async () => {
+    const staleRefresh = signClientRefreshToken({
+      clientUserId: newClientUserId,
+      clientId: 'cA',
+      userId: 'ownerA',
+      email: 'newuser@x.com',
+      tokenVersion: 0, // pre-set-password snapshot; the row is now at 1
+    });
+    const res = await request(app).post('/api/portal/auth/refresh').send({ refreshToken: staleRefresh });
+    expect(res.status).toBe(401);
+  });
+
+  it('admin can revoke the portal user, evicting a current refresh token too', async () => {
+    const cu = db.clientUser.find((u) => u.id === newClientUserId)!;
+    const currentRefresh = signClientRefreshToken({
+      clientUserId: cu.id,
+      clientId: 'cA',
+      userId: 'ownerA',
+      email: 'newuser@x.com',
+      tokenVersion: cu.tokenVersion,
+    });
+    // Sanity: this refresh token is valid before revocation.
+    const before = await request(app).post('/api/portal/auth/refresh').send({ refreshToken: currentRefresh });
+    expect(before.status).toBe(200);
+
+    // Tenant B cannot revoke tenant A's client user (client resolved via tenantDb).
+    const foreignRevoke = await request(app)
+      .post(`/api/clients/cA/portal-users/${cu.id}/revoke`)
+      .set('Authorization', adminB);
+    expect(foreignRevoke.status).toBe(404);
+
+    const revoke = await request(app)
+      .post(`/api/clients/cA/portal-users/${cu.id}/revoke`)
+      .set('Authorization', adminA);
+    expect(revoke.status).toBe(200);
+    expect(revoke.body.ok).toBe(true);
+
+    const after = await request(app).post('/api/portal/auth/refresh').send({ refreshToken: currentRefresh });
+    expect(after.status).toBe(401);
   });
 
   it('rejects a short password on set-password', async () => {
@@ -602,5 +652,37 @@ describe('project archival', () => {
     expect(archived.body.projects.map((p: any) => p.id)).toEqual(['pA']);
 
     expect(db.activityEvent.some((a) => a.projectId === 'pA' && a.type === 'PROJECT_ARCHIVED')).toBe(true);
+  });
+});
+
+// Runs LAST OF ALL — archiving the Client itself must cut off every portal
+// route for client A, so nothing after this point can rely on clientA working.
+describe('archived client loses portal access', () => {
+  it('an ARCHIVED client is refused on /api/portal/me with 403, not a 500', async () => {
+    const archive = await request(app)
+      .patch('/api/clients/cA')
+      .set('Authorization', adminA)
+      .send({ status: 'ARCHIVED' });
+    expect(archive.status).toBe(200);
+    expect(archive.body.client.status).toBe('ARCHIVED');
+
+    const me = await request(app).get('/api/portal/me').set('Authorization', clientA);
+    expect(me.status).toBe(403);
+    expect(me.body.code).toBe('ACCESS_DENIED');
+
+    // The portal auth routes (mounted separately, without requireClientAuth)
+    // must keep working for an archived client's user rather than erroring.
+    const refresh = await request(app)
+      .post('/api/portal/auth/refresh')
+      .send({
+        refreshToken: signClientRefreshToken({
+          clientUserId: 'cuA',
+          clientId: 'cA',
+          userId: 'ownerA',
+          email: 'clienta@x.com',
+          tokenVersion: 0,
+        }),
+      });
+    expect(refresh.status).toBe(200);
   });
 });
