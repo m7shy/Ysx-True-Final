@@ -23,6 +23,9 @@ export type WireProvider = 'gmail' | 'microsoft' | 'zoho';
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // refresh when <=5 min of life remains
 
+// Module-level single-flight map to serialize concurrent token refreshes per mailbox id.
+const inFlightRefreshes = new Map<string, Promise<string>>();
+
 export interface MailboxConnection {
   mailboxId: string;
   email: string;
@@ -99,49 +102,102 @@ export async function ensureFreshAccessToken(mailbox: Mailbox): Promise<string> 
     throw new MailError('AUTH', `Mailbox ${maskEmail(mailbox.email)} has no refresh token; reconnect it.`);
   }
 
-  const refreshTokenPlain = decryptSecret(mailbox.refreshToken);
-  let result: RefreshResult;
-  try {
-    result = await refreshAccessToken(provider, {
-      refreshToken: refreshTokenPlain,
-      tenant: mailbox.tenant,
-      scope: mailbox.scope ?? undefined,
-    });
-  } catch (err) {
-    if (err instanceof MailError && err.revoked) {
-      // The provider says the grant itself is dead (revoked/expired refresh
-      // token) — no amount of retrying will fix this without the user
-      // reconnecting. Disable the mailbox so the rotation engine
-      // (pickMailbox/pickRotationMailbox, both filter isActive: true) stops
-      // selecting it and campaign/follow-up sends stop retrying it forever.
-      await prisma.mailbox.update({ where: { id: mailbox.id }, data: { isActive: false } });
-      logger.warn(
-        { user: maskEmail(mailbox.email), provider },
-        'Mailbox OAuth grant revoked — disabled; user must reconnect',
-      );
-      throw new MailError(
-        'AUTH',
-        `Mailbox ${maskEmail(mailbox.email)} access was revoked; reconnect it to resume sending.`,
-        true,
-      );
+  // Deduplicate concurrent refreshes for the same mailbox id so multiple
+  // callers awaiting a refresh don't race and rotate single-use tokens out
+  // from under each other.
+  const existingInFlight = inFlightRefreshes.get(mailbox.id);
+  if (existingInFlight) {
+    const token = await existingInFlight;
+    // Re-check freshness after awaiting single-flight in case DB was updated.
+    const freshMb = await prisma.mailbox.findUnique({ where: { id: mailbox.id } });
+    if (freshMb?.accessToken) {
+      const isFresh =
+        freshMb.expiresAt != null && freshMb.expiresAt.getTime() > Date.now() + REFRESH_BUFFER_MS;
+      if (isFresh) {
+        return decryptSecret(freshMb.accessToken);
+      }
     }
-    throw err;
+    return token;
   }
 
-  await prisma.mailbox.update({
-    where: { id: mailbox.id },
-    data: {
-      accessToken: encryptSecret(result.accessToken),
-      // Only rotate the refresh token when the provider returned a new one.
-      ...(result.refreshToken ? { refreshToken: encryptSecret(result.refreshToken) } : {}),
-      scope: result.scope ?? mailbox.scope,
-      obtainedAt: new Date(),
-      expiresAt: result.expiresAt,
-    },
-  });
+  const refreshPromise = (async (): Promise<string> => {
+    // Re-check DB in case a recent refresh updated the stored tokens before we acquired execution.
+    const currentMb = await prisma.mailbox.findUnique({ where: { id: mailbox.id } });
+    const mb = currentMb ?? mailbox;
 
-  logger.debug({ user: maskEmail(mailbox.email), provider }, 'Refreshed mailbox OAuth token');
-  return result.accessToken;
+    const isCurrentFresh =
+      mb.expiresAt != null && mb.expiresAt.getTime() > Date.now() + REFRESH_BUFFER_MS;
+
+    if (isCurrentFresh && mb.accessToken) {
+      return decryptSecret(mb.accessToken);
+    }
+
+    if (!mb.refreshToken) {
+      throw new MailError('AUTH', `Mailbox ${maskEmail(mb.email)} has no refresh token; reconnect it.`);
+    }
+
+    const refreshTokenPlain = decryptSecret(mb.refreshToken);
+    let result: RefreshResult;
+    try {
+      result = await refreshAccessToken(provider, {
+        refreshToken: refreshTokenPlain,
+        tenant: mb.tenant,
+        scope: mb.scope ?? undefined,
+      });
+    } catch (err) {
+      if (err instanceof MailError && err.revoked) {
+        // Corroborate before writing isActive: false. Re-read the database row to
+        // check whether another caller or background task rotated the refresh
+        // token concurrently.
+        const latest = await prisma.mailbox.findUnique({ where: { id: mailbox.id } });
+        if (latest && latest.refreshToken === mb.refreshToken) {
+          // Grant is truly revoked — stored refresh token matches the failed one.
+          // TODO: Mailbox model lacks a deactivatedReason/errorReason column to store why it was disabled; set it here once a schema migration adds the field.
+          await prisma.mailbox.update({ where: { id: mailbox.id }, data: { isActive: false } });
+          logger.warn(
+            { user: maskEmail(mailbox.email), provider },
+            'Mailbox OAuth grant revoked — disabled; user must reconnect',
+          );
+          throw new MailError(
+            'AUTH',
+            `Mailbox ${maskEmail(mailbox.email)} access was revoked; reconnect it to resume sending.`,
+            true,
+          );
+        } else if (latest?.accessToken) {
+          // Stored refresh token changed: another caller succeeded in rotating tokens.
+          // Do not deactivate; return the newly stored access token instead.
+          logger.info(
+            { user: maskEmail(mailbox.email), provider },
+            'OAuth refresh failed on stale token, but concurrent refresh succeeded; returning fresh token',
+          );
+          return decryptSecret(latest.accessToken);
+        }
+      }
+      throw err;
+    }
+
+    await prisma.mailbox.update({
+      where: { id: mailbox.id },
+      data: {
+        accessToken: encryptSecret(result.accessToken),
+        // Only rotate the refresh token when the provider returned a new one.
+        ...(result.refreshToken ? { refreshToken: encryptSecret(result.refreshToken) } : {}),
+        scope: result.scope ?? mb.scope,
+        obtainedAt: new Date(),
+        expiresAt: result.expiresAt,
+      },
+    });
+
+    logger.debug({ user: maskEmail(mailbox.email), provider }, 'Refreshed mailbox OAuth token');
+    return result.accessToken;
+  })();
+
+  inFlightRefreshes.set(mailbox.id, refreshPromise);
+  try {
+    return await refreshPromise;
+  } finally {
+    inFlightRefreshes.delete(mailbox.id);
+  }
 }
 
 /**

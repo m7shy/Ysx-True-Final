@@ -131,12 +131,37 @@ describe('materializeCookiePool', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it('is a no-op when the DB pool is empty (lets Python legacy-adopt run)', async () => {
+  it('creates an empty directory when the DB pool is empty (clearing stale files without inheriting)', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookie-materialize-empty-'));
     prismaMock.cookieFile.findMany.mockResolvedValue([]);
     await materializeCookiePool(dir, 'u1');
-    // No cookies dir should have been created.
-    await expect(fs.readdir(path.join(dir, 'cookies'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const files = await fs.readdir(path.join(dir, 'cookies'));
+    expect(files).toEqual([]);
     await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('ensures materializeCookiePool for a tenant with zero cookie rows does not expose another tenant files', async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookie-tenant-isolation-'));
+    
+    // Simulate tenant u2 having materialized cookies in u2's per-run directory
+    const dirU2 = path.join(baseDir, 'cookies', 'job_u2');
+    await fs.mkdir(dirU2, { recursive: true });
+    await fs.writeFile(path.join(dirU2, 'u2_secret.txt'), 'tenant-2-secret-session', 'utf8');
+
+    // Tenant u1 has 0 cookie rows in DB
+    prismaMock.cookieFile.findMany.mockResolvedValue([]);
+
+    // Materialize tenant u1 into its own run directory job_u1
+    const subDirU1 = path.join('cookies', 'job_u1');
+    const materializedPathU1 = await materializeCookiePool(baseDir, 'u1', subDirU1);
+
+    expect(materializedPathU1).toBe(path.join(baseDir, subDirU1));
+    const filesU1 = await fs.readdir(materializedPathU1);
+
+    // Tenant u1's materialized cookie pool must be empty and must not contain u2's files
+    expect(filesU1).toEqual([]);
+    expect(filesU1).not.toContain('u2_secret.txt');
+
+    await fs.rm(baseDir, { recursive: true, force: true });
   });
 });

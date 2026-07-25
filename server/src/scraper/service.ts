@@ -289,12 +289,14 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
   // genuinely new, even though importLeadRows() is idempotent.
   const before = new Set((await readLeads(leadsPath)).map((r) => r.email));
 
-  // Rebuild the on-disk cookie pool from Postgres (the durable source of
-  // truth) right before spawning, since the disk itself doesn't survive
-  // redeploys — see cookieService.ts.
-  await materializeCookiePool(scraperDir, userId);
-
   const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const cookieSubDir = path.join(config.YTDLP_COOKIES_DIR || 'cookies', id);
+  const cookieDir = path.join(scraperDir, cookieSubDir);
+
+  // Rebuild the on-disk cookie pool from Postgres (the durable source of
+  // truth) right before spawning into a per-run isolated directory.
+  await materializeCookiePool(scraperDir, userId, cookieSubDir);
+
   const job: ScrapeJob = {
     id,
     userId,
@@ -312,7 +314,7 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
 
   const child = spawn(config.PYTHON_BIN, ['-u', 'main.py', '--niche', niche], {
     cwd: scraperDir,
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', YTDLP_COOKIES_DIR: cookieSubDir },
   });
   procs.set(id, child);
   appendLog(job, `▶ scrape started for ${cleanKeywords.length} keyword(s)`);
@@ -327,17 +329,22 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
     job.error = `Failed to launch scraper: ${err.message}`;
     job.finishedAt = new Date().toISOString();
     procs.delete(id);
+    fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
   });
 
   child.on('close', async (code, signal) => {
     releaseSlot(released);
     procs.delete(id);
-    if (job.status === 'cancelled') {
-      appendLog(job, '■ cancelled');
-      job.finishedAt = new Date().toISOString();
-      return;
+    try {
+      if (job.status === 'cancelled') {
+        appendLog(job, '■ cancelled');
+        job.finishedAt = new Date().toISOString();
+        return;
+      }
+      await finishJob(job, leadsPath, before, code, signal, importToCrm);
+    } finally {
+      await fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
     }
-    await finishJob(job, leadsPath, before, code, signal, importToCrm);
   });
 
   return job;
@@ -380,11 +387,13 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
   await fs.mkdir(profileDir, { recursive: true });
   const before = new Set((await readLeads(leadsPath)).map((r) => r.email));
 
-  // Rebuild the on-disk cookie pool from Postgres before spawning — see the
-  // matching comment in startJob() above.
-  await materializeCookiePool(scraperDir, userId);
-
   const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const cookieSubDir = path.join(config.YTDLP_COOKIES_DIR || 'cookies', id);
+  const cookieDir = path.join(scraperDir, cookieSubDir);
+
+  // Rebuild the on-disk cookie pool from Postgres before spawning into a per-run directory.
+  await materializeCookiePool(scraperDir, userId, cookieSubDir);
+
   const job: ScrapeJob = {
     id,
     userId,
@@ -403,7 +412,7 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
   const child = spawn(
     config.PYTHON_BIN,
     ['-u', 'orchestrator.py', '--niche', niche, '--keywords', String(keywordCount), '--once'],
-    { cwd: scraperDir, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } },
+    { cwd: scraperDir, env: { ...process.env, PYTHONIOENCODING: 'utf-8', YTDLP_COOKIES_DIR: cookieSubDir } },
   );
   procs.set(id, child);
   appendLog(job, `▶ auto-scrape started (${keywordCount} fresh keyword(s) via Gemini)`);
@@ -419,25 +428,30 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
       job.error = `Failed to launch scraper: ${err.message}`;
       job.finishedAt = new Date().toISOString();
       procs.delete(id);
+      fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
       resolve(job);
     });
 
     child.on('close', async (code, signal) => {
       releaseSlot(released);
       procs.delete(id);
-      if (job.status === 'cancelled') {
-        appendLog(job, '■ cancelled');
-        job.finishedAt = new Date().toISOString();
+      try {
+        if (job.status === 'cancelled') {
+          appendLog(job, '■ cancelled');
+          job.finishedAt = new Date().toISOString();
+          resolve(job);
+          return;
+        }
+        // orchestrator.py generates + writes keywords.txt itself before running
+        // main.py — read it back now purely for job-history display.
+        job.keywords = await readKeywordsFile(keywordsPath);
+        // Auto-scheduled runs are hands-off by design (no user present to review),
+        // so they always import — the CSV-only toggle only applies to manual runs.
+        await finishJob(job, leadsPath, before, code, signal, true);
         resolve(job);
-        return;
+      } finally {
+        await fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
       }
-      // orchestrator.py generates + writes keywords.txt itself before running
-      // main.py — read it back now purely for job-history display.
-      job.keywords = await readKeywordsFile(keywordsPath);
-      // Auto-scheduled runs are hands-off by design (no user present to review),
-      // so they always import — the CSV-only toggle only applies to manual runs.
-      await finishJob(job, leadsPath, before, code, signal, true);
-      resolve(job);
     });
   });
 }

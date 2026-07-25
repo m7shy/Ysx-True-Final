@@ -128,21 +128,28 @@ export async function deleteCookieFile(userId: string, rawName: string): Promise
 }
 
 /**
- * Rebuild SCRAPER_DIR/cookies/*.txt from the DB pool. Called right before
- * every scraper spawn (service.ts) so the Python child sees the current pool
- * regardless of what survived on disk since the last run. No-op (leaves the
- * dir untouched) when the scraper isn't configured or the pool is empty —
- * in the empty case the Python side's own legacy-cookie auto-adopt logic
- * (cookie_manager.py) still gets a chance to run.
+ * Rebuild the specified on-disk directory (e.g. per-run SCRAPER_DIR/cookies/<runId>)
+ * from the DB pool. Called right before every scraper spawn (service.ts) so the
+ * Python child sees the current pool for its tenant regardless of what survived
+ * on disk since the last run.
+ *
+ * Removes any zero-rows early return so an empty DB pool yields an empty directory,
+ * preventing a tenant with zero cookie files from inheriting files written by another tenant.
  */
-export async function materializeCookiePool(scraperDir: string, userId: string): Promise<void> {
+export async function materializeCookiePool(
+  scraperDir: string,
+  userId: string,
+  subDir?: string,
+): Promise<string> {
+  const dir = subDir
+    ? (path.isAbsolute(subDir) ? subDir : path.join(scraperDir, subDir))
+    : path.join(scraperDir, config.YTDLP_COOKIES_DIR);
+
   const rows = await prisma.cookieFile.findMany({
     where: { OR: [{ userId }, { userId: null }] },
     select: { name: true, content: true },
   });
-  if (rows.length === 0) return;
 
-  const dir = path.join(scraperDir, config.YTDLP_COOKIES_DIR);
   await fs.mkdir(dir, { recursive: true });
 
   // Clear stale *.txt files from a previous materialization (e.g. one that
@@ -157,4 +164,6 @@ export async function materializeCookiePool(scraperDir: string, userId: string):
   await Promise.all(
     rows.map((r) => fs.writeFile(path.join(dir, r.name), decryptSecret(r.content), 'utf8')),
   );
+
+  return dir;
 }
