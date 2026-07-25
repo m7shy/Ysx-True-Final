@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Radar, Play, Square, Loader2, CheckCircle2, XCircle, Youtube, RefreshCw, Sparkles, Clock, KeyRound, Upload, Trash2, Download } from 'lucide-react';
+import { Radar, Play, Square, Loader2, CheckCircle2, XCircle, Youtube, RefreshCw, Sparkles, Clock, KeyRound, Upload, Trash2, Download, SlidersHorizontal, ChevronDown, PartyPopper } from 'lucide-react';
 import {
   ScrapeJob,
   AutoSchedule,
   CookieFile,
+  ScraperSettings,
   getScraperStatus,
   startScrape,
   listScrapeJobs,
@@ -16,10 +17,13 @@ import {
   listCookieFiles,
   uploadCookieFiles,
   deleteCookieFile,
+  getScraperSettings,
+  updateScraperSettings,
+  releaseBlacklisted,
 } from '../services/scraperApi';
 import { useNotification } from '../context/NotificationContext';
 import { EASE, AnimatedHeading, Stagger, StaggerItem, MaskedReveal } from './motion/primitives';
-import { Button, Textarea, Alert } from '../src/design/ui';
+import { Button, Textarea, Alert, Modal, Input } from '../src/design/ui';
 
 /**
  * "Scraper" view — lets a logged-in user launch the YouTube lead scraper and
@@ -44,6 +48,75 @@ const STATUS_META: Record<ScrapeJob['status'], { label: string; className: strin
   cancelled: { label: 'Cancelled', className: 'text-neutral-400', Icon: Square },
 };
 
+/** All-string mirror of ScraperSettings so number inputs can hold partial/
+ * empty text while typing (a controlled <input type="number"> with a numeric
+ * value fights the user mid-edit); signal lists are edited as comma/newline
+ * text, same convention as the keyword textarea above. */
+interface SettingsFormState {
+  minSubs: string;
+  maxSubs: string;
+  recentDays: string;
+  minAvgViews: string;
+  minLongformRatio: string;
+  longformMinSecs: string;
+  searchResults: string;
+  uploadsSample: string;
+  faceCheckSample: string;
+  recheckDays: string;
+  strongSignals: string;
+  weakSignals: string;
+  keywordsPerAutoRun: string;
+}
+
+const LOOSENED_LABELS: Record<string, string> = {
+  minSubs: 'minimum subscribers',
+  maxSubs: 'maximum subscribers',
+  minAvgViews: 'minimum average views',
+  minLongformRatio: 'long-form ratio',
+  signals: 'qualification signal words',
+};
+
+function settingsToForm(s: ScraperSettings): SettingsFormState {
+  return {
+    minSubs: String(s.minSubs),
+    maxSubs: String(s.maxSubs),
+    recentDays: String(s.recentDays),
+    minAvgViews: String(s.minAvgViews),
+    minLongformRatio: String(s.minLongformRatio),
+    longformMinSecs: String(s.longformMinSecs),
+    searchResults: String(s.searchResults),
+    uploadsSample: String(s.uploadsSample),
+    faceCheckSample: String(s.faceCheckSample),
+    recheckDays: String(s.recheckDays),
+    strongSignals: s.strongSignals.join(', '),
+    weakSignals: s.weakSignals.join(', '),
+    keywordsPerAutoRun: String(s.keywordsPerAutoRun),
+  };
+}
+
+function splitTerms(text: string): string[] {
+  return text.split(/[\n,]/).map((t) => t.trim()).filter(Boolean);
+}
+
+function formToPatch(f: SettingsFormState): Partial<ScraperSettings> {
+  const num = (v: string) => (v.trim() === '' ? undefined : Number(v));
+  const patch: Partial<ScraperSettings> = {};
+  const minSubs = num(f.minSubs); if (minSubs !== undefined) patch.minSubs = minSubs;
+  const maxSubs = num(f.maxSubs); if (maxSubs !== undefined) patch.maxSubs = maxSubs;
+  const recentDays = num(f.recentDays); if (recentDays !== undefined) patch.recentDays = recentDays;
+  const minAvgViews = num(f.minAvgViews); if (minAvgViews !== undefined) patch.minAvgViews = minAvgViews;
+  const minLongformRatio = num(f.minLongformRatio); if (minLongformRatio !== undefined) patch.minLongformRatio = minLongformRatio;
+  const longformMinSecs = num(f.longformMinSecs); if (longformMinSecs !== undefined) patch.longformMinSecs = longformMinSecs;
+  const searchResults = num(f.searchResults); if (searchResults !== undefined) patch.searchResults = searchResults;
+  const uploadsSample = num(f.uploadsSample); if (uploadsSample !== undefined) patch.uploadsSample = uploadsSample;
+  const faceCheckSample = num(f.faceCheckSample); if (faceCheckSample !== undefined) patch.faceCheckSample = faceCheckSample;
+  const recheckDays = num(f.recheckDays); if (recheckDays !== undefined) patch.recheckDays = recheckDays;
+  const keywordsPerAutoRun = num(f.keywordsPerAutoRun); if (keywordsPerAutoRun !== undefined) patch.keywordsPerAutoRun = keywordsPerAutoRun;
+  patch.strongSignals = splitTerms(f.strongSignals);
+  patch.weakSignals = splitTerms(f.weakSignals);
+  return patch;
+}
+
 export const ScraperView: React.FC = () => {
   const { showToast } = useNotification();
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -58,6 +131,12 @@ export const ScraperView: React.FC = () => {
   const [autoSaving, setAutoSaving] = useState(false);
   const [cookies, setCookies] = useState<CookieFile[]>([]);
   const [cookieBusy, setCookieBusy] = useState(false);
+  const [settings, setSettings] = useState<ScraperSettings | null>(null);
+  const [settingsForm, setSettingsForm] = useState<SettingsFormState | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [releaseModal, setReleaseModal] = useState<{ loosened: string[]; releasable: number } | null>(null);
+  const [releasing, setReleasing] = useState(false);
 
   const isMounted = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
@@ -77,6 +156,7 @@ export const ScraperView: React.FC = () => {
       loadHistory();
       loadAutoSchedule();
       loadCookies();
+      loadSettings();
     })();
     return () => { isMounted.current = false; };
   }, []);
@@ -86,6 +166,53 @@ export const ScraperView: React.FC = () => {
       const schedule = await getAutoSchedule();
       if (isMounted.current) setAutoSchedule(schedule);
     } catch { /* non-fatal */ }
+  };
+
+  const loadSettings = async () => {
+    try {
+      const s = await getScraperSettings();
+      if (!isMounted.current) return;
+      setSettings(s);
+      setSettingsForm(settingsToForm(s));
+    } catch { /* non-fatal */ }
+  };
+
+  const handleSettingsField = (field: keyof SettingsFormState, value: string) => {
+    setSettingsForm((prev) => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const handleSaveSettings = async () => {
+    if (!settingsForm || settingsSaving) return;
+    setSettingsSaving(true);
+    try {
+      const patch = formToPatch(settingsForm);
+      const result = await updateScraperSettings(patch);
+      if (!isMounted.current) return;
+      setSettings(result.settings);
+      setSettingsForm(settingsToForm(result.settings));
+      showToast('SUCCESS', 'Qualification criteria saved.');
+      if (result.loosened.length > 0 && result.releasable > 0) {
+        setReleaseModal({ loosened: result.loosened, releasable: result.releasable });
+      }
+    } catch (err: any) {
+      showToast('ERROR', err?.message ?? 'Could not save qualification criteria.');
+    } finally {
+      if (isMounted.current) setSettingsSaving(false);
+    }
+  };
+
+  const handleConfirmRelease = async () => {
+    if (!releaseModal || releasing) return;
+    setReleasing(true);
+    try {
+      const result = await releaseBlacklisted(releaseModal.loosened.includes('signals'));
+      showToast('SUCCESS', `Released ${result.released} channel(s) — they'll be re-crawled on the next scrape.`);
+      setReleaseModal(null);
+    } catch (err: any) {
+      showToast('ERROR', err?.message ?? 'Could not release blacklisted channels.');
+    } finally {
+      if (isMounted.current) setReleasing(false);
+    }
   };
 
   const loadCookies = async () => {
@@ -334,6 +461,172 @@ export const ScraperView: React.FC = () => {
             )}
           </div>
         </StaggerItem>
+
+        {/* Qualification criteria */}
+        {settingsForm && (
+          <StaggerItem className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-2xl bg-volt/10 flex items-center justify-center">
+                <SlidersHorizontal className="w-5 h-5 text-volt-text" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-white">Qualification criteria</h2>
+                <p className="text-sm text-neutral-400">
+                  What counts as a lead. Applies to every scrape — manual and auto — from the next run onward.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Input
+                label="Min subscribers"
+                type="number"
+                min={0}
+                value={settingsForm.minSubs}
+                onChange={(e) => handleSettingsField('minSubs', e.target.value)}
+                disabled={settingsSaving}
+              />
+              <Input
+                label="Max subscribers"
+                type="number"
+                min={0}
+                value={settingsForm.maxSubs}
+                onChange={(e) => handleSettingsField('maxSubs', e.target.value)}
+                disabled={settingsSaving}
+              />
+              <Input
+                label="Upload recency (days)"
+                type="number"
+                min={1}
+                value={settingsForm.recentDays}
+                onChange={(e) => handleSettingsField('recentDays', e.target.value)}
+                hint="Channel must have uploaded within this many days"
+                disabled={settingsSaving}
+              />
+              <Input
+                label="Min average views"
+                type="number"
+                min={0}
+                value={settingsForm.minAvgViews}
+                onChange={(e) => handleSettingsField('minAvgViews', e.target.value)}
+                disabled={settingsSaving}
+              />
+              <Input
+                label="Min long-form ratio"
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settingsForm.minLongformRatio}
+                onChange={(e) => handleSettingsField('minLongformRatio', e.target.value)}
+                hint="0–1, e.g. 0.40 = 40% of uploads must be long-form"
+                disabled={settingsSaving}
+              />
+              <Input
+                label="Long-form threshold (seconds)"
+                type="number"
+                min={1}
+                value={settingsForm.longformMinSecs}
+                onChange={(e) => handleSettingsField('longformMinSecs', e.target.value)}
+                hint="Videos longer than this count as long-form"
+                disabled={settingsSaving}
+              />
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-4 mt-4">
+              <Textarea
+                label="Strong signal words"
+                value={settingsForm.strongSignals}
+                onChange={(e) => handleSettingsField('strongSignals', e.target.value)}
+                rows={3}
+                placeholder="course, enroll, masterclass, kajabi…"
+                hint="Comma or newline separated. Matched as substrings — leave blank to use the built-in list."
+                disabled={settingsSaving}
+              />
+              <Textarea
+                label="Weak signal words"
+                value={settingsForm.weakSignals}
+                onChange={(e) => handleSettingsField('weakSignals', e.target.value)}
+                rows={3}
+                placeholder="coaching, program, mentorship…"
+                hint="A channel needs at least one strong OR weak signal to qualify."
+                disabled={settingsSaving}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((v) => !v)}
+              className="flex items-center gap-1.5 mt-5 text-xs font-medium text-neutral-400 hover:text-white transition-colors duration-300"
+            >
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-300 ${advancedOpen ? 'rotate-180' : ''}`} />
+              Crawl depth — advanced
+            </button>
+
+            {advancedOpen && (
+              <div className="grid sm:grid-cols-2 gap-4 mt-4 pt-4 border-t border-white/10">
+                <Input
+                  label="Search results per keyword"
+                  type="number"
+                  min={5}
+                  max={200}
+                  value={settingsForm.searchResults}
+                  onChange={(e) => handleSettingsField('searchResults', e.target.value)}
+                  disabled={settingsSaving}
+                />
+                <Input
+                  label="Uploads sampled per channel"
+                  type="number"
+                  min={3}
+                  max={50}
+                  value={settingsForm.uploadsSample}
+                  onChange={(e) => handleSettingsField('uploadsSample', e.target.value)}
+                  disabled={settingsSaving}
+                />
+                <Input
+                  label="Face-check sample size"
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={settingsForm.faceCheckSample}
+                  onChange={(e) => handleSettingsField('faceCheckSample', e.target.value)}
+                  hint="Thumbnails checked for a human face; 0 disables the check"
+                  disabled={settingsSaving}
+                />
+                <Input
+                  label="Re-check window (days)"
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={settingsForm.recheckDays}
+                  onChange={(e) => handleSettingsField('recheckDays', e.target.value)}
+                  hint="How long a temporarily-rejected channel (band, views, ratio, recency) stays parked before it's re-crawled"
+                  disabled={settingsSaving}
+                />
+                <Input
+                  label="Keywords per auto-run"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={settingsForm.keywordsPerAutoRun}
+                  onChange={(e) => handleSettingsField('keywordsPerAutoRun', e.target.value)}
+                  disabled={settingsSaving}
+                />
+              </div>
+            )}
+
+            <div className="flex justify-end mt-5">
+              <Button
+                size="sm"
+                onClick={handleSaveSettings}
+                disabled={settingsSaving}
+                loading={settingsSaving}
+              >
+                {settingsSaving ? 'Saving…' : 'Save criteria'}
+              </Button>
+            </div>
+          </StaggerItem>
+        )}
 
         {/* Auto-scrape */}
         {autoSchedule && (
@@ -596,6 +889,40 @@ export const ScraperView: React.FC = () => {
           )}
         </StaggerItem>
       </Stagger>
+
+      {releaseModal && (
+        <Modal
+          isOpen
+          onClose={() => (releasing ? undefined : setReleaseModal(null))}
+          title="Release blacklisted channels?"
+          size="sm"
+        >
+          <div className="px-6 pb-6 pt-4 space-y-4">
+            <div className="flex items-start gap-3">
+              <PartyPopper className="w-5 h-5 text-volt-text flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-neutral-300">
+                <strong className="text-white">{releaseModal.releasable}</strong> channel(s) were blacklisted under
+                the old {releaseModal.loosened.map((f) => LOOSENED_LABELS[f] ?? f).join(', ')}
+                {releaseModal.loosened.length === 1 ? '' : ' settings'} and would qualify now. Release them so
+                they're picked up on the next scrape?
+              </p>
+            </div>
+            <p className="text-xs text-neutral-500">
+              Leaving them blacklisted keeps this change from having any effect on channels already seen — only new
+              discoveries would use the new criteria. A backup of the tracking database is written before anything
+              is deleted.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" size="sm" onClick={() => setReleaseModal(null)} disabled={releasing}>
+                Not now
+              </Button>
+              <Button size="sm" onClick={handleConfirmRelease} disabled={releasing} loading={releasing}>
+                {releasing ? 'Releasing…' : `Release ${releaseModal.releasable}`}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

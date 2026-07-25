@@ -1,11 +1,14 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { UserSettings, DEFAULT_SETTINGS } from '../types';
+import { onSessionCleared } from '../services/authStorage';
 
 const DEFAULT_SETTINGS_LOCAL: UserSettings = {
   ...DEFAULT_SETTINGS,
   emailSignature: 'John Doe',
 };
+
+const SETTINGS_STORAGE_KEY = 'ysxflow_settings';
 
 interface SettingsContextType {
   settings: UserSettings;
@@ -17,7 +20,7 @@ const SettingsContext = createContext<SettingsContextType | undefined>(undefined
 
 export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<UserSettings>(() => {
-    const saved = localStorage.getItem('ysxflow_settings');
+    const saved = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -35,8 +38,18 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   useEffect(() => {
     // Save all settings including tokens to localStorage to maintain session state
-    localStorage.setItem('ysxflow_settings', JSON.stringify(settings));
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   }, [settings]);
+
+  // This holds OAuth access/refresh tokens and client secrets (SecureState in
+  // types.ts) under one global, unscoped storage key — logging out never used
+  // to clear it, so on a shared browser the next tenant to log in inherited
+  // the previous tenant's mail-provider credentials straight from localStorage.
+  // Reset on every session clear (explicit logout or a forced session expiry).
+  useEffect(() => onSessionCleared(() => {
+    localStorage.removeItem(SETTINGS_STORAGE_KEY);
+    setSettings(DEFAULT_SETTINGS_LOCAL);
+  }), []);
 
   const updateSettings = (newSettings: Partial<UserSettings>) => {
     setSettings(prev => ({ ...prev, ...newSettings }));

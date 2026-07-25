@@ -122,7 +122,10 @@ describe('materializeCookiePool', () => {
     const storedContent = prismaMock.cookieFile.upsert.mock.calls[0][0].create.content;
     prismaMock.cookieFile.findMany.mockResolvedValue([{ name: saved.name, content: storedContent }]);
 
-    await materializeCookiePool(dir, 'u1');
+    // First arg is the cookies directory itself, not its parent: the pool was
+    // moved under profiles/<slug>/cookies per tenant to fix a cross-tenant
+    // cookie leak, so the caller now passes the fully-resolved path.
+    await materializeCookiePool(cookiesDir, 'u1');
 
     const remaining = await fs.readdir(cookiesDir);
     expect(remaining.sort()).toEqual(['.adopted', 'fresh.txt']);

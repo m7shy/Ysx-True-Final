@@ -5,7 +5,7 @@ import { Prisma, ScraperScheduleStatus, type ScraperSchedule } from '@prisma/cli
 import { prisma } from '../db/prisma.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { startAutoJob } from './service.js';
+import { startAutoJob, activeJobFor } from './service.js';
 
 /**
  * Automatic per-tenant scraper scheduler, backed by the `ScraperSchedule`
@@ -19,11 +19,13 @@ import { startAutoJob } from './service.js';
  * built to avoid.
  */
 
-// Fresh keywords generated per auto-run. Deliberately smaller than the
-// standalone daemon's 10/day default (see orchestrator.py): at 3-5 runs/day
-// this keeps total daily keyword/YouTube volume per tenant modest ("spread
-// into tiny pieces" implies gentler bursts, not one big daily sweep).
-const KEYWORDS_PER_AUTO_RUN = 4;
+// Fresh keywords generated per auto-run, when a tenant hasn't set their own
+// via ScraperSettings.keywordsPerAutoRun (see routes.ts's /settings PATCH).
+// Deliberately smaller than the standalone daemon's 10/day default (see
+// orchestrator.py): at 3-5 runs/day this keeps total daily keyword/YouTube
+// volume per tenant modest ("spread into tiny pieces" implies gentler
+// bursts, not one big daily sweep).
+const DEFAULT_KEYWORDS_PER_AUTO_RUN = 4;
 
 // Across ALL tenants, not per-tenant — startAutoJob's own activeJobFor guard
 // already prevents a tenant from double-running.
@@ -68,7 +70,12 @@ let runningCount = 0;
 async function runOne(schedule: ScraperSchedule): Promise<void> {
   let lastRunSummary: Record<string, unknown>;
   try {
-    const job = await startAutoJob(schedule.userId, KEYWORDS_PER_AUTO_RUN);
+    const settings = await prisma.scraperSettings.findUnique({
+      where: { userId: schedule.userId },
+      select: { keywordsPerAutoRun: true },
+    });
+    const keywordCount = settings?.keywordsPerAutoRun ?? DEFAULT_KEYWORDS_PER_AUTO_RUN;
+    const job = await startAutoJob(schedule.userId, keywordCount);
     lastRunSummary =
       job.status === 'succeeded'
         ? { created: job.summary?.created ?? 0, updated: job.summary?.updated ?? 0, skipped: job.summary?.skipped ?? 0 }
@@ -94,7 +101,17 @@ async function runOne(schedule: ScraperSchedule): Promise<void> {
   }
 }
 
-/** Reset any RUNNING schedule stuck past the stale-run timeout back to IDLE. */
+/**
+ * Reset any RUNNING schedule stuck past the stale-run timeout back to IDLE —
+ * but only if it's actually orphaned (no matching job still alive in this
+ * process's in-memory job map). A YouTube scrape can legitimately run past
+ * 30 minutes under cookie rotation/bot-check backoff; blindly reclaiming a
+ * schedule that's still genuinely running lets the next tick launch a SECOND
+ * overlapping scraper for the same tenant while the first keeps running
+ * untracked — both fight over the same profile's keywords.txt/leads.csv and
+ * crash. Only a real process crash/restart (no in-memory job at all) should
+ * be treated as stale.
+ */
 async function recoverStaleRuns(): Promise<void> {
   const staleBefore = new Date(Date.now() - STALE_RUN_TIMEOUT_MS);
   const stale = await prisma.scraperSchedule.findMany({
@@ -107,6 +124,8 @@ async function recoverStaleRuns(): Promise<void> {
   if (stale.length === 0) return;
 
   for (const schedule of stale) {
+    if (activeJobFor(schedule.userId)) continue; // still genuinely running here — leave it claimed
+
     await prisma.scraperSchedule.updateMany({
       where: { id: schedule.id, status: ScraperScheduleStatus.RUNNING },
       data: {

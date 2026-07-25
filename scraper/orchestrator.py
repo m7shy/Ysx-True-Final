@@ -48,6 +48,7 @@ from pathlib import Path
 from google import genai
 from dotenv import load_dotenv
 
+import criteria
 from session_profile import SessionProfile
 
 load_dotenv()
@@ -66,6 +67,12 @@ USED_KEYWORDS_FILE = PROFILE.used_keywords    # persistent cross-session keyword
 LEADS_FILE         = PROFILE.leads
 STATE_FILE         = PROFILE.daemon_state     # persistent daily-run completion tracker
 
+# Qualification thresholds/signals for this niche's profile — same source
+# main.py's run_gauntlet() reads (see criteria.py). Rebuilds _ICP_BLOCK /
+# _HARD_BANS below whenever this changes, so the Gemini prompt can never
+# describe a different ICP than the scraper actually enforces.
+CRITERIA = criteria.load(PROFILE.dir)
+
 # ── Daemon schedule ───────────────────────────────────────────────────────────
 KEYWORDS_PER_DAY   = 10      # EXACTLY this many fresh keywords per daily run
 POLL_SECONDS       = 60      # granularity of the sleep loop (survives clock jumps)
@@ -81,12 +88,20 @@ def use_niche(niche: str) -> None:
     whatever ORCHESTRATOR_NICHE happened to be at import time.
     """
     global NICHE, PROFILE, KEYWORDS_FILE, USED_KEYWORDS_FILE, LEADS_FILE, STATE_FILE
+    global CRITERIA
     NICHE              = niche
     PROFILE            = SessionProfile(NICHE)
     KEYWORDS_FILE      = PROFILE.keywords
     USED_KEYWORDS_FILE = PROFILE.used_keywords
     LEADS_FILE         = PROFILE.leads
     STATE_FILE         = PROFILE.daemon_state
+
+    # Reload this niche's qualification thresholds and rebuild the ICP/hard-ban
+    # prompt blocks from them (see _rebuild_icp_prompts() below) — otherwise a
+    # --niche override would keep generating keywords against whichever
+    # tenant's criteria happened to be active at import time.
+    CRITERIA = criteria.load(PROFILE.dir)
+    _rebuild_icp_prompts()
 
 # ── Gemini API guardrails ─────────────────────────────────────────────────────
 # These exist because used_keywords.txt grew past 200 entries, which bloated the
@@ -208,31 +223,28 @@ def run_script(script: str, *script_args: str) -> int:
     return rc
 
 
-# ── Hardcoded ICP + prompt constants ─────────────────────────────────────────
-# These constants mirror the exact filter criteria enforced by main.py.
-# They are intentionally baked here — not read from a file or env var — so
-# the Gemini prompt can never drift from the scraper's actual acceptance logic.
+# ── ICP + prompt constants (derived from criteria.py) ────────────────────────
+# These used to be hand-maintained strings here, justified by a comment
+# claiming they could "never drift" from main.py's actual acceptance logic.
+# They drifted anyway — the 2026-07-25 signal-vocabulary widening in main.py
+# wasn't mirrored here until it was caught by inspection. Both blocks are now
+# generated from CRITERIA (see criteria.py), the same object main.py's
+# run_gauntlet() reads, so there is only one place left to edit.
 
-_ICP_BLOCK = """\
-TARGET CHANNEL PROFILE (mirrors the scraper's filter criteria exactly):
-  Subscribers    : 500 to 10,000  (micro-creators only; larger channels waste quota)
-  Language       : English
-  Geography      : US, UK, Canada, Australia  (other geos are auto-filtered at scrape time)
-  Activity       : Has uploaded at least one video within the last 15 days
-  Content format : Long-form videos (>60 seconds); channel must have >= 10 such videos
-  Business model : Actively sells at least one of:
-                   course / program / coaching package / masterclass / digital product
-  Description signal requirement -- channel description MUST contain at least one of:
-    STRONG signals (score 2): course, enroll, gumroad, teachable, kajabi, stan.store, masterclass
-    WEAK   signals (score 1): coaching, program, mentorship
-    Score 0 = instant disqualification. Your queries MUST surface channels that score >= 1.\
-"""
+_ICP_BLOCK: str
+_HARD_BANS: str
 
-_HARD_BANS = """\
+
+def _rebuild_icp_prompts() -> None:
+    """Rebuild _ICP_BLOCK / _HARD_BANS from CRITERIA. Called once at import
+    and again by use_niche(), so a --niche override's own settings.json (if
+    any) is reflected in the Gemini prompt, not whatever tenant happened to
+    be active at import time."""
+    global _ICP_BLOCK, _HARD_BANS
+    _ICP_BLOCK = criteria.describe_for_prompt(CRITERIA)
+    _HARD_BANS = f"""\
 HARD BANS -- queries that violate any of these rules will be rejected:
-  1. No proper names of famous creators or celebrities.
-     These attract mega-channels (>10k subs) that burn quota and never qualify.
-     BANNED: "Ali Abdaal", "Alex Hormozi", "Tony Robbins", any influencer surname.
+{criteria.hard_ban_rule_1(CRITERIA)}
   2. No YouTube-growth meta-queries.
      BANNED: "how to grow YouTube channel", "faceless YouTube channel", "YouTube tips 2024"
   3. No corporate brands, SaaS companies, or media publishers.
@@ -248,7 +260,10 @@ HARD BANS -- queries that violate any of these rules will be rejected:
      ALLOWED: "mindset coaching online program", "mindset course enroll"\
 """
 
-# Per-round angle strategies. Rounds 1-5 are explicit. Round 6+ uses _DEEP_ANGLE.
+
+_rebuild_icp_prompts()
+
+# Per-round angle strategies, cycled by pick_angle() below.
 _ROUND_ANGLES: dict[int, str] = {
     1: (
         "ROUND 1 -- DIRECT SIGNAL SWEEP\n"
@@ -307,7 +322,7 @@ _ROUND_ANGLES: dict[int, str] = {
 
 _DEEP_ANGLE = (
     "ROUND {n} -- MICRO-NICHE LONG-TAIL\n"
-    "All broad and mid-tier angles have been used. Go ultra-specific.\n"
+    "This is a deliberate long-tail excursion. Go ultra-specific.\n"
     "Think in sub-niches: a specialist's vocabulary that a generalist would never use.\n"
     "Use 4-6 word queries. Structure: [specific role or sub-topic] + [specific method or "
     "tool] + [commercial signal].\n"
@@ -316,6 +331,32 @@ _DEEP_ANGLE = (
     "Every query must open a NEW pocket of YouTube that has not been searched yet. "
     "Do not paraphrase any prior query."
 )
+
+# One long-tail excursion every _ANGLE_CYCLE rounds; the rest rotate through the
+# broad angles above.
+_ANGLE_CYCLE = len(_ROUND_ANGLES) + 1
+
+
+def pick_angle(round_num: int) -> str:
+    """Choose the prompt angle for `round_num`, cycling rather than escalating.
+
+    round_num only ever increases (it is derived from total_runs), so the
+    previous `_ROUND_ANGLES.get(round_num, _DEEP_ANGLE)` lookup meant every
+    round from 6 onward permanently used the ultra-narrow micro-niche angle.
+    That is a one-way ratchet: the broad, high-volume angles were never
+    revisited, and each run searched a progressively more obscure pocket of
+    YouTube — observed live as 4 keywords returning only 40 candidate
+    channels, which starves the funnel no matter how well the downstream
+    filters are tuned.
+
+    Cycling keeps the long-tail excursion (it does find untapped pockets)
+    while returning to the broad angles that actually fill the funnel.
+    used_keywords.txt still prevents literal repeats, so revisiting an angle
+    yields new queries in that style rather than the same ones.
+    """
+    position = (round_num - 1) % _ANGLE_CYCLE + 1
+    angle = _ROUND_ANGLES.get(position)
+    return angle if angle is not None else _DEEP_ANGLE.format(n=round_num)
 
 
 # ── Gemini helpers ────────────────────────────────────────────────────────────
@@ -419,7 +460,7 @@ def generate_keywords(
     On total failure this returns an empty list (it never raises), so the caller
     logs the empty round and the daemon safely goes back to sleep.
     """
-    angle = _ROUND_ANGLES.get(round_num, _DEEP_ANGLE.format(n=round_num))
+    angle = pick_angle(round_num)
 
     # GUARDRAIL 1 — context management. The full memory bank may hold 200+ entries
     # but we only feed Gemini the most recent slice. The complete record is still

@@ -14,6 +14,19 @@ interface StoredAuth {
 
 const STORAGE_KEY = 'ysxflow_auth';
 
+// Other per-tenant client-only state (SettingsContext's OAuth tokens/secrets,
+// App.tsx's scraper poll state, etc.) needs to reset whenever the session is
+// cleared — whether from an explicit logout or apiClient giving up on a
+// failed silent refresh mid-session. Rather than have every such module poke
+// authStorage directly, they subscribe here and clearAuth() notifies them.
+type SessionClearedListener = () => void;
+const sessionClearedListeners = new Set<SessionClearedListener>();
+
+export function onSessionCleared(listener: SessionClearedListener): () => void {
+  sessionClearedListeners.add(listener);
+  return () => sessionClearedListeners.delete(listener);
+}
+
 export function loadAuth(): StoredAuth | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -34,6 +47,13 @@ export function saveAuth(auth: StoredAuth): void {
 
 export function clearAuth(): void {
   localStorage.removeItem(STORAGE_KEY);
+  sessionClearedListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // one listener's failure shouldn't block the others from resetting
+    }
+  });
 }
 
 export function getAccessToken(): string | null {

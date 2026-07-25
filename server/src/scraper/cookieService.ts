@@ -5,7 +5,6 @@ import path from 'node:path';
 
 import { prisma } from '../db/prisma.js';
 import { encryptSecret, decryptSecret, hasEncryptionKey } from '../creds/crypto.js';
-import { config } from '../config.js';
 
 /**
  * Postgres-backed management of the YouTube cookie-file pool that the Python
@@ -14,11 +13,20 @@ import { config } from '../config.js';
  * AES-256-GCM helper used for mailbox OAuth tokens — so the pool survives Fly
  * redeploys and machine restarts, unlike the app's ephemeral rootfs.
  *
- * The Python scraper only knows how to read *files*, so materializeToDisk()
- * writes the current DB rows out to SCRAPER_DIR/cookies/*.txt as a disk
- * scratch cache; service.ts calls it right before every scraper spawn. That
+ * The Python scraper only knows how to read *files*, so materializeCookiePool()
+ * writes the current DB rows out to the tenant's own profile dir
+ * (profiles/<slug>/cookies/*.txt, passed in by the caller) as a disk scratch
+ * cache; service.ts calls it right before every scraper spawn and points the
+ * child's YTDLP_COOKIES_DIR env var at that same per-tenant directory. That
  * directory should be treated as disposable — it is rebuilt from the DB on
  * every run and is not itself durable storage.
+ *
+ * Per-tenant isolation matters here specifically because scrapes for
+ * different tenants can run concurrently (service.ts allows several children
+ * at once, across tenants). A single shared cookies dir would let one
+ * tenant's materialize-and-wipe race another tenant's still-starting Python
+ * process into loading the wrong account's session cookies — this directory
+ * must never be shared across tenants.
  *
  * Per-tenant pool: CookieFile.userId scopes every row to the tenant that
  * uploaded it. Legacy rows predating this scoping have userId=null and
@@ -128,21 +136,22 @@ export async function deleteCookieFile(userId: string, rawName: string): Promise
 }
 
 /**
- * Rebuild SCRAPER_DIR/cookies/*.txt from the DB pool. Called right before
- * every scraper spawn (service.ts) so the Python child sees the current pool
- * regardless of what survived on disk since the last run. No-op (leaves the
- * dir untouched) when the scraper isn't configured or the pool is empty —
- * in the empty case the Python side's own legacy-cookie auto-adopt logic
- * (cookie_manager.py) still gets a chance to run.
+ * Rebuild `cookiesDir`/*.txt from the DB pool. Called right before every
+ * scraper spawn (service.ts) with that tenant's own profile cookies dir, so
+ * the Python child sees only its own tenant's current pool regardless of
+ * what survived on disk since the last run — and regardless of any other
+ * tenant's scrape running concurrently. No-op (leaves the dir untouched)
+ * when the pool is empty — in that case the Python side's own legacy-cookie
+ * auto-adopt logic (cookie_manager.py) still gets a chance to run.
  */
-export async function materializeCookiePool(scraperDir: string, userId: string): Promise<void> {
+export async function materializeCookiePool(cookiesDir: string, userId: string): Promise<void> {
   const rows = await prisma.cookieFile.findMany({
     where: { OR: [{ userId }, { userId: null }] },
     select: { name: true, content: true },
   });
   if (rows.length === 0) return;
 
-  const dir = path.join(scraperDir, config.YTDLP_COOKIES_DIR);
+  const dir = cookiesDir;
   await fs.mkdir(dir, { recursive: true });
 
   // Clear stale *.txt files from a previous materialization (e.g. one that

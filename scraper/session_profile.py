@@ -24,6 +24,7 @@ Layout for a niche named "B2B Coaching":
         used_keywords.txt
         lookalike_targets.txt
         pending_email_verification.csv
+        settings.json
 
 `SessionProfile` only computes and creates these paths. The actual "serialize
 the active profile, flush memory, hot-load the next" switch lives in
@@ -55,6 +56,10 @@ PROFILE_FILES = {
     "used_keywords":  "used_keywords.txt",
     "lookalike":      "lookalike_targets.txt",
     "pending_verification": "pending_email_verification.csv",
+    # Per-tenant qualification thresholds (criteria.py). Written by the CRM's
+    # service.ts right before spawning main.py/orchestrator.py; absent means
+    # "use criteria.py's defaults".
+    "settings":       "settings.json",
 }
 
 
