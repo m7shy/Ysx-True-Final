@@ -80,9 +80,9 @@ worker's self-report.
 | A | ✅ done | tsc clean, 142/142 |
 | B | ✅ done | tsc clean, 154/154 (+12 new tests) |
 | C | ✅ done, **needed 2 manual repairs** | tsc clean, 155/155 |
-| D | ⛔ not started — agy quota exhausted | working tree untouched by D |
-| E | ⏸ held for explicit sign-off | — |
-| F | ⛔ not started — agy quota exhausted | — |
+| D | ✅ done | tsc clean, 158/158 |
+| E | ✅ done, **1 regression caught + fixed** | tsc clean, 167/167 |
+| F | ✅ done — findings in `REVIEW-2026-07-25-frontend.md` | review only, nothing fixed |
 
 **Batch C required repairs the worker should have caught:** it shipped a missing `});` that left
 the `/magic-link` handler unclosed (`TS1005` — would not compile), and it added a `vi.waitFor` to a
