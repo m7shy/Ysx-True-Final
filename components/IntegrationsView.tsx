@@ -88,9 +88,11 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
   useEffect(() => {
     setIntegrations(prev => prev.map(item => {
       if (item.id === 'zoho_mail') {
-        // Zoho is connected if we have a token OR we are in sandbox (simulated)
-        const isConnected = !!settings.zohoAccessToken || (!settings.useRealApi);
-        return { ...item, connected: isConnected };
+        // Zoho used to read as "connected" whenever a browser-held OAuth token
+        // existed. That token is gone with the 'oauth-api' transport, and the
+        // backend mailbox store has no ZOHO provider, so in real-API mode Zoho
+        // has no connection to report — only simulated mode shows it connected.
+        return { ...item, connected: !settings.useRealApi };
       }
       if (item.id === 'google_workspace') {
         return { ...item, connected: mailboxes.some(m => m.provider === 'GMAIL' && m.isActive) };
@@ -100,7 +102,7 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
       }
       return item;
     }));
-  }, [settings.zohoAccessToken, settings.useRealApi, mailboxes]);
+  }, [settings.useRealApi, mailboxes]);
 
   // Update integrations state based on structured AppError
   useEffect(() => {

@@ -18,8 +18,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
   const [showConfirm, setShowConfirm] = useState(false);
 
   // New UI States
-  const [clientIdError, setClientIdError] = useState(false);
-  const [googleClientIdError, setGoogleClientIdError] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
 
@@ -53,68 +51,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
     window.location.reload();
   };
 
-  const getAuthUrl = (region: string) => {
-    let baseUrl = 'https://accounts.zoho.com';
-    switch (region) {
-      case 'EU': baseUrl = 'https://accounts.zoho.eu'; break;
-      case 'IN': baseUrl = 'https://accounts.zoho.in'; break;
-      case 'AU': baseUrl = 'https://accounts.zoho.com.au'; break;
-      case 'CN': baseUrl = 'https://accounts.zoho.com.cn'; break;
-      default: baseUrl = 'https://accounts.zoho.com'; break;
-    }
-    return `${baseUrl}/oauth/v2/auth`;
-  }
-
-  const generateState = (provider: string) => {
-    const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
-    const state = `provider=${provider}&nonce=${nonce}`;
-    sessionStorage.setItem('oauth_state', state);
-    return state;
-  };
-
-  const handleZohoConnect = () => {
-    if (!localSettings.zohoClientId) {
-      setClientIdError(true);
-      return;
-    }
-    setClientIdError(false);
-
-    const settingsToSave = { ...settings, ...localSettings };
-    localStorage.setItem('ysxflow_settings', JSON.stringify(settingsToSave));
-    onSave(settingsToSave);
-
-    const redirectUri = window.location.origin;
-    const scope = "ZohoMail.messages.READ,ZohoMail.messages.CREATE,ZohoMail.accounts.READ";
-    const authUrl = getAuthUrl(localSettings.zohoRegion);
-
-    const state = generateState('zoho');
-
-    const url = `${authUrl}?scope=${scope}&client_id=${localSettings.zohoClientId}&response_type=token&redirect_uri=${redirectUri}&access_type=online&state=${encodeURIComponent(state)}`;
-
-    window.location.href = url;
-  };
-
-  const handleGoogleConnect = () => {
-    if (!localSettings.googleClientId) {
-      setGoogleClientIdError(true);
-      return;
-    }
-    setGoogleClientIdError(false);
-
-    const settingsToSave = { ...settings, ...localSettings };
-    localStorage.setItem('ysxflow_settings', JSON.stringify(settingsToSave));
-    onSave(settingsToSave);
-
-    const redirectUri = window.location.origin;
-    const scope = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send";
-    const authUrl = "https://accounts.google.com/o/oauth2/v2/auth";
-
-    const state = generateState('google');
-
-    const url = `${authUrl}?scope=${scope}&client_id=${localSettings.googleClientId}&response_type=code&redirect_uri=${redirectUri}&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
-
-    window.location.href = url;
-  };
+  // The browser-side OAuth connect flows (Zoho + Google) were removed along
+  // with the 'oauth-api' transport: they redirected to the provider with a
+  // client id held in localStorage and exchanged the code through endpoints
+  // that were never mounted server-side. Mailboxes are now connected via the
+  // backend OAuth flow (server/src/auth/oauthRoutes.ts), reached from the
+  // Integrations view.
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -287,49 +229,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                 {localSettings.useRealApi ? (
                   <div className="animate-in slide-in-from-top-2 fade-in space-y-6 pt-2">
 
-                     {/* TRANSPORT MODE TOGGLE */}
+                     {/* TRANSPORT PROTOCOL — informational only.
+                         This used to be a radio pair (gateway vs. "Browser API
+                         (OAuth)"). The browser-OAuth mode was removed: the
+                         endpoints it called were never mounted server-side, so
+                         it had never actually worked, and it was the only
+                         reason the tenant's OAuth client secret was kept in
+                         localStorage. The gateway is now the only transport,
+                         so there is nothing left to choose. */}
                      <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4">
                         <h4 className="text-xs font-semibold text-neutral-500 uppercase mb-3">Transport Protocol</h4>
-                        <div className="space-y-3">
-                           <label className="flex items-center p-3 border rounded-xl cursor-pointer bg-white/[0.02] border-white/10 hover:border-volt-text/40">
-                              <input
-                                type="radio"
-                                name="transportMode"
-                                value="gateway-imap-smtp"
-                                checked={localSettings.transportMode === 'gateway-imap-smtp' || !localSettings.transportMode} // Default
-                                onChange={() => setLocalSettings({...localSettings, transportMode: 'gateway-imap-smtp'})}
-                                className="w-4 h-4 text-volt focus:ring-volt-text border-white/20"
-                              />
-                              <div className="ml-3">
-                                 <span className="block text-sm font-medium text-white flex items-center">
-                                    <Server className="w-4 h-4 mr-2 text-volt-text" />
-                                    Secure Gateway (IMAP/SMTP)
-                                 </span>
-                                 <span className="block text-xs text-neutral-400">
-                                    Uses backend server environment variables for credentials. Most secure.
-                                 </span>
-                              </div>
-                           </label>
-
-                           <label className="flex items-center p-3 border rounded-xl cursor-pointer bg-white/[0.02] border-white/10 hover:border-volt-text/40">
-                              <input
-                                type="radio"
-                                name="transportMode"
-                                value="oauth-api"
-                                checked={localSettings.transportMode === 'oauth-api'}
-                                onChange={() => setLocalSettings({...localSettings, transportMode: 'oauth-api'})}
-                                className="w-4 h-4 text-volt focus:ring-volt-text border-white/20"
-                              />
-                              <div className="ml-3">
-                                 <span className="block text-sm font-medium text-white flex items-center">
-                                    <Globe className="w-4 h-4 mr-2 text-purple-400" />
-                                    Browser API (OAuth)
-                                 </span>
-                                 <span className="block text-xs text-neutral-400">
-                                    Legacy mode. Connects directly from browser using provider APIs.
-                                 </span>
-                              </div>
-                           </label>
+                        <div className="flex items-center p-3 border rounded-xl bg-white/[0.02] border-white/10">
+                           <Server className="w-4 h-4 mr-3 text-volt-text shrink-0" />
+                           <div>
+                              <span className="block text-sm font-medium text-white">Secure Gateway (IMAP/SMTP)</span>
+                              <span className="block text-xs text-neutral-400">
+                                 Mail is sent and read by the backend using server-side credentials. Your
+                                 mailbox credentials never reach the browser.
+                              </span>
+                           </div>
                         </div>
                      </div>
 

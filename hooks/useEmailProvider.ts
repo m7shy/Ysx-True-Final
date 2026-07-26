@@ -1,19 +1,7 @@
 import { useState, useCallback } from 'react';
 import { AppError, AppErrorCode, Email, EmailStatus } from '../types';
 import { useSettings } from '../context/SettingsContext';
-import { useTokenManager } from './useTokenManager';
 import type { AutoFollowUp } from '../types';
-
-import {
-  fetchSentEmails as fetchGoogleEmails,
-  sendNewEmail as sendGoogleEmail,
-  sendFollowUpEmail as sendGoogleFollowUp,
-} from '../services/realGoogle';
-import {
-  fetchSentEmails as fetchZohoEmails,
-  sendNewEmail as sendZohoEmail,
-  sendFollowUpEmail as sendZohoFollowUp,
-} from '../services/realZoho';
 
 import { gwFetchSent, gwSend } from '../services/mailGateway';
 import { scheduleFollowup, type ProviderKeyDto } from '../services/followupApi';
@@ -92,42 +80,12 @@ function toFollowupProviderKey(provider: ActiveProvider): ProviderKeyDto {
   return 'microsoft';
 }
 
-// Microsoft has no browser-side OAuth-API token exchange on the frontend — the
-// backend only ever talks to Microsoft through the IMAP/SMTP gateway. So
-// Microsoft always uses the gateway path regardless of the user's general
-// transportMode setting (which otherwise toggles Gmail/Zoho between
-// oauth-api and gateway modes).
-function usesGateway(provider: ActiveProvider, transportMode: string): boolean {
-  return transportMode === 'gateway-imap-smtp' || provider === 'MICROSOFT';
-}
-
 export const useEmailProvider = () => {
   const { settings, updateSettings } = useSettings();
-  const { getValidToken, clearToken } = useTokenManager(settings);
 
   const [loading, setLoading] = useState(false);
   const [emails, setEmails] = useState<Email[]>([]);
   const [error, setError] = useState<AppError | null>(null);
-
-  // Retry wrapper for provider calls
-  const executeWithRetry = useCallback(
-    async <T,>(provider: 'GMAIL' | 'ZOHO', operation: (token: string) => Promise<T>): Promise<T> => {
-      try {
-        const token = await getValidToken(provider);
-        return await operation(token);
-      } catch (err: any) {
-        // realGoogle/realZoho throw AUTH_EXPIRED on a provider 401; we also
-        // catch the older AUTH_ERROR here so any stale-token error clears the
-        // credential instead of looping forever with no path back to working.
-        if (err instanceof AppError && (err.code === AppErrorCode.AUTH_ERROR || err.code === AppErrorCode.AUTH_EXPIRED)) {
-          clearToken(provider);
-          throw new AppError(AppErrorCode.AUTH_ERROR, err.provider, `${provider} authentication expired. Please reconnect.`);
-        }
-        throw err;
-      }
-    },
-    [getValidToken, clearToken]
-  );
 
   const loadEmails = useCallback(async () => {
     setLoading(true);
@@ -153,23 +111,9 @@ export const useEmailProvider = () => {
         return;
       }
 
-      // Real API mode:
-      if (usesGateway(settings.activeProvider, settings.transportMode)) {
-        const providerKey = toGatewayProviderKey(settings.activeProvider);
-        const fetched = await gwFetchSent(providerKey, 20);
-        setEmails(fetched);
-        return;
-      }
-
-      // OAuth-API mode (Gmail/Zoho only — Microsoft always takes the gateway
-      // branch above).
-      if (settings.activeProvider === 'GMAIL') {
-        const fetched = await executeWithRetry('GMAIL', (token) => fetchGoogleEmails(token));
-        setEmails(fetched);
-        return;
-      }
-
-      const fetched = await executeWithRetry('ZOHO', (token) => fetchZohoEmails(token));
+      // Real API mode — always uses the server-side gateway (IMAP/SMTP).
+      const providerKey = toGatewayProviderKey(settings.activeProvider);
+      const fetched = await gwFetchSent(providerKey, 20);
       setEmails(fetched);
     } catch (err: any) {
       console.error('Failed to load emails:', err);
@@ -181,7 +125,7 @@ export const useEmailProvider = () => {
     } finally {
       setLoading(false);
     }
-  }, [settings, executeWithRetry]);
+  }, [settings]);
 
   const sendNewEmail = useCallback(
     async (
@@ -210,119 +154,92 @@ export const useEmailProvider = () => {
           return { success: true, followups: baseFollowups };
         }
 
-        if (usesGateway(settings.activeProvider, settings.transportMode)) {
-          const gatewayProviderKey = toGatewayProviderKey(settings.activeProvider);
+        // Real API mode — always uses the server-side gateway (IMAP/SMTP).
+        const gatewayProviderKey = toGatewayProviderKey(settings.activeProvider);
 
-          try {
-            const bodyWithSig = withSignature(body, settings.emailSignature);
+        try {
+          const bodyWithSig = withSignature(body, settings.emailSignature);
 
-            const sendRes = await gwSend(gatewayProviderKey, {
-              to: normalizedTo,
-              subject,
-              body: bodyWithSig,
-            });
+          const sendRes = await gwSend(gatewayProviderKey, {
+            to: normalizedTo,
+            subject,
+            body: bodyWithSig,
+          });
 
-            const originalMessageId = sendRes.messageId;
-            const initialSentAt = new Date().toISOString();
+          const originalMessageId = sendRes.messageId;
+          const initialSentAt = new Date().toISOString();
 
-            // Schedule follow-ups (gateway-only) if requested
-            const followUpResults: FollowupScheduleResult[] = [];
-            const followups: FollowupsSummary = {
-              attempted: autoFollowUps.length > 0,
-              scheduled: 0,
-              errors: [],
-            };
+          // Schedule follow-ups if requested
+          const followUpResults: FollowupScheduleResult[] = [];
+          const followups: FollowupsSummary = {
+            attempted: autoFollowUps.length > 0,
+            scheduled: 0,
+            errors: [],
+          };
 
-            if (autoFollowUps.length > 0) {
-              const providerKey = toFollowupProviderKey(settings.activeProvider);
+          if (autoFollowUps.length > 0) {
+            const providerKey = toFollowupProviderKey(settings.activeProvider);
 
-              // Use caller-provided campaign id (so UI + backend agree on the same campaign).
-              // Fallback to a generated id for backwards compatibility.
-              const campaignId = (options?.campaignId || '').trim() || `camp_${Date.now()}`;
+            // Use caller-provided campaign id (so UI + backend agree on the same campaign).
+            // Fallback to a generated id for backwards compatibility.
+            const campaignId = (options?.campaignId || '').trim() || `camp_${Date.now()}`;
 
-              for (let i = 0; i < autoFollowUps.length; i++) {
-                const followUp = autoFollowUps[i];
-                const delayMs = followUpDelayToMs(followUp.delay, followUp.unit);
-                const scheduledAtIso = new Date(Date.now() + delayMs).toISOString();
+            for (let i = 0; i < autoFollowUps.length; i++) {
+              const followUp = autoFollowUps[i];
+              const delayMs = followUpDelayToMs(followUp.delay, followUp.unit);
+              const scheduledAtIso = new Date(Date.now() + delayMs).toISOString();
 
-                const followUpBody = withSignature(followUp.content, settings.emailSignature);
+              const followUpBody = withSignature(followUp.content, settings.emailSignature);
 
-                try {
-                  await scheduleFollowup({
-                    provider: providerKey,
-                    to: normalizedTo,
-                    subject: toReplySubject(subject),
-                    body: followUpBody,
-                    scheduledAt: scheduledAtIso,
+              try {
+                await scheduleFollowup({
+                  provider: providerKey,
+                  to: normalizedTo,
+                  subject: toReplySubject(subject),
+                  body: followUpBody,
+                  scheduledAt: scheduledAtIso,
 
-                    campaignId,
-                    recipientEmail: normalizedTo,
-                    originalMessageId,
-                    initialSentAt,
+                  campaignId,
+                  recipientEmail: normalizedTo,
+                  originalMessageId,
+                  initialSentAt,
 
-                    stepIndex: i + 1,
-                    skipIfReplied: true,
-                  });
+                  stepIndex: i + 1,
+                  skipIfReplied: true,
+                });
 
-                  followUpResults.push({ success: true });
-                  followups.scheduled += 1;
-                } catch (e: any) {
-                  const appErr =
-                    e instanceof AppError
-                      ? e
-                      : new AppError(AppErrorCode.UNKNOWN, 'SYSTEM', e?.message || 'Failed to schedule follow-up.');
-                  followUpResults.push({ success: false, error: appErr });
-                  followups.errors.push(appErr.message);
-                }
+                followUpResults.push({ success: true });
+                followups.scheduled += 1;
+              } catch (e: any) {
+                const appErr =
+                  e instanceof AppError
+                    ? e
+                    : new AppError(AppErrorCode.UNKNOWN, 'SYSTEM', e?.message || 'Failed to schedule follow-up.');
+                followUpResults.push({ success: false, error: appErr });
+                followups.errors.push(appErr.message);
               }
             }
-
-            return {
-              success: true,
-              messageId: originalMessageId,
-              followups,
-              scheduledFollowUps: followUpResults,
-            };
-          } catch (error) {
-            console.error('Gateway send failed:', error);
-            const appError =
-              error instanceof AppError
-                ? error
-                : new AppError(
-                    AppErrorCode.PROVIDER_ERROR,
-                    'SYSTEM',
-                    error instanceof Error ? error.message : 'Send failed'
-                  );
-            setError(appError);
-            return { success: false, error: appError, followups: baseFollowups };
           }
-        }
 
-        // OAuth API mode (Gmail/Zoho only — Microsoft always takes the gateway
-        // branch above).
-        if (settings.activeProvider === 'GMAIL') {
-          try {
-            await executeWithRetry('GMAIL', (token) =>
-              sendGoogleEmail(token, normalizedTo, subject, withSignature(body, settings.emailSignature))
-            );
-          } catch (error: any) {
-            throw error instanceof AppError
+          return {
+            success: true,
+            messageId: originalMessageId,
+            followups,
+            scheduledFollowUps: followUpResults,
+          };
+        } catch (error) {
+          console.error('Gateway send failed:', error);
+          const appError =
+            error instanceof AppError
               ? error
-              : new AppError(AppErrorCode.PROVIDER_ERROR, 'GOOGLE', error?.message || 'Failed to send email via Google');
-          }
-        } else {
-          try {
-            await executeWithRetry('ZOHO', (token) =>
-              sendZohoEmail(token, normalizedTo, subject, withSignature(body, settings.emailSignature))
-            );
-          } catch (error: any) {
-            throw error instanceof AppError
-              ? error
-              : new AppError(AppErrorCode.PROVIDER_ERROR, 'ZOHO', error?.message || 'Failed to send email via Zoho');
-          }
+              : new AppError(
+                  AppErrorCode.PROVIDER_ERROR,
+                  'SYSTEM',
+                  error instanceof Error ? error.message : 'Send failed'
+                );
+          setError(appError);
+          return { success: false, error: appError, followups: baseFollowups };
         }
-
-        return { success: true, followups: baseFollowups };
       } catch (err: any) {
         console.error('Failed to send email:', err);
         const appErr =
@@ -333,7 +250,7 @@ export const useEmailProvider = () => {
         setLoading(false);
       }
     },
-    [settings, executeWithRetry]
+    [settings]
   );
 
   const sendFollowUp = useCallback(
@@ -353,33 +270,16 @@ export const useEmailProvider = () => {
           return { success: true, followups: baseFollowups };
         }
 
-        if (usesGateway(settings.activeProvider, settings.transportMode)) {
-          const providerKey = toGatewayProviderKey(settings.activeProvider);
+        // Real API mode — always uses the server-side gateway (IMAP/SMTP).
+        const providerKey = toGatewayProviderKey(settings.activeProvider);
 
-          await gwSend(providerKey, {
-            to,
-            subject,
-            body: withSignature(followUpContent, settings.emailSignature),
-            inReplyTo: originalEmail.messageId,
-            references: originalEmail.messageId,
-          });
-
-          return { success: true, followups: baseFollowups };
-        }
-
-        // OAuth mode (Gmail/Zoho only — Microsoft always takes the gateway
-        // branch above). Both sendFollowUpEmail implementations apply the
-        // signature themselves, so pass the raw content (not pre-signed) to
-        // avoid signing it twice.
-        if (settings.activeProvider === 'GMAIL') {
-          await executeWithRetry('GMAIL', (token) =>
-            sendGoogleFollowUp(token, to, subject, followUpContent, originalEmail.messageId ?? '', settings.emailSignature)
-          );
-        } else {
-          await executeWithRetry('ZOHO', (token) =>
-            sendZohoFollowUp(token, to, subject, followUpContent, originalEmail.messageId ?? '', settings.zohoRegion, settings.emailSignature)
-          );
-        }
+        await gwSend(providerKey, {
+          to,
+          subject,
+          body: withSignature(followUpContent, settings.emailSignature),
+          inReplyTo: originalEmail.messageId,
+          references: originalEmail.messageId,
+        });
 
         return { success: true, followups: baseFollowups };
       } catch (err: any) {
@@ -392,7 +292,7 @@ export const useEmailProvider = () => {
         setLoading(false);
       }
     },
-    [settings, executeWithRetry]
+    [settings]
   );
 
   return {

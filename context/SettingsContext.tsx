@@ -15,16 +15,41 @@ interface SettingsContextType {
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
+// Keys that existed before the browser-side 'oauth-api' transport was removed.
+// They held the tenant's Google/Zoho OAuth client secrets, access tokens and
+// refresh tokens in localStorage. Nothing reads them any more, but a returning
+// user still has them persisted — so strip them on load rather than spreading
+// them back into state and re-persisting them on the next write.
+const REMOVED_SETTING_KEYS = [
+  'zohoAccessToken',
+  'zohoRefreshToken',
+  'googleAccessToken',
+  'googleRefreshToken',
+  'zohoClientSecret',
+  'googleClientSecret',
+  'zohoClientId',
+  'googleClientId',
+  'zohoRegion',
+] as const;
+
+function migrateSaved(parsed: Record<string, unknown>): Partial<UserSettings> {
+  const cleaned = { ...parsed };
+  for (const key of REMOVED_SETTING_KEYS) delete cleaned[key];
+  // 'oauth-api' is no longer a valid transport. Anyone with it persisted must
+  // fall back to the gateway, which is now the only mode.
+  if (cleaned.transportMode !== 'gateway-imap-smtp') delete cleaned.transportMode;
+  return cleaned as Partial<UserSettings>;
+}
+
 export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<UserSettings>(() => {
     const saved = localStorage.getItem('ysxflow_settings');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        // Persist tokens so the user stays logged in across reloads in this client-side app
-        return { 
-            ...DEFAULT_SETTINGS_LOCAL, 
-            ...parsed
+        return {
+            ...DEFAULT_SETTINGS_LOCAL,
+            ...migrateSaved(parsed),
         };
       } catch (e) {
         console.error("Failed to parse saved settings", e);

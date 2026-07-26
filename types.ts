@@ -45,9 +45,8 @@ export interface Email {
   to: string;
   from: string;
   // Extra display fields used by the simulated-mode data source
-  // (services/mockZoho.ts) and the client-side OAuth integrations
-  // (services/realGoogle.ts, services/realZoho.ts) — absent on emails
-  // fetched via the mailbox gateway (services/mailGateway.ts).
+  // (services/mockZoho.ts) — absent on emails fetched via the mailbox
+  // gateway (services/mailGateway.ts).
   recipientName?: string;
   company?: string;
   scheduledDate?: string;
@@ -175,39 +174,34 @@ export enum FollowUpTone {
 }
 
 export interface PublicSettings {
-  zohoClientId: string;
-  zohoRegion: 'US' | 'EU' | 'CN' | 'IN' | 'AU';
   defaultTone: FollowUpTone;
   emailSignature: string;
   syncLookbackDays: number;
   autoSync: boolean;
-  // Real API Configuration
+  // Real API Configuration.
+  // transportMode is now single-valued: everything goes through the backend
+  // IMAP/SMTP gateway. The old 'oauth-api' mode (Gmail/Zoho called straight
+  // from the browser) was removed — the routes it called were never mounted
+  // server-side, so it had never worked, and it was the only thing that
+  // required the tenant's OAuth client secret to sit in localStorage.
   useRealApi: boolean;
-  transportMode: 'gateway-imap-smtp' | 'oauth-api';
+  transportMode: 'gateway-imap-smtp';
   activeProvider: 'ZOHO' | 'GMAIL' | 'MICROSOFT';
   zohoAccountId?: string; // Cached account ID
-  googleClientId: string;
 }
 
 export type ActiveProvider = PublicSettings['activeProvider'];
 
 export type MailGatewayProviderKey = 'gmail' | 'zoho' | 'microsoft';
 
-export interface SecureState {
-  zohoAccessToken: string;
-  zohoRefreshToken: string;
-  googleAccessToken: string;
-  googleRefreshToken: string;
-  zohoClientSecret: string;
-  googleClientSecret: string;
-}
-
-export type UserSettings = PublicSettings & SecureState;
+// UserSettings used to be PublicSettings & SecureState, where SecureState held
+// the Google/Zoho OAuth access tokens, refresh tokens and client secrets. All
+// six were removed with the 'oauth-api' transport: mailbox credentials live
+// server-side (encrypted, see server/src/creds/) and never reach the browser.
+export type UserSettings = PublicSettings;
 
 // UPDATED: Default is now GMAIL to prevent missing ZOHO errors
 export const DEFAULT_SETTINGS: UserSettings = {
-  zohoClientId: '',
-  zohoRegion: 'US',
   defaultTone: FollowUpTone.PROFESSIONAL,
   emailSignature: '',
   syncLookbackDays: 30,
@@ -216,21 +210,15 @@ export const DEFAULT_SETTINGS: UserSettings = {
   transportMode: 'gateway-imap-smtp',
   activeProvider: 'GMAIL',
   zohoAccountId: undefined,
-  googleClientId: '',
-  zohoAccessToken: '',
-  zohoRefreshToken: '',
-  googleAccessToken: '',
-  googleRefreshToken: '',
-  zohoClientSecret: '',
-  googleClientSecret: '',
 };
 
 export enum AppErrorCode {
   NETWORK_ERROR = 'NETWORK_ERROR',
   AUTH_ERROR = 'AUTH_ERROR',
-  // Distinct from AUTH_ERROR: the client-side OAuth token itself is expired/
-  // revoked (services/realGoogle.ts, services/realZoho.ts) — the caller
-  // should prompt a reconnect rather than treat it as a generic auth failure.
+  // Distinct from AUTH_ERROR: a provider OAuth token is expired or revoked and
+  // the caller should prompt a reconnect rather than treat it as a generic
+  // auth failure. (Its original client-side raisers were removed with the
+  // 'oauth-api' transport; retained for the gateway/mailbox paths.)
   AUTH_EXPIRED = 'AUTH_EXPIRED',
   RATE_LIMIT = 'RATE_LIMIT',
   PROVIDER_ERROR = 'PROVIDER_ERROR',
