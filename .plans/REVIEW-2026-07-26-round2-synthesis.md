@@ -19,6 +19,34 @@ transient (`high traffic`). Retried separately.
 highest-severity issue (R1-01/R1-02), so those findings have NO independent second
 opinion.** Same for the portal backend and the 13k-line component tree.
 
+### Retry outcome — `auth` recovered, three units still missing
+
+A follow-up run recovered **`auth`** (5 findings, `claude-sonnet-4-6`) — and it arrived **via the
+delimited-stdout fallback**, which is precisely the mitigation added after the worker refused the
+file deliverable earlier. That fallback is now load-bearing, not theoretical.
+
+`portal` and `mail` failed again (no-op / transient); `frontend_views` hit the account quota.
+**Still no independent coverage of the portal backend, the mail/IMAP layer, or the 13k-line
+component tree.**
+
+### 🔴 The most important cross-round result: round 2 *cleared* R1-01
+
+Round 2's `auth` unit did not merely miss the OAuth finding — it affirmatively marked it correct.
+Verbatim from its CHECKED AND SOUND section:
+
+> "**OAuth state JWT prevents cross-tenant mailbox grafting**: State is signed with `JWT_SECRET`,
+> carries `sub` (userId) and `provider`, and is verified in the callback before any mailbox write.
+> The 10-minute TTL and per-request nonce are correct. An attacker cannot forge a state token. ✓"
+
+It asked *"can an attacker forge a state?"* — correctly answered no — and stopped, exactly as the
+source comment does. It never asked the reverse question (attacker hands the **victim** their own
+state), which is the actual attack. It also called the nonce "correct" without checking that the
+value is never stored or compared anywhere.
+
+Two independent reviewers anchoring on the same framing and reaching the same wrong conclusion is
+itself the finding: **R1-01 is a blind spot the code's own comment actively induces.** That is an
+argument for fixing the comment alongside the code, so the next reviewer is not steered the same way.
+
 ## Verification status
 
 29 findings were returned, 12 self-rated HIGH/HIGH-confidence. Per skill §5.18 a sample was
@@ -62,6 +90,27 @@ Verified. `app.use('/api/auth/oauth', oauthRouter)` carries no tenant gate, so a
 `INACTIVE` tenant can still connect and replace mailboxes while every other mutating router
 blocks them. Matches round 1's R1-08 (same class, different route) — **an independent
 agreement across both rounds, which raises confidence in both.**
+
+**S-06 · `/api/auth/refresh` still accepts the refresh token in the request BODY** — `server/src/auth/routes.ts:130-131`
+Verified: `req.cookies?.[CRM_REFRESH_COOKIE] || req.body?.refreshToken`, commented as a
+*"transitional fallback for one release so users with a stale cached bundle are not hard-locked
+out."*
+
+This substantially undercuts the HttpOnly-cookie migration shipped last session. The point of that
+migration was that a refresh token can no longer be read or replayed by script; while the body
+fallback stands, **any token exfiltrated from `localStorage` before the migration — or via any XSS
+since — remains fully usable** by posting it as JSON from any context. CORS does not help: it
+restricts who can *read* a cross-origin response, not who can send the request, and a
+server-side script is unconstrained either way.
+
+**The transitional window has already passed** — the cookie migration deployed last session and
+forced a one-time logout for every user, so no live client is still running a pre-cookie bundle.
+This fallback is now pure liability and is a two-line deletion. Round 1 missed it.
+
+**S-07 · Revocation-does-not-cover-reads, independently confirmed** — `server/src/auth/tenantGate.ts:38-41`
+Round 2's FINDING 1 is round 1's **R1-03**, found independently, and it rated the issue **HIGH**
+where round 1 rated it MEDIUM. Two independent passes reaching the same defect from different
+starting points is the strongest signal either round produced. **Treating it as HIGH.**
 
 ### REFUTED — checked and wrong
 
