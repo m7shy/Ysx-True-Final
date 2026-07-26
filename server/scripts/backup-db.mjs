@@ -1,8 +1,15 @@
-// Daily Neon backup via pg_dump. Free-tier insurance: Neon free PITR history
+// Daily backup: Neon (via pg_dump) AND the scraper's local state. Free-tier insurance: Neon free PITR history
 // is short, and this survives Neon account loss entirely. Run from server/:
 //   node scripts/backup-db.mjs
 // Intended to be wired to a Windows Scheduled Task (see docs/RECOVERY.md).
 // Requires pg_dump on PATH (PostgreSQL client tools) and DIRECT_URL in .env.
+//
+// The scraper half matters as much as the database half. Postgres holds the
+// leads; the scraper's "already evaluated this channel" state lives ONLY in
+// SQLite on this VM (SCRAPER_DIR/profiles/<slug>/tracking.db) — roughly 10k
+// processed-channel and 9.5k blacklist rows. Losing the VM without it means
+// re-crawling every channel already rejected, burning crawl budget and YouTube
+// quota for days. It was outside this script's scope until 2026-07-26.
 
 import 'dotenv/config';
 import { execFileSync } from 'node:child_process';
@@ -21,6 +28,46 @@ if (!url) {
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 const stamp = new Date().toISOString().slice(0, 10);
 const outFile = path.join(BACKUP_DIR, `ysx-${stamp}.dump`);
+
+function backupScraperState() {
+  // ── Scraper local state ──────────────────────────────────────────────────────
+  // tar is used rather than a zip lib to avoid adding a dependency; it ships with
+  // Git for Windows. --force-local stops tar reading "C:" as a remote host.
+  // The *.bak-* files are excluded: they are prior copies of tracking.db, so
+  // including them roughly triples the archive for no recovery value.
+  const scraperDir = process.env.SCRAPER_DIR
+    ? path.resolve(process.cwd(), process.env.SCRAPER_DIR)
+    : null;
+
+  if (!scraperDir || !fs.existsSync(path.join(scraperDir, 'profiles'))) {
+    console.warn('[backup] SCRAPER_DIR/profiles not found — skipping scraper state backup');
+  } else {
+    const scraperOut = path.join(BACKUP_DIR, `ysx-scraper-${stamp}.tar.gz`);
+    try {
+      execFileSync(
+        'tar',
+        ['--force-local', '--exclude=*.bak-*', '-czf', scraperOut, 'profiles'],
+        { cwd: scraperDir, stdio: 'pipe' },
+      );
+      const ssize = fs.statSync(scraperOut).size;
+      console.log(`[backup] Scraper state OK: ${scraperOut} (${Math.round(ssize / 1024)} KB)`);
+    } catch (err) {
+      // Never fail the whole backup because the scraper half failed — the
+      // database dump above is the more critical artifact.
+      console.error(`[backup] Scraper state FAILED: ${err.message}`);
+    }
+
+    for (const old of fs
+      .readdirSync(BACKUP_DIR)
+      .filter((f) => /^ysx-scraper-\d{4}-\d{2}-\d{2}\.tar\.gz$/.test(f))
+      .sort()
+      .reverse()
+      .slice(KEEP)) {
+      fs.unlinkSync(path.join(BACKUP_DIR, old));
+      console.log(`[backup] Pruned ${old}`);
+    }
+  }
+}
 
 let usedFallback = false;
 try {
@@ -64,7 +111,14 @@ async function jsonDump(dbUrl, file) {
   }
 }
 
-if (usedFallback) process.exit(0);
+if (usedFallback) {
+  // Must run before this early exit: on a VM without pg_dump (which is the
+  // normal case here) the fallback path is the ONLY path, so anything after
+  // this line never executes. The scraper backup silently did not run when
+  // it lived further down — and the script still reported success.
+  backupScraperState();
+  process.exit(0);
+}
 
 const size = fs.statSync(outFile).size;
 if (size < 10_000) {
@@ -72,6 +126,8 @@ if (size < 10_000) {
   process.exit(1);
 }
 console.log(`[backup] OK: ${outFile} (${Math.round(size / 1024)} KB)`);
+
+backupScraperState();
 
 // Prune to the newest KEEP dumps.
 const dumps = fs
