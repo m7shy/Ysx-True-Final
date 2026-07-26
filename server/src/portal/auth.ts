@@ -12,6 +12,7 @@ import {
 } from '../auth/clientJwt.js';
 import { createLoginToken, consumeLoginToken, hasUnexpiredMagicLink } from './tokens.js';
 import { sendPortalEmail, portalBaseUrl } from './mailer.js';
+import { setPortalRefreshCookie, clearPortalRefreshCookie, PORTAL_REFRESH_COOKIE } from '../auth/cookies.js';
 
 /**
  * Client-portal auth: password login, passwordless magic link, invite/set-
@@ -38,6 +39,10 @@ const setPasswordSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
 });
 
+// Body-supplied refresh token: accepted as a transitional fallback so that
+// clients running a stale cached bundle (pre-cookie migration) can still
+// refresh. Prefer the cookie when both are present. Remove this fallback
+// once every active bundle has been updated.
 const refreshSchema = z.object({ refreshToken: z.string().min(1, 'refreshToken is required') });
 
 function badRequest(res: Response, err: z.ZodError): void {
@@ -68,9 +73,12 @@ async function issueSession(cu: ClientUserRow, res: Response, status = 200): Pro
     where: { id: cu.clientId },
     select: { id: true, name: true, companyName: true },
   });
+  // Set the refresh token as an HttpOnly cookie — it never appears in the
+  // response body again so script cannot exfiltrate it.
+  const refreshToken = signClientRefreshToken(tokenInput(cu));
+  setPortalRefreshCookie(res, refreshToken);
   res.status(status).json({
     accessToken: signClientAccessToken(tokenInput(cu)),
-    refreshToken: signClientRefreshToken(tokenInput(cu)),
     clientUser: { id: cu.id, email: cu.email },
     client,
   });
@@ -190,14 +198,26 @@ router.post('/set-password', async (req: Request, res: Response) => {
   await issueSession(updated, res, 201);
 });
 
-/** POST /api/portal/auth/refresh — rotate the token pair; rejects bumped tokenVersion. */
+/**
+ * POST /api/portal/auth/refresh — rotate the token pair; rejects bumped tokenVersion.
+ *
+ * Reads the refresh token from the HttpOnly cookie (preferred) or the request
+ * body (transitional fallback for clients running a pre-cookie bundle).
+ */
 router.post('/refresh', async (req: Request, res: Response) => {
-  const parsed = refreshSchema.safeParse(req.body);
-  if (!parsed.success) return badRequest(res, parsed.error);
+  // Prefer the cookie; fall back to the body for one release so users with a
+  // stale cached bundle are not hard-locked out.
+  const rawToken: string | undefined =
+    req.cookies?.[PORTAL_REFRESH_COOKIE] || req.body?.refreshToken;
+
+  if (!rawToken) {
+    res.status(400).json({ code: 'VALIDATION', message: 'refreshToken is required' });
+    return;
+  }
 
   let claims;
   try {
-    claims = verifyClientRefreshToken(parsed.data.refreshToken);
+    claims = verifyClientRefreshToken(rawToken);
   } catch {
     res.status(401).json({ code: 'AUTH', message: 'Invalid or expired refresh token' });
     return;
@@ -209,9 +229,10 @@ router.post('/refresh', async (req: Request, res: Response) => {
     return;
   }
 
+  const refreshToken = signClientRefreshToken(tokenInput(cu));
+  setPortalRefreshCookie(res, refreshToken);
   res.json({
     accessToken: signClientAccessToken(tokenInput(cu)),
-    refreshToken: signClientRefreshToken(tokenInput(cu)),
   });
 });
 

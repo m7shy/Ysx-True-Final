@@ -6,6 +6,7 @@ import 'express-async-errors';
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +77,10 @@ app.use(
     credentials: true,
   })
 );
+
+// Parse Cookie headers so refresh-token cookies are available on req.cookies.
+// Must be mounted before any router that reads cookies.
+app.use(cookieParser());
 
 // Campaign open/click tracking pixel + click redirect + one-click unsubscribe —
 // deliberately unauthenticated (the recipient's mail client has no session);

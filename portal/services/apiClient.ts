@@ -1,35 +1,66 @@
 /**
  * Portal API client — same refresh-and-retry pattern as the CRM's
- * services/apiClient.ts, but with its own localStorage key and the
- * /api/portal/auth/refresh endpoint, so a CRM admin session and a client
- * session can coexist in one browser without colliding.
+ * services/apiClient.ts, against /api/portal/auth/refresh.
+ *
+ * The refresh token is NOT held here: the server sets it as an HttpOnly cookie
+ * (ysxportal_rt, scoped to the refresh path) which script cannot read, so an
+ * XSS can act during its execution window but cannot exfiltrate a durable
+ * credential. The access token is kept in memory only — deliberately not in
+ * localStorage — which is why bootstrapSession() below must run on startup to
+ * re-mint one from the cookie after a page reload.
+ *
+ * The CRM uses a different cookie name, so an admin session and a client
+ * session still coexist in one browser exactly as the two localStorage keys
+ * used to allow.
  */
 
-const STORAGE_KEY = 'ysx_client_auth';
+const LEGACY_STORAGE_KEY = 'ysx_client_auth';
 const API_BASE = ''; // same-origin (served at /portal by the backend; dev proxies /api)
 
 export interface PortalAuthState {
   accessToken: string;
-  refreshToken: string;
   clientUser: { id: string; email: string };
   client: { id: string; name: string; companyName: string | null } | null;
 }
 
+// In-memory only. Lost on reload by design — bootstrapSession() restores it.
+let authState: PortalAuthState | null = null;
+
 export function loadAuth(): PortalAuthState | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as PortalAuthState) : null;
-  } catch {
-    return null;
-  }
+  return authState;
 }
 
 export function saveAuth(state: PortalAuthState): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  authState = state;
 }
 
 export function clearAuth(): void {
-  localStorage.removeItem(STORAGE_KEY);
+  authState = null;
+}
+
+/**
+ * Drop the pre-cookie localStorage blob. It held an access token AND a
+ * long-lived refresh token in script-readable storage; nothing reads it now,
+ * so leaving it behind would preserve exactly the exposure this migration
+ * removes.
+ */
+export function purgeLegacyAuthStorage(): void {
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch {
+    /* storage unavailable — nothing to purge */
+  }
+}
+
+/**
+ * Startup re-auth. The access token lives in memory, so a reload always starts
+ * signed out; the refresh cookie is what actually carries the session. Returns
+ * true when a session was restored. Callers must await this before deciding to
+ * show the login screen, or every reload logs the client out.
+ */
+export async function bootstrapSession(): Promise<boolean> {
+  purgeLegacyAuthStorage();
+  return refreshTokens();
 }
 
 export class ApiError extends Error {
@@ -47,17 +78,22 @@ let refreshPromise: Promise<boolean> | null = null;
 async function refreshTokens(): Promise<boolean> {
   if (!refreshPromise) {
     refreshPromise = (async () => {
-      const auth = loadAuth();
-      if (!auth?.refreshToken) return false;
       try {
+        // No body: the refresh token rides along as the HttpOnly cookie, which
+        // requires credentials: 'include'. The response carries the new access
+        // token plus the identity payload, and re-sets the rotated cookie.
         const res = await fetch(`${API_BASE}/api/portal/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: auth.refreshToken }),
+          credentials: 'include',
         });
         if (!res.ok) return false;
         const data = await res.json();
-        saveAuth({ ...auth, accessToken: data.accessToken, refreshToken: data.refreshToken });
+        saveAuth({
+          accessToken: data.accessToken,
+          clientUser: data.clientUser,
+          client: data.client,
+        });
         return true;
       } catch {
         return false;
@@ -84,6 +120,7 @@ export async function apiRequest<T>(
         'Content-Type': 'application/json',
         ...(auth?.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}),
       },
+      credentials: 'include',
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
   };

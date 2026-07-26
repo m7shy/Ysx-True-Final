@@ -1,6 +1,6 @@
 import React from 'react';
 import { RouterProvider, useRouter, useQueryParam } from './router';
-import { loadAuth } from './services/apiClient';
+import { loadAuth, bootstrapSession } from './services/apiClient';
 import { PortalShell } from './components/PortalShell';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -39,10 +39,36 @@ const Routes: React.FC = () => {
   return <PortalShell>{page}</PortalShell>;
 };
 
-const App: React.FC = () => (
-  <RouterProvider>
-    <Routes />
-  </RouterProvider>
-);
+const App: React.FC = () => {
+  // The access token lives in memory only, so a page reload always starts
+  // signed out. The HttpOnly refresh cookie is what actually carries the
+  // session, so we must attempt a silent refresh BEFORE rendering routes —
+  // otherwise every reload would bounce an authenticated client to /login.
+  const [booting, setBooting] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    bootstrapSession().finally(() => {
+      if (!cancelled) setBooting(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (booting) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-noir">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/20 border-t-white/80" />
+      </div>
+    );
+  }
+
+  return (
+    <RouterProvider>
+      <Routes />
+    </RouterProvider>
+  );
+};
 
 export default App;

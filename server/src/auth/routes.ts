@@ -6,6 +6,7 @@ import { logger } from '../logger.js';
 import { hashPassword, verifyPassword } from './password.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from './jwt.js';
 import { requireAuth, requireUserId } from './middleware.js';
+import { setCrmRefreshCookie, clearCrmRefreshCookie, CRM_REFRESH_COOKIE } from './cookies.js';
 
 const router = express.Router();
 
@@ -14,6 +15,10 @@ const credentialsSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
 });
 
+// Body-supplied refresh token: accepted as a transitional fallback so that
+// clients running a stale cached bundle (pre-cookie migration) can still
+// refresh. Prefer the cookie when both are present. Remove this fallback
+// once every active bundle has been updated.
 const refreshSchema = z.object({
   refreshToken: z.string().min(1, 'refreshToken is required'),
 });
@@ -27,6 +32,20 @@ function issueTokens(user: { id: string; email: string; tokenVersion: number }) 
       tokenVersion: user.tokenVersion,
     }),
   };
+}
+
+/**
+ * Set the refresh token as an HttpOnly cookie and return only the access
+ * token (plus any extra fields) in the JSON body. The refresh token never
+ * appears in a response body again — script cannot read it from a cookie.
+ */
+function issueTokensWithCookie(
+  res: Response,
+  user: { id: string; email: string; tokenVersion: number },
+): { accessToken: string } {
+  const { accessToken, refreshToken } = issueTokens(user);
+  setCrmRefreshCookie(res, refreshToken);
+  return { accessToken };
 }
 
 function publicUser(user: { id: string; email: string; createdAt: Date; lastLoginAt: Date | null }) {
@@ -67,7 +86,7 @@ router.post('/signup', async (req: Request, res: Response) => {
   });
 
   logger.info({ userId: user.id }, 'User signed up');
-  res.status(201).json({ user: publicUser(user), ...issueTokens(user) });
+  res.status(201).json({ user: publicUser(user), ...issueTokensWithCookie(res, user) });
 });
 
 /**
@@ -94,21 +113,31 @@ router.post('/login', async (req: Request, res: Response) => {
   });
 
   logger.info({ userId: user.id }, 'User logged in');
-  res.json({ user: publicUser(updated), ...issueTokens(updated) });
+  res.json({ user: publicUser(updated), ...issueTokensWithCookie(res, updated) });
 });
 
 /**
  * POST /api/auth/refresh
  * Exchange a valid refresh token for a fresh token pair. Rejects tokens whose
  * `ver` no longer matches User.tokenVersion (invalidated everywhere).
+ *
+ * Reads the refresh token from the HttpOnly cookie (preferred) or the request
+ * body (transitional fallback for clients running a pre-cookie bundle).
  */
 router.post('/refresh', async (req: Request, res: Response) => {
-  const parsed = refreshSchema.safeParse(req.body);
-  if (!parsed.success) return badRequest(res, parsed.error);
+  // Prefer the cookie; fall back to the body for one release so users with a
+  // stale cached bundle are not hard-locked out.
+  const rawToken: string | undefined =
+    req.cookies?.[CRM_REFRESH_COOKIE] || req.body?.refreshToken;
+
+  if (!rawToken) {
+    res.status(400).json({ code: 'VALIDATION', message: 'refreshToken is required' });
+    return;
+  }
 
   let claims;
   try {
-    claims = verifyRefreshToken(parsed.data.refreshToken);
+    claims = verifyRefreshToken(rawToken);
   } catch {
     res.status(401).json({ code: 'AUTH', message: 'Invalid or expired refresh token' });
     return;
@@ -120,7 +149,7 @@ router.post('/refresh', async (req: Request, res: Response) => {
     return;
   }
 
-  res.json(issueTokens(user));
+  res.json(issueTokensWithCookie(res, user));
 });
 
 /**
@@ -135,6 +164,9 @@ router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
     where: { id: userId },
     data: { tokenVersion: { increment: 1 } },
   });
+  // Clear the refresh-token cookie so the browser stops sending a now-invalid
+  // token on future refresh attempts.
+  clearCrmRefreshCookie(res);
   logger.info({ userId }, 'User logged out of all sessions');
   res.json({ ok: true });
 });
@@ -178,7 +210,7 @@ router.post('/change-password', requireAuth, async (req: Request, res: Response)
   });
 
   logger.info({ userId }, 'User changed password (all other sessions evicted)');
-  res.json({ user: publicUser(updated), ...issueTokens(updated) });
+  res.json({ user: publicUser(updated), ...issueTokensWithCookie(res, updated) });
 });
 
 /**

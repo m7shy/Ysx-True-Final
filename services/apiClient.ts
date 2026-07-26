@@ -1,4 +1,4 @@
-import { getAccessToken, getRefreshToken, saveAuth, clearAuth, loadAuth } from './authStorage';
+import { getAccessToken, setAccessToken, clearAuth } from './authStorage';
 
 export const API_URL = (import.meta as any).env?.VITE_API_URL ?? '';
 
@@ -15,30 +15,29 @@ export class ApiError extends Error {
 let refreshPromise: Promise<boolean> | null = null;
 
 /**
- * Exchange the stored refresh token for a fresh pair. De-duplicated across
- * concurrent 401s. Exported so other authenticated fetch wrappers (e.g.
- * services/mailGateway.ts, which needs its own error-mapping on top of the
- * raw Response) can get the same retry semantics without duplicating the
- * refresh dance.
+ * Refresh access token using the HttpOnly refresh token cookie.
+ * De-duplicated across concurrent 401s.
  */
 export async function refreshAccessToken(): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
-    const refreshToken = getRefreshToken();
-    const current = loadAuth();
-    if (!refreshToken || !current) return false;
-
     try {
       const res = await fetch(`${API_URL}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken }),
+        credentials: 'include',
       });
       if (!res.ok) return false;
       const data = await res.json();
-      saveAuth({ ...current, accessToken: data.accessToken, refreshToken: data.refreshToken });
-      return true;
+      if (data.accessToken) {
+        // Only the token: a refresh re-mints credentials for the SAME identity,
+        // so the stored user profile must not be clobbered. On boot the profile
+        // is null here and AuthContext fills it from /api/auth/me right after.
+        setAccessToken(data.accessToken);
+        return true;
+      }
+      return false;
     } catch {
       return false;
     }
@@ -83,6 +82,7 @@ export async function apiRequest<T = any>(
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
+      credentials: 'include',
       body: body === undefined ? undefined : isFormData ? (body as FormData) : JSON.stringify(body),
     });
   };
@@ -126,6 +126,7 @@ export async function apiDownload(path: string, filename: string): Promise<void>
     const token = getAccessToken();
     return fetch(`${API_URL}${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
     });
   };
 

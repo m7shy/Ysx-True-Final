@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { apiRequest, ApiError } from '../services/apiClient';
-import { loadAuth, saveAuth, clearAuth, StoredAuthUser } from '../services/authStorage';
+import { apiRequest, refreshAccessToken, ApiError } from '../services/apiClient';
+import { saveAuth, clearAuth, StoredAuthUser } from '../services/authStorage';
 
 interface AuthContextType {
   user: StoredAuthUser | null;
@@ -14,19 +14,20 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<StoredAuthUser | null>(() => loadAuth()?.user ?? null);
+  const [user, setUser] = useState<StoredAuthUser | null>(null);
   const [isHydrating, setIsHydrating] = useState(true);
 
-  // Validate the stored access token (and silently refresh it if needed) once on load.
+  // On boot, perform silent re-auth using the HttpOnly refresh token cookie.
   useEffect(() => {
-    const stored = loadAuth();
-    if (!stored) {
-      setIsHydrating(false);
-      return;
-    }
-
-    apiRequest('/api/auth/me')
-      .then((data) => setUser(data.user))
+    refreshAccessToken()
+      .then((success) => {
+        if (!success) {
+          clearAuth();
+          setUser(null);
+          return;
+        }
+        return apiRequest('/api/auth/me').then((data) => setUser(data.user));
+      })
       .catch(() => {
         clearAuth();
         setUser(null);
@@ -40,7 +41,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       body: { email, password },
       skipAuthRetry: true,
     });
-    saveAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user });
+    saveAuth({ accessToken: data.accessToken, user: data.user });
     setUser(data.user);
   };
 
@@ -48,6 +49,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const signup = (email: string, password: string) => authenticate('signup', email, password);
 
   const logout = () => {
+    apiRequest('/api/auth/logout', { method: 'POST', skipAuthRetry: true }).catch(() => {});
     clearAuth();
     setUser(null);
   };

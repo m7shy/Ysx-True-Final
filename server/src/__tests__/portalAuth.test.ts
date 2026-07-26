@@ -278,11 +278,16 @@ describe('portal auth HTTP flow', () => {
       .post('/api/portal/auth/set-password')
       .send({ token: invite, password: 'a-real-password' });
     expect(setPw.status).toBe(201);
-    expect(setPw.body.refreshToken).toBeTruthy();
+
+    // The refresh token is now an HttpOnly cookie rather than a body field.
+    const cookie = (setPw.headers['set-cookie'] as unknown as string[] | undefined)
+      ?.find((c) => c.startsWith('ysxportal_rt='));
+    expect(cookie).toMatch(/HttpOnly/i);
+    const refreshToken = decodeURIComponent(cookie!.split(';')[0].split('=')[1]);
 
     const refreshed = await request(app)
       .post('/api/portal/auth/refresh')
-      .send({ refreshToken: setPw.body.refreshToken });
+      .send({ refreshToken });
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.accessToken).toBeTruthy();
   });

@@ -78,6 +78,19 @@ describe('jwt', () => {
   });
 });
 
+
+// The refresh token is no longer returned in the response body — it is set as
+// an HttpOnly cookie. These helpers read it back off set-cookie so the tests
+// exercise the same path a browser would.
+function refreshCookie(res: any): string | undefined {
+  const raw = res.headers['set-cookie'] as string[] | undefined;
+  return raw?.find((c) => c.startsWith('ysxflow_rt='));
+}
+function refreshTokenFrom(res: any): string {
+  const c = refreshCookie(res);
+  return c ? decodeURIComponent(c.split(';')[0].split('=')[1]) : '';
+}
+
 describe('auth HTTP flow', () => {
   const email = 'tester@example.com';
   const password = 'sup3rsecret!';
@@ -86,7 +99,9 @@ describe('auth HTTP flow', () => {
     const signup = await request(app).post('/api/auth/signup').send({ email, password });
     expect(signup.status).toBe(201);
     expect(signup.body.accessToken).toBeTruthy();
-    expect(signup.body.refreshToken).toBeTruthy();
+    // Refresh token now rides in an HttpOnly cookie, never the body.
+    expect(signup.body.refreshToken).toBeUndefined();
+    expect(refreshCookie(signup)).toMatch(/HttpOnly/i);
     expect(signup.body.user.email).toBe(email);
     expect(signup.body.user).not.toHaveProperty('passwordHash');
 
@@ -107,7 +122,7 @@ describe('auth HTTP flow', () => {
     // Refresh exchange.
     const refresh = await request(app)
       .post('/api/auth/refresh')
-      .send({ refreshToken: login.body.refreshToken });
+      .send({ refreshToken: refreshTokenFrom(login) });
     expect(refresh.status).toBe(200);
     expect(refresh.body.accessToken).toBeTruthy();
 
@@ -138,7 +153,8 @@ describe('logout-all', () => {
 
   it('invalidates a previously issued refresh token', async () => {
     const signup = await request(app).post('/api/auth/signup').send({ email, password });
-    const { accessToken, refreshToken } = signup.body;
+    const accessToken = signup.body.accessToken;
+    const refreshToken = refreshTokenFrom(signup);
 
     const before = await request(app).post('/api/auth/refresh').send({ refreshToken });
     expect(before.status).toBe(200);
@@ -188,7 +204,7 @@ describe('change-password', () => {
   it('on success, evicts every other session but returns a fresh working pair', async () => {
     const login = await request(app).post('/api/auth/login').send({ email, password });
     const oldAccessToken = login.body.accessToken;
-    const oldRefreshToken = login.body.refreshToken;
+    const oldRefreshToken = refreshTokenFrom(login);
 
     const change = await request(app)
       .post('/api/auth/change-password')
@@ -196,7 +212,8 @@ describe('change-password', () => {
       .send({ currentPassword: password, newPassword: 'brand-new-pass-1' });
     expect(change.status).toBe(200);
     expect(change.body.accessToken).toBeTruthy();
-    expect(change.body.refreshToken).toBeTruthy();
+    expect(change.body.refreshToken).toBeUndefined();
+    expect(refreshCookie(change)).toMatch(/HttpOnly/i);
 
     // The old refresh token (pre-change tokenVersion) is now revoked.
     const oldRefresh = await request(app).post('/api/auth/refresh').send({ refreshToken: oldRefreshToken });
