@@ -56,6 +56,59 @@ a capacity blip, so retrying is wasted — read the reset window out of the erro
 cheap probe call before planning a multi-unit `agy` fan-out, since quota is consumed per call
 regardless of whether the deliverable is successfully captured.
 
+## agy — the silent rc=0 no-op recurs on Sonnet 4.6, not just Opus (2026-07-26)
+Previously logged against `claude-opus-4-6-thinking`; hit again on `claude-sonnet-4-6`. First call
+on the Receipt task: exit 0, **443 bytes of narration** ("Now let me read all the relevant
+files..."), no report file, and `git status` byte-identical to before. A plain retry of the *same
+prompt* on the *same model* then did the work correctly — so this is a transient per-call failure,
+not a model-capability limit. Retry once before escalating a tier; don't conclude the model can't
+do the task.
+
+## agy worker — skips its own report file while doing the real work (2026-07-26)
+The retried Receipt run edited four files correctly but **never wrote the report file** it was
+explicitly told to write, and exited 0. The inverse of the failure above: real work, absent
+deliverable. Reinforces §5.20/§5.23 — the only trustworthy success signal is a content hash of
+the source tree plus your own `tsc`/`vitest` run. Do not gate on the report file alone either;
+gate on observable change to the tree.
+
+## agy worker — shipped `await` inside a non-async arrow (2026-07-26)
+Third consecutive session in which a worker shipped code that does not compile while its task said
+to run `tsc`. This time: wrapping an existing call in a retry helper as
+`withUniqueRetry(() => prisma.invoice.create({ number: await nextNumber(...) }))` — the arrow is
+not `async`, so `TS1308`. One-character fix (`async () =>`), instant `tsc` failure, and it still
+shipped. Assume every delegated edit is uncompiled until you personally run `tsc`.
+
+## agy worker — writes tests it never runs, that assert the wrong thing (2026-07-26)
+The Receipt worker's retry test seeded a collision at `RCPT-0001` and asserted the result would be
+`RCPT-0002`. Actual result `RCPT-0005`: earlier tests in the same file had already pushed the
+tenant's receipt count to 4, so the seeded collision was never reached and **the retry path never
+executed** — the test would have passed just as happily with the retry deleted. Two lessons:
+- delegated tests are often order-dependent against a module-level fake; derive expected values
+  from live state rather than hardcoding them.
+- always re-run the suite with the fix *disabled* and confirm the new tests actually fail. Doing
+  that here proved all three rewritten tests were genuine (3 failed / 30 passed with
+  `maxAttempts = 1`).
+
+## This repo — `prisma generate` writes to the ROOT node_modules, not `server/`'s (2026-07-26)
+`server/package.json`'s own `prisma:generate` script runs
+`prisma generate --schema=../prisma/schema.prisma`, and prisma resolves its output to the
+node_modules nearest the **schema** — i.e. `<repo>/node_modules/@prisma/client`. But `server/` has
+its own `@prisma/client` install, and that is what `require.resolve('@prisma/client')` returns from
+`server/`. So after a schema change the documented command leaves `server/node_modules/.prisma/client`
+**stale**, and `tsc` fails with a confusing "property does not exist on type ...CreateInput" that
+looks like a code error rather than a stale-client error.
+
+Symptom to recognise: `tsc` rejects a field you can see in `schema.prisma`, and
+`grep 'export type <Model>UncheckedCreateInput' -A6 server/node_modules/.prisma/client/index.d.ts`
+does not list it while the root copy does.
+
+Workaround used: `cp -r node_modules/.prisma/client/. server/node_modules/.prisma/client/` after
+generating. **This has a production implication** — the same staleness would hit the prod checkout
+on deploy, and there it is not a compile error but a *runtime* one (Prisma validates writes against
+the generated client, so `receipt: { create: { userId } }` would throw on an unknown field). Any
+deploy carrying the Receipt migration must confirm the server's client actually contains
+`Receipt.userId` before restarting the service.
+
 ## This repo — multiple checkouts, easy to review the wrong one
 Six YSXXS checkouts have existed on this VM. **Prod is `C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS`** (confirm via `nssm get ysx-backend AppDirectory`). The working copy is `C:\Users\banjigum1\Documents\YSXXS\YSXXS` (has a `THIS-IS-NOT-PROD.md` marker). Always pin the absolute path in delegated prompts and explicitly forbid the others.
 
