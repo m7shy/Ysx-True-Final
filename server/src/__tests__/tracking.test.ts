@@ -144,9 +144,10 @@ describe('GET /t/c/:token (click redirect)', () => {
     expect(store.campaigns.get('camp1').clickedCount).toBe(1);
   });
 
-  it('still redirects for a bad token, without recording an event', async () => {
+  it('returns 404 for a bad token and does not redirect or record an event', async () => {
     const res = await request(app).get(`/t/c/garbage.token?u=${encodedUrl('https://example.com')}`);
-    expect(res.status).toBe(302);
+    expect(res.status).toBe(404);
+    expect(res.text).toContain('Invalid or expired tracking link');
     expect(store.events).toHaveLength(0);
   });
 

@@ -57,7 +57,10 @@ router.get('/', async (req: Request, res: Response) => {
 
 function csvEscape(v: unknown): string {
   const s = v == null ? '' : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  const isFormula = /^[=+\-@\t\r]/.test(s);
+  const formatted = isFormula ? `'${s}` : s;
+  const needsQuotes = isFormula || /[",\n]/.test(formatted);
+  return needsQuotes ? `"${formatted.replace(/"/g, '""')}"` : formatted;
 }
 
 /** GET /api/leads/export — all of the tenant's leads as leads.csv. */

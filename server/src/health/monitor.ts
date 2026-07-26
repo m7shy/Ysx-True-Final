@@ -51,7 +51,13 @@ export async function runDeepChecks(): Promise<DeepHealth> {
       await prisma.$queryRaw`SELECT 1`;
       checks.db = { status: 'ok', detail: 'round-trip ok' };
     } catch (err) {
-      checks.db = { status: 'critical', detail: `query failed: ${err instanceof Error ? err.message : String(err)}` };
+      // Deliberately generic: this payload is reachable by an uptime monitor
+      // holding only HEALTH_TOKEN, and Prisma/pg connection errors embed the
+      // datasource host, port, database name and often the username
+      // ("Can't reach database server at ep-xxx.neon.tech:5432"). The real
+      // error goes to the log, where it is already access-controlled.
+      logger.error({ err }, 'Deep health: database round-trip failed');
+      checks.db = { status: 'critical', detail: 'database round-trip failed' };
     }
   }
 

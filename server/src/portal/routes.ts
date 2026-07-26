@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 
 import { prisma } from '../db/prisma.js';
@@ -18,9 +19,12 @@ const router = express.Router();
 
 const revisionSchema = z.object({ note: z.string().trim().min(1, 'Tell us what to change') });
 const messageSchema = z.object({ body: z.string().trim().min(1, 'Message body is required') });
+// Bounded on purpose: each submission emails the agency owner through the
+// owner's own metered mailbox — the same quota the CRM's campaign sending
+// draws on — so an unbounded body was a way for one client to burn it.
 const requestSchema = z.object({
-  title: z.string().trim().min(1, 'A short title is required'),
-  details: z.string().trim().optional(),
+  title: z.string().trim().min(1, 'A short title is required').max(200, 'Title is too long'),
+  details: z.string().trim().max(5000, 'Details are too long').optional(),
 });
 
 function badRequest(res: Response, err: z.ZodError): void {
@@ -183,7 +187,21 @@ router.post('/projects/:id/messages', async (req: Request, res: Response) => {
  * POST /api/portal/requests — "Start New Project". No Project row is created;
  * the agency gets an email and follows up. Response reassures the client.
  */
-router.post('/requests', async (req: Request, res: Response) => {
+// Keyed on the authenticated clientUserId, NOT the IP: the caller is already
+// authenticated, so identity is the thing to bound — and an IP key would both
+// let one client rotate address to escape it and lump several clients behind
+// one office NAT into a shared budget. Each submission spends one unit of the
+// tenant's paid email quota, so this is a spend limit as much as a spam limit.
+const requestLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.clientAuth?.clientUserId ?? 'anonymous',
+  message: { code: 'RATE_LIMITED', message: 'Too many requests — please try again later' },
+});
+
+router.post('/requests', requestLimiter, async (req: Request, res: Response) => {
   const ctx = requireClientCtx(req);
   const parsed = requestSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, parsed.error);

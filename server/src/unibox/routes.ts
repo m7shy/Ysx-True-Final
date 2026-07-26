@@ -5,8 +5,9 @@ import { z } from 'zod';
 import { LeadStatus, type Lead } from '@prisma/client';
 
 import { prisma } from '../db/prisma.js';
+import { logger } from '../logger.js';
 import { requireUserId } from '../auth/middleware.js';
-import { pickRotationMailbox } from '../creds/mailboxStore.js';
+import { pickRotationMailbox, recordMailboxSend } from '../creds/mailboxStore.js';
 import { sendFromMailbox } from '../mail/smtpGateway.js';
 import { enforceDnc } from '../leads/dnc.js';
 
@@ -175,6 +176,19 @@ router.post('/threads/:id/reply', async (req: Request, res: Response) => {
     const lead = await findLeadOr404(userId, req.params.id, res);
     if (!lead) return;
 
+    // Last line of defence for do-not-contact. The thread stays visible after
+    // a lead is set to DNC and the reply box still renders, so without this
+    // check a manual reply is the one send path that can still reach an
+    // address which explicitly opted out — everything automated is already
+    // blocked by enforceDnc.
+    if (lead.status === LeadStatus.DNC) {
+      res.status(409).json({
+        code: 'DNC',
+        message: 'This lead is marked do-not-contact — replying would breach their opt-out',
+      });
+      return;
+    }
+
     const mailbox = await pickRotationMailbox(userId);
     if (!mailbox) {
       res.status(409).json({ code: 'NO_MAILBOX', message: 'No connected mailbox is available to send from' });
@@ -186,6 +200,19 @@ router.post('/threads/:id/reply', async (req: Request, res: Response) => {
       subject: `Re: Conversation with ${lead.name}`,
       text: content,
     });
+
+    // Without this the send is invisible to rotation: pickRotationMailbox
+    // orders by lastSentAt and filters on sentToday < dailyLimit, so manual
+    // replies would keep selecting the SAME mailbox and sail past its daily
+    // warm-up cap — the limit that exists to stop the provider throttling it.
+    //
+    // Swallowed on failure: the email is already gone, so surfacing a counter
+    // error as a failed reply would invite the user to retry and send twice.
+    try {
+      await recordMailboxSend(mailbox);
+    } catch (err) {
+      logger.error({ err, mailboxId: mailbox.id }, 'Unibox reply sent but send-count update failed');
+    }
 
     const manualMessages: ManualMessage[] = Array.isArray(intelligenceOf(lead).manualMessages)
       ? intelligenceOf(lead).manualMessages

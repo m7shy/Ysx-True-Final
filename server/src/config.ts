@@ -6,7 +6,12 @@ import { z } from 'zod';
 const configSchema = z.object({
   PORT: z.coerce.number().default(3001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  WEB_ORIGIN: z.string().default('http://localhost:5173'),
+  // .url() not .string(): this value is fed to `new URL()` in
+  // auth/oauthRoutes.ts from inside a catch block, so a value missing its
+  // scheme (an easy .env typo) threw out of the handler and — before the
+  // error middleware existed — took the process down. Verified the live
+  // production value passes before tightening this.
+  WEB_ORIGIN: z.string().url().default('http://localhost:5173'),
 
   // PostgreSQL (Neon) connection strings consumed by Prisma's datasource block.
   // DATABASE_URL: pooled (PgBouncer) URL used at runtime.
@@ -23,7 +28,10 @@ const configSchema = z.object({
   // ── Auth (JWT) ──────────────────────────────────────────────────────────────
   // Signing secret for access + refresh tokens. Required in production; a fixed
   // dev fallback is used only for NODE_ENV=development|test (see auth/jwt.ts).
-  JWT_SECRET: z.string().optional(),
+  // HS256 with a short/low-entropy key is offline-brute-forceable from a
+  // single captured token, after which an attacker forges tokens for any user.
+  // Verified the live production secret already exceeds this before adding it.
+  JWT_SECRET: z.string().min(32).optional(),
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
 
@@ -51,14 +59,14 @@ const configSchema = z.object({
   // redirect URI registered in the Google/Microsoft app registration. When unset,
   // the callback URL is derived from the incoming request origin (fine for local
   // dev; set it explicitly behind a proxy / in production).
-  OAUTH_REDIRECT_BASE_URL: z.string().optional(),
+  OAUTH_REDIRECT_BASE_URL: z.string().url().optional(),
 
   // ── Campaign open/click tracking ─────────────────────────────────────────
   // Public base URL used to build tracking pixel/redirect links embedded in
   // sent emails (<base>/t/o/:token, <base>/t/c/:token) — see
   // campaigns/trackedHtml.ts. Falls back to OAUTH_REDIRECT_BASE_URL, then a
   // localhost default for dev.
-  PUBLIC_BASE_URL: z.string().optional(),
+  PUBLIC_BASE_URL: z.string().url().optional(),
   // HMAC secret for signing tracking tokens (campaigns/trackingToken.ts).
   // Falls back to JWT_SECRET so no extra config is required in most setups.
   TRACKING_SECRET: z.string().optional(),
@@ -93,6 +101,14 @@ const configSchema = z.object({
   PORTAL_SMTP_FROM: z.string().optional(), // defaults to PORTAL_SMTP_USER
   // Where watchdog alerts go. Unset = watchdog logs only, never emails.
   ALERT_EMAIL: z.string().optional(),
+
+  // Shared secret for GET /api/health/deep. That payload exposes worker tick
+  // timings, mailbox counts, free disk and alerting config — a precise map of
+  // the deployment plus a signal for when the operator is blind — so it must
+  // not be world-readable. When set, an external uptime monitor authenticates
+  // with it; when unset, the endpoint falls back to requiring a normal admin
+  // session (never anonymous).
+  HEALTH_TOKEN: z.string().min(16).optional(),
 
   SCRAPER_DIR: z.string().optional(),
   PYTHON_BIN: z.string().default('python'),

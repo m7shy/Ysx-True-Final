@@ -10,6 +10,7 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { timingSafeEqual } from 'node:crypto';
 
 import { config } from './config.js';
 import { logger } from './logger.js';
@@ -114,7 +115,30 @@ app.get('/api/health', (_req, res) => {
 // Deep health for humans + external uptime monitors (UptimeRobot etc.):
 // DB round-trip, worker tick freshness, mailbox health, disk, alerting.
 // 503 only on critical (DB down) so uptime monitors page on real outages.
-app.get('/api/health/deep', async (_req, res) => {
+//
+// NOT public: the payload maps the deployment (worker liveness, mailbox
+// counts, free disk, whether alerting is even configured) and previously
+// echoed raw Prisma errors carrying the database host. Authenticated by a
+// shared HEALTH_TOKEN when one is configured — so an external monitor can
+// poll it — and otherwise by a normal admin session. Never anonymous.
+const healthTokenGuard: express.RequestHandler = (req, res, next) => {
+  const expected = config.HEALTH_TOKEN;
+  if (!expected) return requireAuth(req, res, next);
+
+  // Header is preferred; the query fallback exists because some uptime
+  // monitors cannot send custom headers. Query strings land in access logs,
+  // so treat a token used that way as lower-trust and rotate it if leaked.
+  const supplied = req.get('x-health-token') ?? (typeof req.query.token === 'string' ? req.query.token : '');
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    res.status(401).json({ code: 'AUTH', message: 'Unauthorized' });
+    return;
+  }
+  next();
+};
+
+app.get('/api/health/deep', healthTokenGuard, async (_req, res) => {
   const health = await runDeepChecks();
   res.status(health.status === 'critical' ? 503 : 200).json(health);
 });

@@ -93,32 +93,45 @@ router.get('/c/:token', async (req: Request, res: Response) => {
     return;
   }
 
-  try {
-    const recipientId = verifyTrackingToken(req.params.token);
-    if (recipientId) {
-      const recipient = await loadRecipient(recipientId);
-      if (recipient) {
-        await prisma.trackingEvent.create({
-          data: {
-            userId: recipient.userId,
-            leadId: recipient.leadId,
-            campaignId: recipient.campaignId,
-            type: TrackingEventType.CLICKED,
-            meta: { url: target, userAgent: req.get('user-agent') ?? null, ip: req.ip ?? null },
-          },
-        });
-        await prisma.campaign.update({
-          where: { id: recipient.campaignId },
-          data: { clickedCount: { increment: 1 } },
-        });
-        await stopRecipientForEvent(recipient.id, 'CLICKED');
-      }
-    }
-  } catch (err) {
-    logger.error({ err }, 'Click-tracking redirect failed');
+  const recipientId = verifyTrackingToken(req.params.token);
+  if (!recipientId) {
+    res.status(404).send('Invalid or expired tracking link');
+    return;
   }
 
-  res.redirect(302, target);
+  try {
+    const recipient = await loadRecipient(recipientId);
+    if (!recipient) {
+      res.status(404).send('Invalid or expired tracking link');
+      return;
+    }
+
+    let targetHost = '';
+    try {
+      targetHost = new URL(target).hostname;
+    } catch {}
+    logger.info({ recipientId: recipient.id, campaignId: recipient.campaignId, targetHost, target }, 'Click-tracking redirect verified');
+
+    await prisma.trackingEvent.create({
+      data: {
+        userId: recipient.userId,
+        leadId: recipient.leadId,
+        campaignId: recipient.campaignId,
+        type: TrackingEventType.CLICKED,
+        meta: { url: target, userAgent: req.get('user-agent') ?? null, ip: req.ip ?? null },
+      },
+    });
+    await prisma.campaign.update({
+      where: { id: recipient.campaignId },
+      data: { clickedCount: { increment: 1 } },
+    });
+    await stopRecipientForEvent(recipient.id, 'CLICKED');
+
+    res.redirect(302, target);
+  } catch (err) {
+    logger.error({ err }, 'Click-tracking redirect failed');
+    res.status(500).send('Tracking redirect failed');
+  }
 });
 
 // ── One-click unsubscribe ─────────────────────────────────────────────────────

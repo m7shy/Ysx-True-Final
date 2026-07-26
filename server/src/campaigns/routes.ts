@@ -323,9 +323,12 @@ router.delete('/:id', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-function csvEscape(value: string): string {
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
+function csvEscape(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  const isFormula = /^[=+\-@\t\r]/.test(s);
+  const formatted = isFormula ? `'${s}` : s;
+  const needsQuotes = isFormula || /[",\n]/.test(formatted);
+  return needsQuotes ? `"${formatted.replace(/"/g, '""')}"` : formatted;
 }
 
 /**

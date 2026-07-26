@@ -2,6 +2,7 @@ import { prisma } from '../db/prisma.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
 import { sendFromMailbox } from '../mail/smtpGateway.js';
+import { recordMailboxSend } from '../creds/mailboxStore.js';
 import { sendMail } from '../mail/smtpClient.js';
 
 /**
@@ -57,6 +58,20 @@ export async function sendPortalEmail(
         text: input.text,
         html: input.html,
       });
+      // Portal mail (invites, magic links, invoice notices) goes out through
+      // the same mailbox the campaign engine uses, so it has to count against
+      // the same daily warm-up limit. Without this the mailbox under-reports
+      // and campaign sending silently overshoots what the provider tolerates.
+      //
+      // Deliberately in its own try/catch, NOT the surrounding one: the email
+      // has already left at this point, so a failed counter write must never
+      // be mistaken for a failed send and trigger the fallback path below —
+      // that would deliver the same message to the client twice.
+      try {
+        await recordMailboxSend(mailbox);
+      } catch (err) {
+        logger.error({ err, userId, mailboxId: mailbox.id }, 'Portal email sent but send-count update failed');
+      }
       logger.info({ userId, to: input.to, subject: input.subject }, 'Portal email sent');
       return;
     } catch (err) {
