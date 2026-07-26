@@ -1,5 +1,138 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-26 (later) — Next-steps 1–4 done, #6 designed. Committed, NOT pushed, NOT deployed.
+
+**Context:** Direct continuation of the entry below, working its "Next steps" list. User chose:
+all items, research via Gemini, code via `agy` (Sonnet 4.6) with independent verification here,
+and **commit only — no deploy.** Work in the **Documents checkout** on `phase5-frontend-wiring`.
+
+**4 commits, `9de5ae2..6541c02`. Not pushed to origin and not deployed** — prod is still running
+`91564a0`. Nothing in this entry is live yet.
+
+### ⚠️ Two of the previous entry's own next-steps were wrong as written
+
+Both were caught by reading the code before delegating, and a worker handed either instruction
+verbatim would have shipped the bug:
+
+1. **"needs a migration (`@@unique` on `Receipt.number`)" would have been a multi-tenancy bug.**
+   Receipt numbers are sequential *per tenant* (`nextNumber()` counts through
+   `payment → invoice → userId`), so `RCPT-0001` legitimately exists once per tenant. A global
+   unique on `number` would make the **second tenant ever to be paid fail permanently.** `Invoice`
+   gets this right with `@@unique([userId, number])`; `Receipt` had no `userId` column to do the
+   same. Fixed by adding one.
+2. **"Sign the tracking-click redirect target into the token … (a small schema/token-format
+   change)" needed neither.** Binding the target into a domain-separated HMAC leaves both the
+   schema and the URL shape untouched.
+
+### What shipped
+
+**`Receipt.number` per-tenant uniqueness + P2002 retry (`132f934`).** `Receipt.userId` + relation
++ `@@unique([userId, number])`; hand-written migration verified byte-for-byte against
+`prisma migrate diff --from-schema-datasource --to-schema-datamodel` (emits exactly those three
+statements, no other drift). Added `withUniqueRetry()` — bounded 3-attempt P2002 retry — applied
+to mark-paid *and* invoice creation, since there was **no P2002 handling anywhere in `server/src`**
+and concurrent invoice creation had the same latent 500. The retry wraps the **entire**
+`$transaction`, not the inside: on throw Prisma rolls back the status claim so the retry re-claims
+atomically; retrying inside would see its own `PAID` write, match 0 rows, and return a bogus 409.
+P2002 is matched **by error code, not `instanceof`** — this repo resolves `@prisma/client` from
+two node_modules trees, and an error raised through one copy is not an `instanceof` the class
+imported from the other.
+
+**Click-redirect target bound into the token (`7e76529`).** HMAC input is now
+`"c" NUL recipientId NUL target`. The `"c"` prefix domain-separates click tokens from
+pixel/unsubscribe tokens so neither can be replayed as the other; NUL separators keep
+`("a","bc")` and `("ab","c")` distinct. `signTrackingToken` untouched (pixel/unsub have no
+target). Only `clickUrl()` changed, and both campaign and follow-up sends go through
+`buildTrackedEmail`, so both are covered.
+**Deliberately breaking: click links in already-sent mail now 404.** Chosen after probing prod —
+1 campaign recipient and 2 CLICKED events in all of history. A fallback would have preserved the
+exact hole for two historical clicks.
+
+**Verified:** server `tsc` clean, **vitest 175/175**, root `tsc` clean. Every new test was
+confirmed to **fail without its fix** — the receipt tests with `maxAttempts=1` (3 failed), the
+domain-separation test with the fix reverted, and the replay test by sabotaging target binding in
+the HMAC while leaving everything else intact.
+
+### Done outside code
+
+- **`HEALTH_TOKEN` is SET in prod `server/.env`** (43 chars, backup `.env.bak-20260726-healthtoken`,
+  key count 34→35). The endpoint code was already complete — this was config only. **Not active
+  until the service restarts.** See USER TO-DO.
+- **SPF answer verified against live DNS, not just docs** (Gemini cited only a generic KB root).
+  `mxsspf.sendpulse.com` is real and `sendpulse.com` publishes that include; their `smtp-pulse.com`
+  uses a sibling `mxsmtp.sendpulse.com` that resolves to the **identical 6 ip4 ranges**, so either
+  works. Merged record and rationale are in `docs/RECOVERY.md` §8.
+- **Async bounce/DSN ingestion designed, not built** — `.plans/design-bounce-dsn-ingestion.md`.
+  Confirmed the gap in code: both bounce paths fire *only* from a synchronous SMTP error, while
+  Gmail/O365 accept the message and bounce later by async DSN. So `bouncedCount` stays 0 in the
+  real send path and the auto-pause **can never fire.** `replyCheck.ts` already has the IMAP
+  plumbing and Message-ID matching a DSN poller needs.
+
+### 🔴 Deploy hazard discovered — read before deploying this
+
+`prisma generate` (including `server/`'s own `npm run prisma:generate`) writes to the **root**
+`node_modules`, because prisma resolves output to the node_modules nearest the *schema*. But
+`server/` has its own `@prisma/client` install, and that is what `require.resolve` returns from
+`server/`. So the documented command leaves `server/node_modules/.prisma/client` **stale**.
+
+Here that surfaced as a confusing `tsc` error. **On prod it would be a runtime failure**, since
+Prisma validates writes against the generated client — `receipt: { create: { userId } }` would
+throw on an unknown field. **Any deploy carrying this migration must confirm
+`server/node_modules/.prisma/client/index.d.ts` actually contains `Receipt.userId` before
+restarting the service.** Workaround used here:
+`cp -r node_modules/.prisma/client/. server/node_modules/.prisma/client/`.
+
+### Delegation notes (details in `.plans/known-failures.md`, `.plans/cost-ledger.md`)
+
+`agy` on Sonnet 4.6 produced a correct schema + migration and a correct click-token
+implementation, but across two units it also: returned a **silent rc=0 no-op** on the first call
+(443 bytes of narration, zero edits — cleared on a plain retry of the same prompt/model, so it is
+transient, not a capability limit); **never wrote its report file** on either successful unit;
+shipped **`await` inside a non-async arrow** (`TS1308`) despite being told to run `tsc`; **skipped
+`prisma generate`**; and wrote a retry test asserting `RCPT-0002` when the answer was `RCPT-0005`
+— earlier tests had pushed the tenant's count to 4, so the seeded collision was never reached and
+**the retry path never executed.** That test would have passed with the retry deleted.
+
+Rework done by hand was roughly as large as the delegation saved. `cost-ledger.md` records
+plainly that delegation did not clearly pay for itself at this size and blast radius.
+
+Also fixed in the test harness: the in-memory `$transaction` fake had **no rollback**, which would
+have let the mark-paid retry test pass against broken behaviour, since the retry's correctness
+depends entirely on a failed attempt un-claiming `PAID`.
+
+### USER TO-DO (in priority order)
+
+1. **Restart the backend so `HEALTH_TOKEN` takes effect** — elevated
+   `Restart-Service -Name ysx-backend -Force`. Then create the UptimeRobot monitor:
+   URL `https://crm.ysxvisuals.com/api/health/deep`, HTTP(s) type, custom header
+   `X-Health-Token: <value in prod server/.env>`, 5-minute interval, alert on non-200.
+   Prefer the header over `?token=` — query strings land in access logs. Confirm it returns 200
+   before trusting it; it currently returns 401 (`requireAuth` fallback).
+2. **Update the `outreach.ysxvisuals.com` SPF TXT record in GoDaddy** to the single merged record
+   in `docs/RECOVERY.md` §8, **before** wiring `PORTAL_SMTP_*`. Replace the existing record —
+   do not add a second one.
+3. **Reserve a static IP for the VM** (GCP Console → VPC network → IP addresses → reserve the
+   ephemeral external IP as static, then confirm it stays attached to the instance). Note a
+   reserved IP is only free while attached to a *running* instance — a stopped instance holding a
+   reserved IP is billed. This is the actual fix for the crash/DNS incident; the 30-min TTL is
+   only a mitigation.
+4. **Decide whether to push and deploy** these 4 commits. Deploy steps are unchanged (server-only
+   diff — **no frontend rebuild needed**, confirmed via `git diff --name-only`: nothing under
+   `components/`, `src/`, `services/`, `hooks/`, `context/`, `App.tsx`, `portal/`), **plus**:
+   `prisma migrate deploy` for the Receipt migration, and the `server/node_modules/.prisma/client`
+   check in the Deploy hazard section above. Per `.plans/known-failures.md` §5.25, `git log` both
+   checkouts before pushing — prod held 2 unpushed commits once before.
+
+### Still open
+
+Unchanged from the entry below: refresh-token rotation with reuse detection, unifying follow-up
+sends with campaign send-window/daily-limit accounting, IMAP `SINCE` date-granularity,
+`MAILBOX_ENCRYPTION_KEY` rotation. Bounce/DSN ingestion is now designed but unbuilt.
+`PORTAL_SMTP_PASS` is still empty, so **there is still no alerting on anything** — including on
+the health check the new `HEALTH_TOKEN` is meant to expose.
+
+---
+
 ## 2026-07-26 — Full-codebase deep review, 7 HIGHs + ~15 MEDIUM/LOW fixed and deployed, prod branches reconciled, VM IP incident
 
 **Context:** User asked for a full deep-review pass over the CRM + client portal (server, portal SPA, CRM frontend), then to act on the findings. Done in the **Documents checkout**, delegated across `agy` (Opus 4.6 → Gemini 3.1 Pro → Sonnet 4.6 fallback chain, per the user's instruction) and Claude subagents on Sonnet/Opus, with every batch's diff read and its `tsc`/`vitest` results re-run by hand before committing — never trusted on the worker's self-report. That distrust was earned: see "Delegation gotchas" below.
