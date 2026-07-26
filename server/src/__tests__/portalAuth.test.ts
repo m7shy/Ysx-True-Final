@@ -309,3 +309,19 @@ describe('portal auth HTTP flow', () => {
     expect(refreshed.body.accessToken).toBeTruthy();
   });
 });
+
+describe('portal logout clears the refresh cookie', () => {
+  // The portal's Sign out button called no endpoint at all — it only nulled
+  // in-memory state, so the HttpOnly ysxportal_rt cookie survived and the next
+  // page load's silent refresh signed the visitor straight back in.
+  it('POST /api/portal/auth/logout expires the cookie without requiring auth', async () => {
+    const res = await request(app).post('/api/portal/auth/logout');
+    expect(res.status).toBe(200);
+
+    const cleared = (res.headers['set-cookie'] as unknown as string[] | undefined)?.find((c) =>
+      c.startsWith('ysxportal_rt='),
+    );
+    expect(cleared).toBeTruthy();
+    expect(cleared).toMatch(/ysxportal_rt=;|Expires=Thu, 01 Jan 1970/);
+  });
+});

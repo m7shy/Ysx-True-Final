@@ -256,3 +256,35 @@ describe('change-password', () => {
     expect(loginOld.status).toBe(401);
   });
 });
+
+describe('logout clears the refresh cookie', () => {
+  // The SPA has always POSTed /api/auth/logout on sign-out, but the route did
+  // not exist: the 404 was swallowed by `.catch(() => {})`, so the HttpOnly
+  // refresh cookie survived and the next page load silently re-authenticated.
+  // On a shared browser the next person was signed in as the previous user.
+  it('POST /api/auth/logout exists and expires the cookie', async () => {
+    const signup = await request(app)
+      .post('/api/auth/signup')
+      .send({ email: 'logout-cookie@example.com', password: 'correct-horse-battery' });
+    expect(signup.status).toBe(201);
+    const token = refreshTokenFrom(signup);
+    expect(token).toBeTruthy();
+
+    const res = await request(app).post('/api/auth/logout');
+    expect(res.status).toBe(200);
+
+    // The response must actively expire the cookie, not merely succeed.
+    const cleared = (res.headers['set-cookie'] as unknown as string[] | undefined)?.find((c) =>
+      c.startsWith('ysxflow_rt='),
+    );
+    expect(cleared).toBeTruthy();
+    expect(cleared).toMatch(/ysxflow_rt=;|Expires=Thu, 01 Jan 1970/);
+  });
+
+  // Signing out must work when the access token has already expired — that is
+  // exactly when a user reaches for the button — so it cannot require auth.
+  it('does not require authentication', async () => {
+    const res = await request(app).post('/api/auth/logout');
+    expect(res.status).toBe(200);
+  });
+});

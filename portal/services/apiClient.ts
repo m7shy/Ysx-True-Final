@@ -39,6 +39,29 @@ export function clearAuth(): void {
 }
 
 /**
+ * Sign out properly: drop in-memory state AND ask the server to clear the
+ * HttpOnly refresh cookie.
+ *
+ * clearAuth() alone is not a sign-out. The refresh token lives in an HttpOnly
+ * cookie that script cannot touch, so clearing memory left the session fully
+ * restorable — the next page load ran bootstrapSession() and signed the visitor
+ * back in. On a shared computer that meant the next person became the previous
+ * user. Errors are ignored on purpose: local state must be cleared even if the
+ * network call fails, and the caller navigates away regardless.
+ */
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/api/portal/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+  } catch {
+    /* offline or server unreachable — still clear local state below */
+  }
+  clearAuth();
+}
+
+/**
  * Drop the pre-cookie localStorage blob. It held an access token AND a
  * long-lived refresh token in script-readable storage; nothing reads it now,
  * so leaving it behind would preserve exactly the exposure this migration

@@ -166,6 +166,30 @@ router.post('/refresh', async (req: Request, res: Response) => {
  * including the one used to call it — stops verifying (tenantGate.ts and the
  * /refresh handler above both check `ver` against this column).
  */
+/**
+ * POST /api/auth/logout — end THIS session.
+ *
+ * This route did not exist. The SPA has always POSTed to it on sign-out and
+ * swallowed the resulting 404 (`.catch(() => {})` in AuthContext), so the
+ * HttpOnly refresh cookie was never cleared: "Sign out" dropped the in-memory
+ * access token, and the very next page load silently re-authenticated through
+ * the boot-time refresh. On a shared browser the next person to open the app
+ * was signed in as the previous user, for as long as the refresh token lived.
+ *
+ * This is a regression introduced by moving refresh tokens out of localStorage:
+ * before that, clearing local storage on logout genuinely destroyed the token.
+ *
+ * Deliberately NOT behind requireAuth: signing out must work even when the
+ * access token has already expired, and there is nothing to authorize —
+ * clearing your own cookie is not a privileged action. Also deliberately does
+ * NOT bump tokenVersion; that is logout-all's job, and doing it here would sign
+ * the user out of every other device whenever they closed one tab.
+ */
+router.post('/logout', (_req: Request, res: Response) => {
+  clearCrmRefreshCookie(res);
+  res.json({ ok: true });
+});
+
 router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
   const userId = requireUserId(req);
   await prisma.user.update({

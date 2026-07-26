@@ -1,7 +1,7 @@
 import React from 'react';
 import { LayoutGrid, Receipt, LifeBuoy, LogOut } from 'lucide-react';
 import { useRouter } from '../router';
-import { clearAuth, loadAuth } from '../services/apiClient';
+import { logout, loadAuth } from '../services/apiClient';
 
 const NAV = [
   { path: '/', label: 'Projects', icon: LayoutGrid, match: (p: string) => p === '/' || p.startsWith('/projects') },
@@ -47,7 +47,12 @@ export const PortalShell: React.FC<{ children: React.ReactNode }> = ({ children 
             ))}
             <button
               onClick={() => {
-                clearAuth();
+                // logout() also asks the server to clear the HttpOnly refresh
+                // cookie; clearAuth() alone left the session restorable on the
+                // next page load. Navigate immediately rather than awaiting —
+                // local state is already dropped and the cookie clear is
+                // fire-and-forget.
+                void logout();
                 navigate('/login');
               }}
               title={auth?.clientUser.email}

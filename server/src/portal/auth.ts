@@ -231,6 +231,25 @@ router.post('/set-password', async (req: Request, res: Response) => {
  * Reads the refresh token from the HttpOnly cookie (preferred) or the request
  * body (transitional fallback for clients running a pre-cookie bundle).
  */
+/**
+ * POST /api/portal/auth/logout — end this client's session.
+ *
+ * The portal's "Sign out" button only cleared in-memory state (clearAuth() in
+ * portal/services/apiClient.ts sets authState = null) and called no endpoint at
+ * all, so the HttpOnly `ysxportal_rt` cookie survived. Reloading the page ran
+ * the boot-time silent refresh and signed the visitor straight back in — on a
+ * shared or public computer, as whoever used it last.
+ *
+ * Same shape as the CRM's /api/auth/logout: unauthenticated (signing out must
+ * work with an expired access token, and clearing your own cookie is not
+ * privileged) and it does NOT bump tokenVersion, which would end this client's
+ * sessions everywhere rather than just here.
+ */
+router.post('/logout', (_req: Request, res: Response) => {
+  clearPortalRefreshCookie(res);
+  res.json({ ok: true });
+});
+
 router.post('/refresh', async (req: Request, res: Response) => {
   // Prefer the cookie; fall back to the body for one release so users with a
   // stale cached bundle are not hard-locked out.
