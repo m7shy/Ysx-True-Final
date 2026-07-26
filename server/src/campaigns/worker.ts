@@ -98,6 +98,13 @@ async function dispatchRecipient(
   campaign: Campaign,
   recipient: CampaignRecipient,
   lead: Lead,
+  /**
+   * Invoked the instant the provider accepts the message, BEFORE any of the
+   * bookkeeping that follows it. The caller uses this to guarantee it never
+   * retries a recipient whose mail has already gone out — see the catch in
+   * processCampaign().
+   */
+  onHandedToProvider?: () => void,
 ): Promise<void> {
   const mailbox = await pickMailbox(campaign.userId, campaign.distributionMethod);
   if (!mailbox) {
@@ -127,6 +134,11 @@ async function dispatchRecipient(
     html: tracked.html,
     headers: unsubscribeHeaders(tracked.unsubscribeUrl),
   });
+
+  // The message is now the provider's problem — it cannot be un-sent. Every
+  // line below this point is bookkeeping, and a failure in any of it must not
+  // cause a resend.
+  onHandedToProvider?.();
 
   await recordMailboxSend(mailbox);
   await prisma.lead.update({
@@ -404,8 +416,13 @@ async function processCampaign(campaign: Campaign): Promise<void> {
     // CLIENT_CLOSED, …) are allowed to proceed — a second campaign targeting
     // the same audience must be able to reach already-contacted leads.
 
+    // Tracks whether the SMTP handoff succeeded, so the catch below can tell
+    // "failed to send" apart from "sent, then something afterwards broke".
+    let handedToProvider = false;
     try {
-      await dispatchRecipient(campaign, recipient, lead);
+      await dispatchRecipient(campaign, recipient, lead, () => {
+        handedToProvider = true;
+      });
       await recordCampaignSend(campaign.id);
 
       if (campaign.sendIntervalMinutes != null) {
@@ -415,6 +432,32 @@ async function processCampaign(campaign: Campaign): Promise<void> {
         campaign = { ...campaign, nextSendAt };
       }
     } catch (err) {
+      // The message already reached the provider; only the bookkeeping after it
+      // failed (follow-up scheduling, the status write, a counter update). The
+      // retry path below resets the recipient to PENDING, which would dispatch
+      // the SAME email again on the next tick — a real duplicate to a
+      // prospect. Close the recipient out instead and record why.
+      //
+      // The PENDING -> SENDING claim does not cover this: it protects against
+      // concurrent workers and against a crash BEFORE the send, but the catch
+      // deliberately releases the claim, and a post-send error takes that path.
+      if (handedToProvider) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { err, campaignId: campaign.id, leadId: lead.id, recipientId: recipient.id },
+          'Send succeeded but post-send bookkeeping failed; NOT retrying (would duplicate the email)',
+        );
+        await prisma.campaignRecipient.update({
+          where: { id: recipient.id },
+          data: {
+            status: RecipientStatus.COMPLETED,
+            lastSentAt: new Date(),
+            lastError: `Sent, but post-send bookkeeping failed: ${message}`,
+          },
+        });
+        continue;
+      }
+
       if (err === NO_MAILBOX) {
         // Release the claim — no capacity this tick, not a failed send.
         await prisma.campaignRecipient.updateMany({

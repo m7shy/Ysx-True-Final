@@ -42,6 +42,7 @@ import { startFollowupScheduler, cancelFollowup, cancelRemainingFollowupsForReci
 import { sendSmtpMail, parseProvider } from './mail/smtpGateway.js';
 import { hasRecipientReplied } from './mail/replyCheck.js';
 import { startCampaignWorker } from './campaigns/worker.js';
+import { isWithinSendWindow } from './campaigns/engine.js';
 import { startReplyPoller } from './unibox/replyPoller.js';
 import { startAutoScraperScheduler } from './scraper/autoScheduler.js';
 import { runDeepChecks, startWatchdog } from './health/monitor.js';
@@ -51,6 +52,11 @@ import { configReport } from './config.js';
 // enough that a paused campaign is not re-claimed on every scheduler tick,
 // short enough that resuming a campaign feels immediate.
 const PAUSED_RECHECK_MS = 5 * 60_000;
+
+// How long a follow-up waits before re-checking a closed send window. Shorter
+// than the paused interval: a window reopens on a schedule, so this bounds how
+// late into the window a deferred follow-up goes out.
+const OUTSIDE_WINDOW_RECHECK_MS = 10 * 60_000;
 
 export const app = express();
 
@@ -372,7 +378,13 @@ async function sendFollowupJob(job: any) {
   if (job.campaignId) {
     const campaign = await prisma.campaign.findUnique({
       where: { id: String(job.campaignId) },
-      select: { status: true },
+      select: {
+        status: true,
+        sendWindowStart: true,
+        sendWindowEnd: true,
+        sendDays: true,
+        timezone: true,
+      },
     });
     if (!campaign) {
       // Campaign deleted out from under a claimed job — nothing to send to.
@@ -388,6 +400,31 @@ async function sendFollowupJob(job: any) {
         },
       });
       logger.info({ id: job.id, campaignId: job.campaignId, status: campaign.status }, 'Follow-up deferred: campaign is not active');
+      return;
+    }
+
+    // Outside the campaign's send window → defer, do not send.
+    //
+    // Follow-ups previously ignored the send window entirely, so a campaign
+    // configured to mail 09:00-17:00 sent its first touch inside the window and
+    // then delivered the rest of the sequence at 03:00. The window exists to
+    // control when a RECIPIENT is contacted, and the majority of a sequence's
+    // messages are follow-ups, so exempting them defeated the setting.
+    //
+    // Deferred rather than dropped, on the same mechanism as the paused case.
+    // Re-checked on an interval instead of computing the next opening: the
+    // window arithmetic already lives in engine.ts and is timezone/overnight
+    // aware, so asking "is it open now?" periodically is simpler and cannot
+    // disagree with the sender's own check.
+    if (!isWithinSendWindow(campaign)) {
+      await prisma.followupJob.updateMany({
+        where: { id: String(job.id), status: FollowupJobStatus.SENDING },
+        data: {
+          status: FollowupJobStatus.SCHEDULED,
+          scheduledAt: new Date(Date.now() + OUTSIDE_WINDOW_RECHECK_MS),
+        },
+      });
+      logger.info({ id: job.id, campaignId: job.campaignId }, 'Follow-up deferred: outside the campaign send window');
       return;
     }
   }
@@ -474,6 +511,30 @@ async function sendFollowupJob(job: any) {
     attachments: job.attachments,
     headers,
   });
+
+  // Count follow-ups against the campaign's daily volume.
+  //
+  // Deliberately COUNTED but not BLOCKED. The cap exists to bound a campaign's
+  // daily volume for sender reputation, and follow-ups were invisible to it, so
+  // the real number sent could exceed the configured limit without ever showing
+  // it. Counting them makes the figure honest and makes new first-touch sends
+  // yield to in-flight sequences, since the worker's remaining budget shrinks.
+  //
+  // Blocking them was the other option and is worse: a sequence stranded
+  // mid-way because the day's budget went to new prospects reads as being
+  // ghosted, and the messages still eventually go out — just later and in a
+  // worse order. Time-gate follow-ups, volume-gate new outreach.
+  if (job.campaignId) {
+    try {
+      await prisma.campaign.update({
+        where: { id: String(job.campaignId) },
+        data: { sentToday: { increment: 1 } },
+      });
+    } catch (err) {
+      // Never fail a delivered send on a counter write.
+      logger.error({ err, id: job.id }, 'Failed to count follow-up against the campaign daily total');
+    }
+  }
 
   logger.info({ messageId, id: job.id }, 'Followup sent');
 }

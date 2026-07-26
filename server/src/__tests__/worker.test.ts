@@ -336,3 +336,35 @@ describe('campaign worker recipient skip logic', () => {
     expect(updated.lastError).toContain('bounced');
   });
 });
+
+describe('a delivered message is never re-sent', () => {
+  // The PENDING -> SENDING claim protects against concurrent workers and
+  // against a crash BEFORE the send, but the catch deliberately releases the
+  // claim back to PENDING for a retry — and a failure AFTER the SMTP handoff
+  // (follow-up scheduling, the status write, a counter update) takes exactly
+  // that path. The next tick then dispatched the same email again: a real
+  // duplicate to a prospect, which is reputational damage, not just noise.
+  it('does not retry when post-send bookkeeping fails', async () => {
+    const lead = makeLead({ status: LeadStatus.NEW });
+    const campaign = makeCampaign({
+      autoFollowUps: [{ delay: 1, unit: 'days', content: 'follow up' }],
+    });
+    const recipient = makeRecipient(campaign.id, lead.id);
+
+    // Send succeeds; the very next step (scheduling follow-ups) blows up.
+    mocks.scheduleFollowup.mockRejectedValueOnce(new Error('DB connection lost'));
+
+    await campaignTickOnce();
+    expect(mocks.sendFromMailbox).toHaveBeenCalledOnce();
+
+    // Must be closed out, NOT released back to PENDING for a retry.
+    const afterFirst = db.recipients.get(recipient.id);
+    expect(afterFirst.status).not.toBe(RecipientStatus.PENDING);
+    expect(afterFirst.status).toBe(RecipientStatus.COMPLETED);
+    expect(afterFirst.lastError).toContain('post-send');
+
+    // The decisive assertion: a second tick must not send again.
+    await campaignTickOnce();
+    expect(mocks.sendFromMailbox).toHaveBeenCalledOnce();
+  });
+});
