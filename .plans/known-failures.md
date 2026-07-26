@@ -102,6 +102,21 @@ Symptom to recognise: `tsc` rejects a field you can see in `schema.prisma`, and
 `grep 'export type <Model>UncheckedCreateInput' -A6 server/node_modules/.prisma/client/index.d.ts`
 does not list it while the root copy does.
 
+**On prod, the plain `cp -r` fails** — confirmed during the 2026-07-26 deploy:
+```
+cp: cannot create regular file '.../query_engine-windows.dll.node': Device or resource busy
+```
+The running `ysx-backend` service holds the query-engine DLL open. Copy everything **except**
+`*.node`:
+```bash
+for f in ../node_modules/.prisma/client/*; do b=$(basename "$f"); \
+  case "$b" in *.node) ;; *) cp -f "$f" node_modules/.prisma/client/"$b";; esac; done
+```
+Safe **only while the Prisma version is unchanged** (verify the two `*.node` files match in size
+first — they did: 21,182,976 bytes both sides, v6.19.3). A deploy that **bumps the Prisma version**
+cannot use this shortcut: the engine binary genuinely changes and is locked, so the copy has to
+happen while the service is stopped, i.e. inside the restart window rather than before it.
+
 Workaround used: `cp -r node_modules/.prisma/client/. server/node_modules/.prisma/client/` after
 generating. **This has a production implication** — the same staleness would hit the prod checkout
 on deploy, and there it is not a compile error but a *runtime* one (Prisma validates writes against
