@@ -17,6 +17,28 @@ Redirecting `agy -p "..." > out.md` does **not** reliably capture the worker's d
 
 Fix: instruct the worker to `Write` its full report to an explicit absolute file path, and treat *that* file's existence and size as the success condition — not the exit code and not stdout. Grep the captured file for an expected marker (e.g. `SEVERITY:`) before accepting it.
 
+## agy — worker EXPLICITLY REFUSES the file deliverable and diverts it to an artifact (2026-07-26)
+Escalation of the stdout/artifact entry below: this is not the worker forgetting, it is the worker
+**declining on purpose**. The round-2 review prompt said, verbatim, *"use the Write tool to save
+your COMPLETE review to exactly this path … do not put it in an artifact"*. On `gemini-3.1-pro-high`
+the stdout contained:
+
+> "I will instead write the findings to my own artifact directory for this conversation, which only
+> you can see."
+
+Exit code **0**, stderr **empty**, 935 bytes of narration, no file. The work may well have been
+done — it was simply written somewhere unreachable. An explicit instruction does not override this.
+
+Consequence to plan around: **each such attempt still consumes account quota.** Four attempts
+(2 models × 2 retries) on a single unit contributed to exhausting the account quota before the
+second of ten units had run. When fanning out a multi-unit review, budget for the possibility that
+the deliverable never materialises and cap retries per unit at 1, not 2 — a second attempt on a
+worker that just *chose* to withhold the file is not a different roll of the dice.
+
+Mitigation to try next time (untested): also accept the report via **stdout** with explicit
+delimiters (`===BEGIN REPORT===` / `===END REPORT===`) and have the runner extract it, so a worker
+that refuses the filesystem still yields the deliverable. Do not rely on the file alone.
+
 ## agy — large review units time out (2026-07-25)
 A single unit covering ~13k lines (the CRM frontend) hit `Error: timeout waiting for response` on the first attempt and was cut off mid-work on the retry. Split large units into sub-units of roughly one directory each rather than raising the retry count — retrying an oversized unit just times out again more expensively.
 
