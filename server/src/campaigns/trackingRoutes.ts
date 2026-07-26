@@ -10,7 +10,7 @@ import { LeadStatus, TrackingEventType } from '@prisma/client';
 
 import { prisma } from '../db/prisma.js';
 import { logger } from '../logger.js';
-import { verifyTrackingToken } from './trackingToken.js';
+import { verifyTrackingToken, verifyClickToken } from './trackingToken.js';
 import { stopRecipientForEvent } from './engine.js';
 import { enforceDnc } from '../leads/dnc.js';
 
@@ -93,7 +93,10 @@ router.get('/c/:token', async (req: Request, res: Response) => {
     return;
   }
 
-  const recipientId = verifyTrackingToken(req.params.token);
+  // Verify the click token against BOTH the recipientId AND the decoded target.
+  // A token signed for target A will NOT verify when replayed with target B,
+  // closing the open-redirect hole. isSafeHttpUrl remains as defence-in-depth.
+  const recipientId = verifyClickToken(req.params.token, target);
   if (!recipientId) {
     res.status(404).send('Invalid or expired tracking link');
     return;

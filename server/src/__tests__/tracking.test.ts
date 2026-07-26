@@ -67,7 +67,7 @@ vi.mock('../scheduler/followupScheduler.js', () => ({
 }));
 
 import trackingRouter from '../campaigns/trackingRoutes.js';
-import { signTrackingToken } from '../campaigns/trackingToken.js';
+import { signTrackingToken, signClickToken } from '../campaigns/trackingToken.js';
 import { enforceDnc } from '../leads/dnc.js';
 
 const app = express();
@@ -135,10 +135,11 @@ describe('GET /t/c/:token (click redirect)', () => {
 
   it('records a CLICKED event, increments clickedCount, and redirects', async () => {
     seedRecipient('r1');
-    const token = signTrackingToken('r1');
-    const res = await request(app).get(`/t/c/${token}?u=${encodedUrl('https://example.com/page')}`);
+    const target = 'https://example.com/page';
+    const token = signClickToken('r1', target);
+    const res = await request(app).get(`/t/c/${token}?u=${encodedUrl(target)}`);
     expect(res.status).toBe(302);
-    expect(res.headers.location).toBe('https://example.com/page');
+    expect(res.headers.location).toBe(target);
     expect(store.events).toHaveLength(1);
     expect(store.events[0].type).toBe('CLICKED');
     expect(store.campaigns.get('camp1').clickedCount).toBe(1);
@@ -158,9 +159,46 @@ describe('GET /t/c/:token (click redirect)', () => {
 
   it('completes the recipient and cancels follow-ups when stopOnClick is set', async () => {
     seedRecipient('r1', { stopOnClick: true });
-    const token = signTrackingToken('r1');
-    await request(app).get(`/t/c/${token}?u=${encodedUrl('https://example.com')}`);
+    const target = 'https://example.com';
+    const token = signClickToken('r1', target);
+    await request(app).get(`/t/c/${token}?u=${encodedUrl(target)}`);
     expect(store.recipients.get('r1').status).toBe('COMPLETED');
+  });
+
+  // ── Security: open-redirect replay attack blocked ─────────────────────────
+  it('returns 404 and NO redirect when ?u= is swapped to a different host (open-redirect fix)', async () => {
+    // A legitimate recipient receives a real click token signed for example.com.
+    seedRecipient('r1');
+    const legitimateTarget = 'https://example.com/legit-page';
+    const token = signClickToken('r1', legitimateTarget);
+
+    // Attacker replays that token with a different ?u= pointing at evil.example.com.
+    const attackerTarget = 'https://evil.example.com/phishing';
+    const res = await request(app).get(`/t/c/${token}?u=${encodedUrl(attackerTarget)}`);
+
+    // Must be rejected — NOT redirected.
+    expect(res.status).toBe(404);
+    // There must be NO Location header pointing at the attacker host.
+    expect(res.headers.location).toBeUndefined();
+    // No tracking event must have been recorded.
+    expect(store.events).toHaveLength(0);
+  });
+
+  // ── Security: domain separation — pixel/unsubscribe token rejected on /t/c/ ─
+  it('rejects a pixel/unsubscribe token (signTrackingToken) when used on /t/c/ (domain separation)', async () => {
+    // The attacker holds the open-pixel token from a received email.
+    // They must NOT be able to use it as a click token.
+    seedRecipient('r1');
+    const pixelToken = signTrackingToken('r1'); // uses recipientId-only HMAC (no "c\x00" prefix)
+    const target = 'https://example.com/page';
+
+    const res = await request(app).get(`/t/c/${pixelToken}?u=${encodedUrl(target)}`);
+
+    // The click handler calls verifyClickToken which uses a different HMAC input,
+    // so the signature is wrong and it must 404.
+    expect(res.status).toBe(404);
+    expect(res.headers.location).toBeUndefined();
+    expect(store.events).toHaveLength(0);
   });
 });
 
