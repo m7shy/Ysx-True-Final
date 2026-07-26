@@ -6,6 +6,8 @@ import { CampaignStatus, LeadStatus, RecipientStatus, type Campaign, type Lead }
 
 import { tenantDb, type TenantClient } from '../db/tenantDb.js';
 import { requireUserId } from '../auth/middleware.js';
+import { cancelScheduledFollowupsForCampaign } from '../scheduler/followupScheduler.js';
+
 
 /**
  * Campaigns CRUD (tenant-scoped), shaped to match the frontend's `Campaign`
@@ -65,14 +67,14 @@ const MAX_STEPS = 10;
 
 const createSchema = z.object({
   name: z.string().min(1, 'name is required'),
-  subject: z.string().optional(),
-  body: z.string().optional(),
+  subject: z.string().max(50_000, 'subject is too long').optional(),
+  body: z.string().max(50_000, 'body is too long').optional(),
   scheduledAt: z.coerce.date().optional(),
   status: z.enum(CAMPAIGN_STATUSES).optional(),
   distributionMethod: z.enum(DISTRIBUTION_METHODS).optional(),
   autoFollowUps: z.array(autoFollowUpSchema).max(MAX_STEPS).optional(),
   sequence: z.array(sequenceStepSchema).max(MAX_STEPS + 1).optional(),
-  recipients: z.array(recipientSchema).optional(),
+  recipients: z.array(recipientSchema).max(5000, 'recipients array supports at most 5000 elements').optional(),
   // Send window / pacing / reply behavior — previously collected in Compose
   // but never sent to the backend (see the old components/ComposeNewEmail.tsx,
   // replaced by the campaign creation wizard).
@@ -299,6 +301,10 @@ router.patch('/:id', async (req: Request, res: Response) => {
       },
     });
 
+    if (parsed.status === CampaignStatus.PAUSED || parsed.status === 'PAUSED') {
+      await cancelScheduledFollowupsForCampaign(existing.id, 'campaign_paused');
+    }
+
     if (parsed.recipients?.length) {
       const leadIds = await upsertRecipientsAsLeads(db, userId, parsed.recipients);
       await linkRecipients(db, userId, campaign.id, leadIds);
@@ -319,6 +325,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     res.status(404).json({ code: 'NOT_FOUND', message: 'Campaign not found' });
     return;
   }
+  await cancelScheduledFollowupsForCampaign(existing.id, 'campaign_deleted');
   await db.campaign.delete({ where: { id: existing.id } });
   res.json({ ok: true });
 });
@@ -397,9 +404,34 @@ router.post('/:id/recipients', async (req: Request, res: Response) => {
       return;
     }
 
-    const body = z.object({ recipients: z.array(recipientSchema).min(1) }).parse(req.body);
+    const body = z
+      .object({ recipients: z.array(recipientSchema).min(1).max(5000, 'recipients array supports at most 5000 elements') })
+      .parse(req.body);
     const leadIds = await upsertRecipientsAsLeads(db, userId, body.recipients);
     await linkRecipients(db, userId, campaign.id, leadIds);
+
+    if (campaign.status === CampaignStatus.COMPLETED) {
+      const totalRecipients = await db.campaignRecipient.count({ where: { campaignId: campaign.id } });
+      const terminalCount = await db.campaignRecipient.count({
+        where: {
+          campaignId: campaign.id,
+          status: {
+            in: [
+              RecipientStatus.COMPLETED,
+              RecipientStatus.IN_SEQUENCE,
+              RecipientStatus.REPLIED,
+              RecipientStatus.FAILED,
+              RecipientStatus.SKIPPED,
+            ],
+          },
+        },
+      });
+      const progress = totalRecipients > 0 ? Math.round((terminalCount / totalRecipients) * 100) : 0;
+      await db.campaign.update({
+        where: { id: campaign.id },
+        data: { status: CampaignStatus.ACTIVE, progress },
+      });
+    }
 
     res.status(201).json({ ok: true, added: leadIds.length });
   } catch (err) {

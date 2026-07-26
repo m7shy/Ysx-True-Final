@@ -47,6 +47,11 @@ function matches(row: Row, where: Row | undefined): boolean {
     if (k === 'AND') return (v as Row[]).every((w) => matches(row, w));
     if (v && typeof v === 'object' && !(v instanceof Date)) {
       if ('not' in v) return row[k] !== v.not;
+      // notIn / in must be handled explicitly: the fall-through below returns
+      // TRUE for anything unrecognised, so an unsupported operator silently
+      // disables the filter and the test passes while proving nothing.
+      if ('notIn' in v) return !(v.notIn as unknown[]).includes(row[k]);
+      if ('in' in v) return (v.in as unknown[]).includes(row[k]);
       if ('gt' in v) return row[k] > v.gt;
       if ('equals' in v) return String(row[k]).toLowerCase() === String(v.equals).toLowerCase();
       // Nested relation filter — not supported; treat as pass (test data is single-tenant per case).
@@ -197,6 +202,12 @@ function makeModel(model: string) {
 
 const prismaMock: Row = { $extends: undefined };
 for (const m of Object.keys(db)) prismaMock[m] = makeModel(m);
+// Interactive transactions: hand the callback this same in-memory client.
+// No rollback — these tests assert the committed outcome and the ordering the
+// real transaction enforces (claim the invoice status first, only then create
+// the Payment), not atomicity itself, which belongs to Postgres.
+prismaMock.$transaction = async (arg: any) =>
+  typeof arg === 'function' ? arg(prismaMock) : Promise.all(arg);
 // tenantDb calls prisma.$extends — return a proxy that injects userId scoping
 // by wrapping each model's args (good-enough stand-in for the real extension).
 prismaMock.$extends = (ext: any) => {
@@ -400,6 +411,61 @@ describe('invoice lifecycle', () => {
     const acts = db.activityEvent.filter((a) => a.projectId === 'pA').map((a) => a.type);
     expect(acts).toContain('INVOICE_SENT');
     expect(acts).toContain('INVOICE_PAID');
+  });
+
+  it('a second mark-paid creates no duplicate Payment or Receipt', async () => {
+    // mark-paid used to be two independent statements: the Payment (with its
+    // nested Receipt) was created first, then the invoice status. A retry after
+    // a failed status write therefore produced a SECOND payment and receipt for
+    // one bank transfer. The status claim now happens first, inside the same
+    // transaction, so a second call finds nothing to claim and aborts.
+    const created = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', projectId: 'pA', amountCents: 50000 });
+    const id = created.body.invoice.id;
+    await request(app).post(`/api/invoices/${id}/send`).set('Authorization', adminA);
+
+    const first = await request(app).post(`/api/invoices/${id}/mark-paid`).set('Authorization', adminA);
+    expect(first.status).toBe(200);
+    const second = await request(app).post(`/api/invoices/${id}/mark-paid`).set('Authorization', adminA);
+    expect(second.status).toBe(409);
+
+    const payments = db.payment.filter((p: any) => p.invoiceId === id);
+    expect(payments).toHaveLength(1);
+  });
+
+  it('a client viewing a PAID invoice cannot revert it to VIEWED', async () => {
+    // The SENT->VIEWED flip read the status into memory and wrote back
+    // unconditionally, so an admin marking the invoice paid between those two
+    // awaits was overwritten: the invoice showed unpaid while a Payment and
+    // Receipt existed, re-entered the client's outstanding balance, and could
+    // be marked paid a second time.
+    const created = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', projectId: 'pA', amountCents: 12345 });
+    const id = created.body.invoice.id;
+    await request(app).post(`/api/invoices/${id}/send`).set('Authorization', adminA);
+    await request(app).post(`/api/invoices/${id}/mark-paid`).set('Authorization', adminA);
+
+    const viewed = await request(app).get(`/api/portal/invoices/${id}`).set('Authorization', clientA);
+    expect(viewed.status).toBe(200);
+    expect(viewed.body.invoice.status).toBe('PAID');
+    expect(db.invoice.find((i: any) => i.id === id)?.status).toBe('PAID');
+  });
+
+  it('a CANCELLED invoice is hidden from the client', async () => {
+    const created = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', projectId: 'pA', amountCents: 999 });
+    const id = created.body.invoice.id;
+    await request(app).post(`/api/invoices/${id}/send`).set('Authorization', adminA);
+    await request(app).patch(`/api/invoices/${id}`).set('Authorization', adminA).send({ status: 'CANCELLED' });
+
+    const list = await request(app).get('/api/portal/invoices').set('Authorization', clientA);
+    expect(list.body.invoices.map((i: any) => i.id)).not.toContain(id);
   });
 });
 

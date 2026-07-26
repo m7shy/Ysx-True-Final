@@ -101,7 +101,7 @@ router.post('/projects/:id/revisions', async (req: Request, res: Response) => {
   if (!parsed.success) return badRequest(res, parsed.error);
 
   const project = await prisma.project.findFirst({
-    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId },
+    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId, status: 'ACTIVE' },
   });
   if (!project) {
     res.status(404).json({ code: 'NOT_FOUND', message: 'Project not found' });
@@ -129,7 +129,7 @@ router.post('/projects/:id/revisions', async (req: Request, res: Response) => {
 router.post('/projects/:id/revisions/:revisionId/approve', async (req: Request, res: Response) => {
   const ctx = requireClientCtx(req);
   const project = await prisma.project.findFirst({
-    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId },
+    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId, status: 'ACTIVE' },
   });
   if (!project) {
     res.status(404).json({ code: 'NOT_FOUND', message: 'Project not found' });
@@ -163,7 +163,7 @@ router.post('/projects/:id/messages', async (req: Request, res: Response) => {
   if (!parsed.success) return badRequest(res, parsed.error);
 
   const project = await prisma.project.findFirst({
-    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId },
+    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId, status: 'ACTIVE' },
     include: { client: { select: { name: true } } },
   });
   if (!project) {
@@ -225,7 +225,7 @@ router.post('/requests', requestLimiter, async (req: Request, res: Response) => 
 router.get('/invoices', async (req: Request, res: Response) => {
   const ctx = requireClientCtx(req);
   const invoices = await prisma.invoice.findMany({
-    where: { clientId: ctx.clientId, userId: ctx.userId, status: { not: 'DRAFT' } },
+    where: { clientId: ctx.clientId, userId: ctx.userId, status: { notIn: ['DRAFT', 'CANCELLED'] } },
     orderBy: { createdAt: 'desc' },
     include: {
       project: { select: { id: true, name: true } },
@@ -244,7 +244,7 @@ router.get('/invoices', async (req: Request, res: Response) => {
 router.get('/invoices/:id', async (req: Request, res: Response) => {
   const ctx = requireClientCtx(req);
   let invoice = await prisma.invoice.findFirst({
-    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId, status: { not: 'DRAFT' } },
+    where: { id: req.params.id, clientId: ctx.clientId, userId: ctx.userId, status: { notIn: ['DRAFT', 'CANCELLED'] } },
     include: {
       project: { select: { id: true, name: true } },
       payments: { include: { receipt: true } },
@@ -256,13 +256,20 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
   }
 
   if (invoice.status === 'SENT') {
-    invoice = {
-      ...invoice,
-      ...(await prisma.invoice.update({
-        where: { id: invoice.id },
-        data: { status: 'VIEWED', viewedAt: invoice.viewedAt ?? new Date() },
-      })),
-    };
+    const updated = await prisma.invoice.updateMany({
+      where: { id: invoice.id, clientId: ctx.clientId, userId: ctx.userId, status: 'SENT' },
+      data: { status: 'VIEWED', viewedAt: invoice.viewedAt ?? new Date() },
+    });
+    const refreshed = await prisma.invoice.findFirst({
+      where: { id: invoice.id, clientId: ctx.clientId, userId: ctx.userId },
+      include: {
+        project: { select: { id: true, name: true } },
+        payments: { include: { receipt: true } },
+      },
+    });
+    if (refreshed) {
+      invoice = refreshed;
+    }
   }
 
   res.json({ invoice, paymentInstructions: BANK_TRANSFER_INSTRUCTIONS });

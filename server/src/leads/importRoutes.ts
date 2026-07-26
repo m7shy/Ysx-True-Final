@@ -56,7 +56,7 @@ function requireImportKey(req: Request, res: Response, next: NextFunction): void
 const importSchema = z.object({
   // Run-level context applied to every row that doesn't carry its own `niche`.
   niche: z.string().optional(),
-  leads: z.array(scraperRowSchema).min(1, 'at least one lead is required'),
+  leads: z.array(scraperRowSchema).min(1, 'at least one lead is required').max(5000, 'leads array supports at most 5000 elements'),
 });
 
 /**

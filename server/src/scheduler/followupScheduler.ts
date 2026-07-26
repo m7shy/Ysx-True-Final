@@ -208,6 +208,30 @@ export async function cancelRemainingFollowupsForRecipient(
 }
 
 /**
+ * Cancel all remaining (still scheduled) followups for a given campaign.
+ */
+export async function cancelScheduledFollowupsForCampaign(
+  campaignId: string,
+  reason: string = "campaign_paused",
+): Promise<void> {
+  if (!campaignId) return;
+
+  await prisma.followupJob.updateMany({
+    where: {
+      campaignId,
+      status: FollowupJobStatus.SCHEDULED,
+    },
+    data: {
+      status: FollowupJobStatus.CANCELLED,
+      cancelReason: reason,
+      lastError: reason,
+      failureReason: reason,
+    },
+  });
+}
+
+
+/**
  * Cancel every still-scheduled followup a tenant has queued for a recipient,
  * across all campaigns (used by the reply poller when an inbound reply is
  * detected). Returns the distinct campaignIds whose sequences were touched.

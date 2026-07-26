@@ -6,7 +6,7 @@ import { logger } from '../logger.js';
 import { maskEmail } from '../util/redact.js';
 import { sendFromMailbox } from '../mail/smtpGateway.js';
 import { recordMailboxSend } from '../creds/mailboxStore.js';
-import { scheduleFollowup } from '../scheduler/followupScheduler.js';
+import { scheduleFollowup, cancelScheduledFollowupsForCampaign } from '../scheduler/followupScheduler.js';
 import { resolveSpintax } from './spintax.js';
 import { renderTemplate } from './variables.js';
 import { buildTrackedEmail, unsubscribeHeaders } from './trackedHtml.js';
@@ -252,6 +252,7 @@ async function handleHardBounce(campaign: Campaign, recipient: CampaignRecipient
       where: { id: campaign.id },
       data: { status: CampaignStatus.PAUSED, pausedReason: 'BOUNCE_RATE' },
     });
+    await cancelScheduledFollowupsForCampaign(campaign.id, 'bounce_rate_threshold');
     logger.warn(
       { campaignId: campaign.id, bouncedCount: updated.bouncedCount, sentCount: updated.sentCount },
       'Campaign auto-paused: bounce rate threshold reached',

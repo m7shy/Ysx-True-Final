@@ -49,11 +49,11 @@ function badRequest(res: Response, err: z.ZodError): void {
 }
 
 /** Next sequential per-tenant number with the given prefix (INV-0007 / RCPT-0007). */
-async function nextNumber(userId: string, prefix: 'INV' | 'RCPT'): Promise<string> {
+async function nextNumber(userId: string, prefix: 'INV' | 'RCPT', tx: any = prisma): Promise<string> {
   const count =
     prefix === 'INV'
-      ? await prisma.invoice.count({ where: { userId } })
-      : await prisma.receipt.count({ where: { payment: { invoice: { userId } } } });
+      ? await tx.invoice.count({ where: { userId } })
+      : await tx.receipt.count({ where: { payment: { invoice: { userId } } } });
   return `${prefix}-${String(count + 1).padStart(4, '0')}`;
 }
 
@@ -192,28 +192,48 @@ router.post('/:id/mark-paid', async (req: Request, res: Response) => {
     return;
   }
 
-  const payment = await prisma.payment.create({
-    data: {
-      invoiceId: existing.id,
-      method: 'BANK_TRANSFER',
-      amountCents: parsed.data.amountCents ?? existing.amountCents,
-      reference: parsed.data.reference ?? null,
-      markedPaidByAdmin: true,
-      receipt: { create: { number: await nextNumber(userId, 'RCPT') } },
-    },
-    include: { receipt: true },
+  const result = await prisma.$transaction(async (tx) => {
+    const updated = await tx.invoice.updateMany({
+      where: {
+        id: existing.id,
+        userId,
+        status: { in: ['DRAFT', 'SENT', 'VIEWED', 'OVERDUE'] },
+      },
+      data: { status: 'PAID', paidAt: new Date() },
+    });
+
+    if (updated.count === 0) {
+      return null;
+    }
+
+    const rcptNumber = await nextNumber(userId, 'RCPT', tx);
+
+    const payment = await tx.payment.create({
+      data: {
+        invoiceId: existing.id,
+        method: 'BANK_TRANSFER',
+        amountCents: parsed.data.amountCents ?? existing.amountCents,
+        reference: parsed.data.reference ?? null,
+        markedPaidByAdmin: true,
+        receipt: { create: { number: rcptNumber } },
+      },
+      include: { receipt: true },
+    });
+
+    const invoice = await tx.invoice.findUnique({ where: { id: existing.id } });
+    return { invoice, payment };
   });
 
-  const invoice = await tenantDb(userId).invoice.update({
-    where: { id: existing.id },
-    data: { status: 'PAID', paidAt: new Date() },
-  });
-
-  if (invoice.projectId) {
-    await logActivity(invoice.projectId, 'INVOICE_PAID', `Invoice ${invoice.number} paid — thank you`);
+  if (!result || !result.invoice) {
+    res.status(409).json({ code: 'CONFLICT', message: 'Invoice is already PAID or CANCELLED' });
+    return;
   }
-  logger.info({ userId, invoiceId: invoice.id, paymentId: payment.id }, 'Invoice marked paid');
-  res.json({ invoice, payment });
+
+  if (result.invoice.projectId) {
+    await logActivity(result.invoice.projectId, 'INVOICE_PAID', `Invoice ${result.invoice.number} paid — thank you`);
+  }
+  logger.info({ userId, invoiceId: result.invoice.id, paymentId: result.payment.id }, 'Invoice marked paid');
+  res.json({ invoice: result.invoice, payment: result.payment });
 });
 
 export default router;
