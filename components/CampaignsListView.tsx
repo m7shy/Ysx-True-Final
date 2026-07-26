@@ -28,6 +28,12 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
   // Modal State
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
+  // Per-row in-flight guards — toggling is non-idempotent (two rapid clicks can
+  // flip the campaign back to its original state if the requests resolve out of order).
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  // duplicatingId prevents a double-click from creating two copies.
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
   const filteredCampaigns = campaigns.filter(c => {
     const matchesSearch = c.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === 'All statuses' || c.status === statusFilter.toUpperCase();
@@ -253,8 +259,20 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
                   <div className="col-span-1 flex justify-end items-center gap-2 relative z-10 pointer-events-none">
                      <button
                        type="button"
-                       onClick={(e) => { e.stopPropagation(); toggleCampaignStatus(campaign.id); }}
-                       className={`pointer-events-auto p-1.5 rounded-full transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${campaign.status === 'ACTIVE' ? 'text-volt-text hover:bg-volt/10' : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/10'}`}
+                       onClick={async (e) => {
+                         e.stopPropagation();
+                         // Guard against double-click: toggling is non-idempotent, so two rapid
+                         // clicks can leave the campaign in the opposite state to what was intended.
+                         if (togglingId === campaign.id) return;
+                         setTogglingId(campaign.id);
+                         try {
+                           await toggleCampaignStatus(campaign.id);
+                         } finally {
+                           setTogglingId(null);
+                         }
+                       }}
+                       disabled={togglingId === campaign.id}
+                       className={`pointer-events-auto p-1.5 rounded-full transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text disabled:opacity-40 disabled:cursor-not-allowed ${campaign.status === 'ACTIVE' ? 'text-volt-text hover:bg-volt/10' : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/10'}`}
                        aria-label={campaign.status === 'ACTIVE' ? `Pause ${campaign.name}` : `Resume ${campaign.name}`}
                        title={campaign.status === 'ACTIVE' ? 'Pause Campaign' : 'Resume Campaign'}
                      >
@@ -288,8 +306,23 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
                                 <button type="button" onClick={() => startRenaming(campaign)} className="w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] flex items-center transition-colors duration-300">
                                    <Edit3 className="w-4 h-4 mr-2" /> Rename
                                 </button>
-                                <button type="button" onClick={() => { duplicateCampaign(campaign.id); setActiveMenuId(null); }} className="w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] flex items-center transition-colors duration-300">
-                                   <Copy className="w-4 h-4 mr-2" /> Duplicate
+                                <button
+                                   type="button"
+                                   disabled={duplicatingId === campaign.id}
+                                   onClick={async () => {
+                                     // Guard against double-click creating two copies.
+                                     if (duplicatingId === campaign.id) return;
+                                     setDuplicatingId(campaign.id);
+                                     try {
+                                       await duplicateCampaign(campaign.id);
+                                       setActiveMenuId(null);
+                                     } finally {
+                                       setDuplicatingId(null);
+                                     }
+                                   }}
+                                   className="w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] flex items-center transition-colors duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                   <Copy className="w-4 h-4 mr-2" /> {duplicatingId === campaign.id ? 'Duplicating…' : 'Duplicate'}
                                 </button>
                                 <button type="button" className="w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] flex items-center transition-colors duration-300">
                                    <Download className="w-4 h-4 mr-2" /> Download CSV

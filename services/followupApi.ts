@@ -1,11 +1,43 @@
 import { AppError, AppErrorCode } from '../types';
+import { clearAuth } from './authStorage';
+import { refreshAccessToken } from './apiClient';
 import { getAccessToken } from './authStorage';
 
-const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
+const API_URL = (import.meta as any).env?.VITE_API_URL ?? '';
 
 function authHeaders(): Record<string, string> {
   const token = getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * fetch() with the same silent refresh-and-retry-once-on-401 semantics as
+ * apiClient.ts's apiRequest — needed here (instead of just calling apiPost/
+ * apiGet directly) because the three follow-up functions below map failures
+ * to typed, provider-specific AppErrors that callers depend on, not
+ * apiClient's generic ApiError. Without this, a momentarily-stale access
+ * token causes the call to fail with a misleading PROVIDER_ERROR with no
+ * refresh attempt (same class of bug fixed twice already in mailGateway.ts).
+ */
+async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const doFetch = () =>
+    fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: { ...init.headers, ...authHeaders() },
+    });
+
+  let res = await doFetch();
+
+  if (res.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      res = await doFetch();
+    } else {
+      clearAuth();
+    }
+  }
+
+  return res;
 }
 
 export type ProviderKeyDto = 'gmail' | 'zoho' | 'microsoft';
@@ -69,9 +101,9 @@ async function parseJsonResponse(
 export async function scheduleFollowup(input: ScheduleFollowupInput): Promise<{ job: FollowupJobDto }> {
   const provider = providerToAppErrorTarget(input.provider);
   try {
-    const response = await fetch(`${API_URL}/api/followups/schedule`, {
+    const response = await authFetch(`/api/followups/schedule`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
 
@@ -89,7 +121,7 @@ export async function scheduleFollowup(input: ScheduleFollowupInput): Promise<{ 
 
 export async function listFollowups(): Promise<{ jobs: FollowupJobDto[] }> {
   try {
-    const response = await fetch(`${API_URL}/api/followups`, { headers: authHeaders() });
+    const response = await authFetch(`/api/followups`);
     const data = await parseJsonResponse(response, 'SYSTEM');
     if (!response.ok) {
       throw new AppError(AppErrorCode.PROVIDER_ERROR, 'SYSTEM', 'Failed to list follow-ups.');
@@ -104,9 +136,8 @@ export async function listFollowups(): Promise<{ jobs: FollowupJobDto[] }> {
 
 export async function cancelFollowup(id: string): Promise<{ ok: boolean }> {
   try {
-    const response = await fetch(`${API_URL}/api/followups/${encodeURIComponent(id)}/cancel`, {
+    const response = await authFetch(`/api/followups/${encodeURIComponent(id)}/cancel`, {
       method: 'POST',
-      headers: authHeaders(),
     });
     const data = await parseJsonResponse(response, 'SYSTEM');
     if (!response.ok) {

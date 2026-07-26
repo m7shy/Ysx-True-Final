@@ -29,7 +29,10 @@ export const LoginPage: React.FC<{ setPasswordMode?: boolean }> = ({ setPassword
     (async () => {
       try {
         await consumeMagicLink(token);
-        navigate('/');
+        // Replace so the single-use token URL is not left in history — one
+        // back-button press would expose it on a shared device and leak it
+        // as a Referer header on the next outbound request.
+        navigate('/', { replace: true });
       } catch (err) {
         setError(err instanceof ApiError ? err.message : 'Sign-in link failed — request a new one');
         setConsuming(false);
@@ -53,7 +56,8 @@ export const LoginPage: React.FC<{ setPasswordMode?: boolean }> = ({ setPassword
       } else {
         if (!token) throw new ApiError(400, 'VALIDATION', 'This link is missing its token — use the link from your email');
         await setPassword(token, password);
-        navigate('/');
+        // Replace so the invite token URL is not left in history.
+        navigate('/', { replace: true });
       }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong — please try again');

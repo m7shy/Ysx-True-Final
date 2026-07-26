@@ -116,8 +116,10 @@ export const useEmailProvider = () => {
         const token = await getValidToken(provider);
         return await operation(token);
       } catch (err: any) {
-        if (err instanceof AppError && err.code === AppErrorCode.AUTH_ERROR) {
-          // Clear token and rethrow with more context
+        // realGoogle/realZoho throw AUTH_EXPIRED on a provider 401; we also
+        // catch the older AUTH_ERROR here so any stale-token error clears the
+        // credential instead of looping forever with no path back to working.
+        if (err instanceof AppError && (err.code === AppErrorCode.AUTH_ERROR || err.code === AppErrorCode.AUTH_EXPIRED)) {
           clearToken(provider);
           throw new AppError(AppErrorCode.AUTH_ERROR, err.provider, `${provider} authentication expired. Please reconnect.`);
         }

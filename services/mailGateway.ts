@@ -2,7 +2,7 @@ import { Email, EmailStatus, AppError, AppErrorCode, MailGatewayProviderKey } fr
 import { getAccessToken, clearAuth } from './authStorage';
 import { apiGet, refreshAccessToken } from './apiClient';
 
-const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
+const API_URL = (import.meta as any).env?.VITE_API_URL ?? '';
 
 function authHeaders(): Record<string, string> {
   const token = getAccessToken();

@@ -1,6 +1,6 @@
 import { getAccessToken, getRefreshToken, saveAuth, clearAuth, loadAuth } from './authStorage';
 
-export const API_URL = (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001';
+export const API_URL = (import.meta as any).env?.VITE_API_URL ?? '';
 
 export class ApiError extends Error {
   code: string;

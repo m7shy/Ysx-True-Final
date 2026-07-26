@@ -37,6 +37,9 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
   const [isBulkAnalyzing, setIsBulkAnalyzing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  // Matches the actionLoading-style discipline used by every other mutating action
+  // in this file — set for the duration of the request, cleared in finally.
+  const [isAddingLead, setIsAddingLead] = useState(false);
 
   // Scanner State
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
@@ -79,6 +82,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
     e.preventDefault();
     if (!newLead.name || !newLead.email) return;
 
+    setIsAddingLead(true);
     try {
       const added = await addLead({
         name: newLead.name,
@@ -98,6 +102,9 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
     } catch (error: any) {
       console.error("Failed to add lead", error);
       showToast('ERROR', error?.message ?? "Failed to add lead. Please try again.");
+    } finally {
+      // Always clear, even on error, so the button doesn't stay permanently disabled.
+      if (isMounted.current) setIsAddingLead(false);
     }
   };
 
@@ -445,7 +452,7 @@ export const LeadsView: React.FC<LeadsViewProps> = ({ onCompose }) => {
                  <option>Referral</option>
                  <option>Event</option>
                </Select>
-               <Button type="submit" fullWidth className="mt-2">
+               <Button type="submit" fullWidth loading={isAddingLead} disabled={isAddingLead} className="mt-2">
                   Add Lead
                </Button>
             </form>

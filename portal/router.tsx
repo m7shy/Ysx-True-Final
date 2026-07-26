@@ -13,7 +13,7 @@ function currentPath(): string {
   return stripped === '' ? '/' : stripped;
 }
 
-const RouterContext = React.createContext<{ path: string; navigate: (to: string) => void }>({
+const RouterContext = React.createContext<{ path: string; navigate: (to: string, opts?: { replace?: boolean }) => void }>({
   path: '/',
   navigate: () => {},
 });
@@ -27,8 +27,15 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  const navigate = React.useCallback((to: string) => {
-    window.history.pushState(null, '', `${BASE}${to}`);
+  // `replace: true` uses replaceState so the previous URL (e.g. a one-time
+  // magic-link token) is overwritten rather than pushed — avoiding history
+  // leakage and Referer exposure on the next outbound request.
+  const navigate = React.useCallback((to: string, opts?: { replace?: boolean }) => {
+    if (opts?.replace) {
+      window.history.replaceState(null, '', `${BASE}${to}`);
+    } else {
+      window.history.pushState(null, '', `${BASE}${to}`);
+    }
     setPath(to);
   }, []);
 

@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
 import { ArrowLeft, Plus, Send, UserPlus, Archive, ExternalLink, Check } from 'lucide-react';
+import { ConfirmModal } from './ConfirmModal';
 import {
   Button,
   Card,
@@ -390,6 +391,14 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
   const [deliverNote, setDeliverNote] = React.useState('');
   const [deliverBusy, setDeliverBusy] = React.useState(false);
 
+  // Archive project confirmation/in-flight state
+  const [archiveConfirm, setArchiveConfirm] = React.useState(false);
+  const [archiveBusy, setArchiveBusy] = React.useState(false);
+
+  // File-link removal confirmation/in-flight state
+  const [removeTarget, setRemoveTarget] = React.useState<{ id: string; label: string } | null>(null);
+  const [removeBusy, setRemoveBusy] = React.useState(false);
+
   const load = React.useCallback(() => {
     fetchAdminProject(id)
       .then((r) => {
@@ -480,11 +489,59 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
     }
   };
 
+  const confirmArchive = async () => {
+    setArchiveBusy(true);
+    try {
+      await archiveProject(id);
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  const confirmRemoveFile = async () => {
+    if (!removeTarget) return;
+    setRemoveBusy(true);
+    try {
+      await deleteFileLink(id, removeTarget.id);
+      setRemoveTarget(null);
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setRemoveBusy(false);
+    }
+  };
+
   if (error && !project) return <Alert variant="error">{error}</Alert>;
   if (!project) return <div className="flex justify-center py-16"><Spinner className="h-6 w-6 text-volt-text" /></div>;
 
   return (
     <div>
+      {/* ConfirmModal for archive: non-reversible, so requires confirmation */}
+      <ConfirmModal
+        isOpen={archiveConfirm}
+        onClose={() => setArchiveConfirm(false)}
+        onConfirm={confirmArchive}
+        title="Archive project?"
+        message="The project will be hidden from the client's portal. You can restore it from the database if needed."
+        confirmText="Archive"
+        isDanger={true}
+      />
+
+      {/* ConfirmModal for file-link removal */}
+      <ConfirmModal
+        isOpen={Boolean(removeTarget)}
+        onClose={() => setRemoveTarget(null)}
+        onConfirm={confirmRemoveFile}
+        title={`Remove ${removeTarget?.label ?? 'file'}?`}
+        message="This removes the link from the client's portal. The file itself is not deleted."
+        confirmText="Remove"
+        isDanger={true}
+      />
+
       <button onClick={onBack} className="mb-4 inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white transition-colors">
         <ArrowLeft className="h-3.5 w-3.5" /> All projects
       </button>
@@ -500,7 +557,8 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
               size="sm"
               variant="secondary"
               leftIcon={<Archive className="h-3.5 w-3.5" />}
-              onClick={() => archiveProject(id).then(load)}
+              loading={archiveBusy}
+              onClick={() => setArchiveConfirm(true)}
             >
               Archive
             </Button>
@@ -592,7 +650,7 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
                   <Badge variant="neutral">{f.type.replace('_', ' ').toLowerCase()}</Badge>
                 </a>
                 <button
-                  onClick={() => deleteFileLink(id, f.id).then(load)}
+                  onClick={() => setRemoveTarget({ id: f.id, label: f.label })}
                   className="text-xs text-neutral-600 hover:text-red-400"
                   aria-label={`Remove ${f.label}`}
                 >

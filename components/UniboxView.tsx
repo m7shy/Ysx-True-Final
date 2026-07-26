@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Send, Sparkles, Archive, ChevronDown, MessageSquare } from 'lucide-react';
+import { Search, Send, Sparkles, ChevronDown, MessageSquare } from 'lucide-react';
 import { Thread, ThreadStatus, ThreadLeadStatus } from '../types';
 import { apiGet, apiPatch, apiPost, ApiError } from '../services/apiClient';
 import { useNotification } from '../context/NotificationContext';
@@ -306,15 +306,7 @@ export const UniboxView: React.FC = () => {
                            </button>
                         </div>
                      </div>
-                     <button
-                       type="button"
-                       className="p-2 text-neutral-400 hover:text-neutral-200 rounded-full hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text"
-                       aria-label="Archive conversation"
-                       title="Archive"
-                     >
-                        <Archive className="w-4 h-4" />
-                     </button>
-                  </div>
+                   </div>
                </div>
 
                {/* Message Stream */}

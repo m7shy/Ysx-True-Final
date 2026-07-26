@@ -1,6 +1,6 @@
 import { Email, EmailStatus, AppError, AppErrorCode } from '../types';
 
-const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
+const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 const PROXY_URL = `${API_URL}/api/google/gmail`;
 const TOKEN_PROXY_URL = `${API_URL}/api/google/oauth/token`;
 
