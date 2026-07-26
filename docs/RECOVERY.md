@@ -106,6 +106,28 @@ schtasks /Create /TN "YSX DB Backup" /SC DAILY /ST 03:00 /RU SYSTEM `
 
 Portal invites/magic links/invoice emails and watchdog alerts use the owner's connected mailbox first, then fall back to plain SMTP. To enable the fallback (recommended — the OAuth mailbox has broken twice):
 
-- **Brevo** (free tier, 300/day account-wide): Settings → SMTP & API → SMTP: host `smtp-relay.brevo.com`, port 587, login + SMTP key → `PORTAL_SMTP_HOST/PORT/USER/PASS`, `PORTAL_SMTP_FROM` = a sender you verified in Brevo. ⚠️ **Unconfirmed as of 2026-07-20: new/low-reputation senders may be capped well below 300/day (e.g. ~30/day) until the sending domain builds reputation** — verify the actual current ramp-up limit in Brevo's dashboard/docs before relying on this for real volume, and update this line with the real number. If portal transactional volume (invites/magic-links/invoice notices) could exceed whatever that ramp limit is, use the Gmail option below instead, or warm the Brevo sender first.
-- Or **Gmail app password**: enable 2FA → App passwords → `PORTAL_SMTP_HOST=smtp.gmail.com`, `PORTAL_SMTP_PORT=465`, user = the Gmail address, pass = the 16-char app password. (Gmail's own daily send cap applies — ~500/day for a regular account — but no new-sender ramp-up the way Brevo has.)
+**Portal's actual expected volume:** invites + magic-link logins + invoice notices for a single-admin, small-client-count business — realistically low single digits/day, with occasional bursts of a dozen or so when onboarding several clients at once. Any of the options below has enormous headroom over this.
+
+- **SendPulse (current pick, 2026-07-20)**: host `smtp-pulse.com`, port 587, SMTP login/password (a separate SMTP token, not the account password, from Settings → SMTP) → `PORTAL_SMTP_HOST/PORT/USER/PASS`, `PORTAL_SMTP_FROM` = a verified sender (max 2 on free plan; corporate domain required — free domains like Gmail/Yahoo are rejected for the From address).
+  - **Real free-tier SMTP limits (fact-checked against `sendpulse.com/knowledge-base/smtp/limits`, not the homepage's "15,000 free emails" marketing-campaign number, which is a different product):** **400 emails/day, 50/hour**, max 2 verified senders, 1 MB max email size.
+  - **⚠️ SPF must be updated BEFORE the first send, or every message hard-fails.** The
+    `outreach.ysxvisuals.com` TXT record is `v=spf1 include:spf.protection.outlook.com -all` —
+    a `-all` hard fail listing only Outlook, so mail relayed via SendPulse is rejected outright
+    by strict receivers. Replace it with the single merged record below (never add a second SPF
+    TXT record — multiple records are an RFC violation and make SPF fail entirely):
+
+    ```
+    v=spf1 include:spf.protection.outlook.com include:mxsspf.sendpulse.com -all
+    ```
+
+    Verified 2026-07-26 against live DNS, not just docs: `mxsspf.sendpulse.com` resolves to a
+    real SPF record (6 `ip4` ranges) and `sendpulse.com` itself publishes that same include.
+    SendPulse's `smtp-pulse.com` uses a sibling include, `mxsmtp.sendpulse.com`, which resolves
+    to the **identical** 6 ranges — so either works and `mxsspf` is the documented one. Keep the
+    `-all` hard fail (SendPulse's own example shows `~all`, but both includes are explicit here,
+    so `-all` is correct and stricter). Lookup budget after the change is 2 of the permitted 10:
+    `spf.protection.outlook.com` publishes only ip4/ip6 with no nested includes.
+  - **⚠️ Status as of 2026-07-20: blocked on manual account review.** SendPulse put the account's SMTP profile "on moderation" after submitting the use-case form (use case: Transactional messages; email-collection method: Other — direct existing clients). No published SLA for review turnaround. User chose to wait rather than switch to Gmail. **Check on next session whether this cleared** — if approved, get the SMTP login/password from Settings → SMTP and proceed; if still stuck after a while, fall back to Gmail below rather than waiting indefinitely.
+- **Brevo** (free tier, researched 2026-07-20): host `smtp-relay.brevo.com`, port 587. Flat **300 email envelopes/day** (every To/CC/BCC counts separately), no documented lower "new sender" daily cap — the real new-sender gate is a quality-based auto-screen on the first *marketing campaigns* (bounce/complaint/unsub sampling), which doesn't target one-off transactional SMTP like this. **Abandoned for this project** not because of the limits (they're fine) but because Brevo's signup required SMS phone verification that failed to deliver a code.
+- **Gmail app password (zero-review fallback — use this if SendPulse review drags on)**: enable 2FA on the Gmail account → Google Account → App passwords → generate one → `PORTAL_SMTP_HOST=smtp.gmail.com`, `PORTAL_SMTP_PORT=465`, user = the Gmail address, pass = the 16-char app password. ~500/day cap, no moderation queue, available in minutes — the appropriate choice when you want alerting live *today* rather than waiting on a provider's manual review.
 - Set `ALERT_EMAIL` to your personal address to activate watchdog emails.
