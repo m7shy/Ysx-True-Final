@@ -122,7 +122,10 @@ describe('materializeCookiePool', () => {
     const storedContent = prismaMock.cookieFile.upsert.mock.calls[0][0].create.content;
     prismaMock.cookieFile.findMany.mockResolvedValue([{ name: saved.name, content: storedContent }]);
 
-    await materializeCookiePool(dir, 'u1');
+    // First arg is the cookies directory itself, not its parent: the pool was
+    // moved under profiles/<slug>/cookies per tenant to fix a cross-tenant
+    // cookie leak, so the caller now passes the fully-resolved path.
+    await materializeCookiePool(cookiesDir, 'u1');
 
     const remaining = await fs.readdir(cookiesDir);
     expect(remaining.sort()).toEqual(['.adopted', 'fresh.txt']);
@@ -131,36 +134,32 @@ describe('materializeCookiePool', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it('creates an empty directory when the DB pool is empty (clearing stale files without inheriting)', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookie-materialize-empty-'));
-    prismaMock.cookieFile.findMany.mockResolvedValue([]);
-    await materializeCookiePool(dir, 'u1');
-    const files = await fs.readdir(path.join(dir, 'cookies'));
-    expect(files).toEqual([]);
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
-  it('ensures materializeCookiePool for a tenant with zero cookie rows does not expose another tenant files', async () => {
+  it("materializing one tenant's pool never touches another tenant's directory", async () => {
+    // The bug this guards: a single shared cookies dir let tenant B's
+    // materialize-and-wipe race tenant A's still-starting Python child into
+    // loading the wrong Google account's session. Each tenant now gets its own
+    // directory, passed in by the caller.
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookie-tenant-isolation-'));
-    
-    // Simulate tenant u2 having materialized cookies in u2's per-run directory
-    const dirU2 = path.join(baseDir, 'cookies', 'job_u2');
+
+    const dirU2 = path.join(baseDir, 'profiles', 'crm-u2', 'cookies');
     await fs.mkdir(dirU2, { recursive: true });
     await fs.writeFile(path.join(dirU2, 'u2_secret.txt'), 'tenant-2-secret-session', 'utf8');
 
-    // Tenant u1 has 0 cookie rows in DB
-    prismaMock.cookieFile.findMany.mockResolvedValue([]);
+    // Round-trip through saveCookieFile so the ciphertext materialize decrypts
+    // is genuine, matching how the sibling test above builds its fixture.
+    prismaMock.cookieFile.findUnique.mockResolvedValue(null);
+    prismaMock.cookieFile.upsert.mockImplementation(async ({ create }: any) => ({ ...create, updatedAt: new Date() }));
+    const savedU1 = await saveCookieFile('u1', 'u1.txt', Buffer.from('tenant-1-session', 'utf8'));
+    const storedU1 = prismaMock.cookieFile.upsert.mock.calls.at(-1)![0].create.content;
+    prismaMock.cookieFile.findMany.mockResolvedValue([{ name: savedU1.name, content: storedU1 }]);
 
-    // Materialize tenant u1 into its own run directory job_u1
-    const subDirU1 = path.join('cookies', 'job_u1');
-    const materializedPathU1 = await materializeCookiePool(baseDir, 'u1', subDirU1);
+    const dirU1 = path.join(baseDir, 'profiles', 'crm-u1', 'cookies');
+    await materializeCookiePool(dirU1, 'u1');
 
-    expect(materializedPathU1).toBe(path.join(baseDir, subDirU1));
-    const filesU1 = await fs.readdir(materializedPathU1);
-
-    // Tenant u1's materialized cookie pool must be empty and must not contain u2's files
-    expect(filesU1).toEqual([]);
-    expect(filesU1).not.toContain('u2_secret.txt');
+    // u1 sees only its own cookie...
+    expect((await fs.readdir(dirU1)).sort()).toEqual(['u1.txt']);
+    // ...and u2's directory is completely untouched by u1's run.
+    expect(await fs.readFile(path.join(dirU2, 'u2_secret.txt'), 'utf8')).toBe('tenant-2-secret-session');
 
     await fs.rm(baseDir, { recursive: true, force: true });
   });

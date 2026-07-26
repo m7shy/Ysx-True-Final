@@ -23,10 +23,6 @@ vi.mock('../smtpGateway.js', () => ({
   })
 }));
 
-vi.mock('../microsoftOauth.js', () => ({
-  getMicrosoftImapAccessToken: vi.fn()
-}));
-
 describe('hasRecipientReplied', () => {
   let mockClient: any;
 

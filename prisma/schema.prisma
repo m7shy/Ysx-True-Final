@@ -145,6 +145,7 @@ model User {
   followupJobs    FollowupJob[]
   usageRecords    UsageRecord[]
   scraperSchedule ScraperSchedule?
+  scraperSettings ScraperSettings?
   clients         Client[]
   projects        Project[]
   invoices        Invoice[]
@@ -510,6 +511,50 @@ model ScraperSchedule {
 
   // Scheduler tick: due tenants across all accounts.
   @@index([enabled, status, nextRunAt])
+}
+
+// Per-tenant qualification criteria for the YouTube scraper — what counts as
+// a lead. One row per column of scraper/criteria.py's Criteria dataclass;
+// service.ts writes the effective row (defaults merged with any overrides)
+// to profiles/<slug>/settings.json right before spawning main.py/
+// orchestrator.py, which is how a Python child process picks up per-tenant
+// values without env-var plumbing through the orchestrator→main.py subprocess
+// hop. All numeric ranges are clamped server-side (routes.ts) before writing
+// here — see criteria.py's _CLAMP_BOUNDS for the same bounds mirrored on the
+// Python side, so a hand-edited settings.json is bounded too.
+model ScraperSettings {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  minSubs          Int   @default(1000)
+  maxSubs          Int   @default(50000)
+  recentDays       Int   @default(15)
+  minAvgViews      Int   @default(1000)
+  minLongformRatio Float @default(0.40)
+  longformMinSecs  Int   @default(60)
+  searchResults    Int   @default(50)
+  uploadsSample    Int   @default(15)
+  faceCheckSample  Int   @default(3)
+  // Days a temporarily-rejected channel (subs band, avg-views floor,
+  // long-form ratio, upload recency) stays parked before it's eligible to be
+  // re-crawled instead of permanently blacklisted — see main.py's
+  // mark_recheck().
+  recheckDays Int @default(30)
+
+  // Empty array means "use criteria.py's DEFAULT_STRONG_SIGNALS /
+  // DEFAULT_WEAK_SIGNALS" — service.ts omits these keys from settings.json
+  // entirely when empty, rather than writing an empty list (which
+  // criteria.py would treat as an explicit override to nothing).
+  strongSignals String[] @default([])
+  weakSignals   String[] @default([])
+
+  // Not part of criteria.py — consumed directly by autoScheduler.ts, not the
+  // Python side.
+  keywordsPerAutoRun Int @default(4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ── Client Portal ─────────────────────────────────────────────────────────────

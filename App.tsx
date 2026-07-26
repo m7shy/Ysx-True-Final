@@ -32,6 +32,7 @@ import { ScraperView } from './components/ScraperView';
 import { Mail, RefreshCcw, Layout, Plus, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle, LogOut, Radar, Briefcase } from 'lucide-react';
 import ClientPortalView from './components/ClientPortalView';
 import { gwHealth } from './services/mailGateway';
+import { getScraperStatus, getAutoSchedule } from './services/scraperApi';
 
 type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'SCRAPER' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX' | 'CLIENT_PORTAL';
 
@@ -62,10 +63,12 @@ interface NavButtonProps {
   isActive: boolean;
   onSelect: (view: View) => void;
   indicatorId: string;
+  /** Shows a pulsing dot — a scrape (manual or auto) is running right now, even off-page. */
+  busy?: boolean;
 }
 
 // Module-scope (not inline in AppContent) so the layoutId pill survives re-renders.
-const NavButton: React.FC<NavButtonProps> = ({ view, icon: Icon, label, isActive, onSelect, indicatorId }) => (
+const NavButton: React.FC<NavButtonProps> = ({ view, icon: Icon, label, isActive, onSelect, indicatorId, busy }) => (
   <button
     onClick={() => onSelect(view)}
     aria-current={isActive ? 'page' : undefined}
@@ -81,6 +84,14 @@ const NavButton: React.FC<NavButtonProps> = ({ view, icon: Icon, label, isActive
     )}
     <Icon className={`relative z-10 w-5 h-5 md:w-4 md:h-4 mr-3 transition-colors duration-300 ${isActive ? 'text-volt-text' : 'text-neutral-500 group-hover:text-neutral-300'}`} />
     <span className="relative z-10">{label}</span>
+    {busy && (
+      <span className="relative z-10 ml-auto flex items-center gap-1 pr-1" title="A scrape is running">
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-400" />
+        </span>
+      </span>
+    )}
   </button>
 );
 
@@ -93,6 +104,7 @@ interface SidebarContentProps {
   user: { email?: string } | null;
   logout: () => void;
   indicatorId: string;
+  scraperBusy: boolean;
 }
 
 const SidebarContent: React.FC<SidebarContentProps> = ({
@@ -104,9 +116,10 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
   user,
   logout,
   indicatorId,
+  scraperBusy,
 }) => {
-  const nav = (view: View, icon: any, label: string, isActive?: boolean) => (
-    <NavButton view={view} icon={icon} label={label} isActive={isActive ?? currentView === view} onSelect={onViewChange} indicatorId={indicatorId} />
+  const nav = (view: View, icon: any, label: string, isActive?: boolean, busy?: boolean) => (
+    <NavButton view={view} icon={icon} label={label} isActive={isActive ?? currentView === view} onSelect={onViewChange} indicatorId={indicatorId} busy={busy} />
   );
 
   return (
@@ -154,7 +167,7 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
           <nav className="space-y-1">
             {nav('LEADS', Users, 'Leads')}
             {nav('CLIENT_PORTAL', Briefcase, 'Client Portal')}
-            {nav('SCRAPER', Radar, 'Scraper')}
+            {nav('SCRAPER', Radar, 'Scraper', undefined, scraperBusy)}
             {nav('STORY_VAULT', Film, 'Story Vault')}
             {nav('BRAND_OS', Palette, 'Brand OS')}
             {nav('PERFORMANCE', TrendingUp, 'Performance')}
@@ -223,6 +236,13 @@ const AppContent: React.FC = () => {
   const [wizardInitialLead, setWizardInitialLead] = useState<{email: string, name: string, company: string} | undefined>(undefined);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  // Scraper live status, polled globally (not just while on the Scraper page)
+  // so the user has some signal an auto-scrape is running or just finished
+  // even if they never navigate there — previously the only feedback was the
+  // "Last auto-run" line on the Scraper page itself, seen only if/when someone
+  // happened to open it after the fact.
+  const [scraperBusy, setScraperBusy] = useState(false);
+
   // Handle the backend's OAuth mailbox-connect redirect
   // (GET /api/auth/oauth/:provider/callback -> ?connected=<provider>&email=... or ?oauth_error=...).
   useEffect(() => {
@@ -259,6 +279,53 @@ const AppContent: React.FC = () => {
       cancelled = true;
     };
   }, [userSettings.transportMode]);
+
+  // Poll scraper status app-wide: lights the sidebar dot while a scrape (auto
+  // or manual) is running, and toasts the moment an auto-run finishes even if
+  // the user is elsewhere in the CRM — auto-scrape has no one watching it
+  // start, so this is the only way they'd otherwise learn it ran at all.
+  useEffect(() => {
+    // AppContent doesn't unmount on logout (it just renders <LoginScreen/>
+    // in place), so scraperBusy would otherwise sit stale in state and could
+    // flash the previous tenant's status for a moment on the next login.
+    if (!isLoggedIn) {
+      setScraperBusy(false);
+      return;
+    }
+    let cancelled = false;
+    let lastSeenRunAt: string | null = null;
+    let first = true;
+
+    const tick = async () => {
+      try {
+        const status = await getScraperStatus();
+        if (!cancelled) setScraperBusy(Boolean(status.activeJobId));
+      } catch { /* non-fatal — sidebar dot just stays as last known */ }
+
+      try {
+        const schedule = await getAutoSchedule();
+        if (cancelled) return;
+        if (first) {
+          // Baseline on load — don't toast for a run that finished before this tab opened.
+          lastSeenRunAt = schedule.lastRunAt;
+          first = false;
+          return;
+        }
+        if (schedule.lastRunAt && schedule.lastRunAt !== lastSeenRunAt) {
+          lastSeenRunAt = schedule.lastRunAt;
+          if (schedule.lastRunSummary?.error) {
+            showToast('ERROR', `Auto-scrape failed: ${schedule.lastRunSummary.error}`);
+          } else {
+            showToast('SUCCESS', `Auto-scrape finished — ${schedule.lastRunSummary?.created ?? 0} new lead(s) added.`);
+          }
+        }
+      } catch { /* non-fatal */ }
+    };
+
+    tick();
+    const h = setInterval(tick, 60_000);
+    return () => { cancelled = true; clearInterval(h); };
+  }, [isLoggedIn]);
 
   // The wizard submits through CampaignContext.addCampaign itself; App only
   // owns the open/close flow and lands the user on the campaigns list after.
@@ -398,6 +465,7 @@ const AppContent: React.FC = () => {
           user={user}
           logout={logout}
           indicatorId="activeNavIndicator"
+          scraperBusy={scraperBusy}
         />
       </motion.aside>
 
@@ -428,6 +496,7 @@ const AppContent: React.FC = () => {
                 user={user}
                 logout={logout}
                 indicatorId="activeNavIndicatorMobile"
+                scraperBusy={scraperBusy}
               />
             </motion.aside>
           </div>

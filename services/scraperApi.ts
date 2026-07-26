@@ -79,6 +79,60 @@ export const getAutoSchedule = () => apiGet<AutoSchedule>('/api/scraper/auto');
 export const updateAutoSchedule = (patch: { enabled?: boolean; runsPerDay?: 3 | 5 }) =>
   apiPatch<AutoSchedule>('/api/scraper/auto', patch);
 
+// ── Qualification criteria ──────────────────────────────────────────────────
+// What counts as a lead — mirrors scraper/criteria.py's Criteria dataclass
+// (server/src/scraper/routes.ts clamps and persists these to ScraperSettings,
+// then service.ts writes them to the profile's settings.json before every
+// scrape spawn).
+
+export interface ScraperSettings {
+  minSubs: number;
+  maxSubs: number;
+  recentDays: number;
+  minAvgViews: number;
+  minLongformRatio: number;
+  longformMinSecs: number;
+  searchResults: number;
+  uploadsSample: number;
+  faceCheckSample: number;
+  /** Days a temporarily-rejected channel is parked before it's re-crawled
+   * instead of staying permanently blacklisted. */
+  recheckDays: number;
+  /** Empty = use the scraper's built-in defaults. */
+  strongSignals: string[];
+  weakSignals: string[];
+  keywordsPerAutoRun: number;
+}
+
+export interface UpdateScraperSettingsResult {
+  settings: ScraperSettings;
+  /** Which fields loosened a blacklist-gating threshold in this save — an
+   * empty array means nothing here would release any blacklisted channel. */
+  loosened: string[];
+  /** How many currently-blacklisted channels this change would release,
+   * computed against the fields in `loosened` (dry run — nothing is
+   * released until releaseBlacklisted() is called). */
+  releasable: number;
+}
+
+export interface ReleaseResult {
+  released: number;
+  byReason: Record<string, number>;
+  backup: string | null;
+}
+
+export const getScraperSettings = () => apiGet<ScraperSettings>('/api/scraper/settings');
+
+export const updateScraperSettings = (patch: Partial<ScraperSettings>) =>
+  apiPatch<UpdateScraperSettingsResult>('/api/scraper/settings', patch);
+
+/** Actually release the channels the last update's dry run found —
+ * `includeSignalGate` also releases channels blacklisted for having no
+ * qualification signals (only verifiable in aggregate, not per channel —
+ * see release_blacklist.py). */
+export const releaseBlacklisted = (includeSignalGate: boolean) =>
+  apiPost<ReleaseResult>('/api/scraper/settings/release', { includeSignalGate });
+
 // ── Cookie rotation pool ──────────────────────────────────────────────────────
 // The scraper rotates across these Netscape cookie files (one per logged-in
 // YouTube account) so no single account gets rate-limited under long runs.

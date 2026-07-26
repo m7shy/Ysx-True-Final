@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { apiRequest, refreshAccessToken, ApiError } from '../services/apiClient';
-import { saveAuth, clearAuth, StoredAuthUser } from '../services/authStorage';
+import { saveAuth, clearAuth, onSessionCleared, StoredAuthUser } from '../services/authStorage';
 
 interface AuthContextType {
   user: StoredAuthUser | null;
@@ -34,6 +34,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       })
       .finally(() => setIsHydrating(false));
   }, []);
+
+  // apiClient clears storage directly (it's a plain module, not a hook) when
+  // a mid-session 401 survives a silent refresh attempt — without this, the
+  // `user` state here stays set and the app keeps rendering the authenticated
+  // shell while every request now 401s, with no way back to the login screen
+  // short of a manual reload.
+  useEffect(() => onSessionCleared(() => setUser(null)), []);
 
   const authenticate = async (path: 'signup' | 'login', email: string, password: string) => {
     const data = await apiRequest(`/api/auth/${path}`, {

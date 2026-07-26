@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { tenantDb } from '../db/tenantDb.js';
 import { importLeadRows, scraperRowSchema, ImportSummary } from '../leads/importService.js';
 import { materializeCookiePool } from './cookieService.js';
 
@@ -121,6 +122,125 @@ function slugify(niche: string): string {
 
 export function isConfigured(): boolean {
   return Boolean(config.SCRAPER_DIR);
+}
+
+/**
+ * Write this tenant's qualification-criteria overrides (ScraperSettings, if
+ * any) to profiles/<slug>/settings.json, in the shape scraper/criteria.py's
+ * load() expects. Called right before every scrape spawn (startJob /
+ * startAutoJob) so a manual `python main.py --niche <slug>` run picks up the
+ * same values with no env-var plumbing through the orchestrator→main.py
+ * subprocess hop — and again from routes.ts right before a settings PATCH's
+ * dry-run release scan, so that scan reflects the values about to be saved,
+ * not whatever was on disk from the last scrape.
+ *
+ * No row (tenant never customized anything) → no file written; criteria.py
+ * treats a missing settings.json identically to an empty one (its own
+ * defaults). Empty strongSignals/weakSignals arrays are written as-is —
+ * criteria.py's clamp step already falls back to its defaults for an empty
+ * list, so there's no need to special-case that here.
+ */
+export async function writeProfileSettings(profileDir: string, userId: string): Promise<void> {
+  const row = await tenantDb(userId).scraperSettings.findUnique({ where: { userId } });
+  if (!row) return;
+  const settingsPath = path.join(profileDir, 'settings.json');
+  const settings = {
+    minSubs: row.minSubs,
+    maxSubs: row.maxSubs,
+    recentDays: row.recentDays,
+    minAvgViews: row.minAvgViews,
+    minLongformRatio: row.minLongformRatio,
+    longformMinSecs: row.longformMinSecs,
+    searchResults: row.searchResults,
+    uploadsSample: row.uploadsSample,
+    faceCheckSample: row.faceCheckSample,
+    recheckDays: row.recheckDays,
+    strongSignals: row.strongSignals,
+    weakSignals: row.weakSignals,
+  };
+  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+}
+
+/**
+ * Run release_blacklist.py (dry-run or --apply) for one tenant and return its
+ * parsed --json result for that tenant's single profile. Used by the
+ * /api/scraper/settings PATCH (dry-run "would this release anything?") and
+ * POST /settings/release (the actual release) routes.
+ */
+function runReleaseScript(userId: string, extraArgs: string[]): Promise<any> {
+  return new Promise((resolve, reject) => {
+    if (!config.SCRAPER_DIR) {
+      reject(Object.assign(new Error('Scraper is not configured on this server'), { code: 'SCRAPER_DISABLED', status: 503 }));
+      return;
+    }
+    const niche = `crm-${userId}`;
+    const child = spawn(
+      config.PYTHON_BIN,
+      ['-u', 'release_blacklist.py', '--niche', niche, '--json', ...extraArgs],
+      { cwd: config.SCRAPER_DIR, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d) => { stdout += d.toString(); });
+    child.stderr?.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`release_blacklist.py exited ${code}: ${(stderr || stdout).slice(0, 500)}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout);
+        resolve(parsed.profiles?.[0] ?? { scanned: 0, releasable: 0, no_reason_found: 0, by_reason: {}, releasable_ids: [] });
+      } catch {
+        reject(new Error(`Failed to parse release_blacklist.py output: ${stdout.slice(0, 500)}`));
+      }
+    });
+  });
+}
+
+/** Dry-run scan: how many currently-blacklisted channels would this tenant's
+ * CURRENT on-disk settings.json release? Does not write anything. */
+export function scanReleasable(userId: string, includeSignalGate: boolean): Promise<any> {
+  return runReleaseScript(userId, includeSignalGate ? ['--include-signal-gate'] : []);
+}
+
+/** Actually release: backs up tracking.db and deletes the eligible rows. */
+export function applyRelease(userId: string, includeSignalGate: boolean): Promise<any> {
+  return runReleaseScript(userId, includeSignalGate ? ['--apply', '--include-signal-gate'] : ['--apply']);
+}
+
+/** This tenant's profiles/<slug>/ directory, computed the same way
+ * startJob/startAutoJob do. Kept private — routes.ts should go through
+ * syncAndScanReleasable/syncAndApplyRelease below rather than reaching for
+ * the path itself. */
+function profileDirFor(userId: string): string {
+  if (!config.SCRAPER_DIR) {
+    throw Object.assign(new Error('Scraper is not configured on this server'), { code: 'SCRAPER_DISABLED', status: 503 });
+  }
+  return path.join(config.SCRAPER_DIR, 'profiles', slugify(`crm-${userId}`));
+}
+
+/**
+ * Write the tenant's current ScraperSettings to settings.json, then dry-run
+ * release_blacklist.py against it — "if I save this, how many blacklisted
+ * channels would it release?" without waiting for a real scrape to run
+ * first. Used by the settings PATCH route.
+ */
+export async function syncAndScanReleasable(userId: string, includeSignalGate: boolean): Promise<any> {
+  const profileDir = profileDirFor(userId);
+  await fs.mkdir(profileDir, { recursive: true });
+  await writeProfileSettings(profileDir, userId);
+  return scanReleasable(userId, includeSignalGate);
+}
+
+/** Same sync-then-run pairing as syncAndScanReleasable, but actually
+ * releases. Used by the POST /settings/release route. */
+export async function syncAndApplyRelease(userId: string, includeSignalGate: boolean): Promise<any> {
+  const profileDir = profileDirFor(userId);
+  await fs.mkdir(profileDir, { recursive: true });
+  await writeProfileSettings(profileDir, userId);
+  return applyRelease(userId, includeSignalGate);
 }
 
 export function getJob(userId: string, id: string): ScrapeJob | undefined {
@@ -281,6 +401,7 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
   const profileDir = path.join(scraperDir, 'profiles', slug);
   const keywordsPath = path.join(profileDir, 'keywords.txt');
   const leadsPath = path.join(profileDir, 'leads.csv');
+  const cookiesDir = path.join(profileDir, 'cookies');
 
   await fs.mkdir(profileDir, { recursive: true });
   await fs.writeFile(keywordsPath, cleanKeywords.join('\n') + '\n', 'utf8');
@@ -289,14 +410,16 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
   // genuinely new, even though importLeadRows() is idempotent.
   const before = new Set((await readLeads(leadsPath)).map((r) => r.email));
 
-  const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const cookieSubDir = path.join(config.YTDLP_COOKIES_DIR || 'cookies', id);
-  const cookieDir = path.join(scraperDir, cookieSubDir);
-
   // Rebuild the on-disk cookie pool from Postgres (the durable source of
-  // truth) right before spawning into a per-run isolated directory.
-  await materializeCookiePool(scraperDir, userId, cookieSubDir);
+  // truth) right before spawning, into this tenant's own profile dir — never
+  // a shared one, since scrapes for other tenants can run concurrently — see
+  // cookieService.ts. Same idea for qualification-criteria overrides: written
+  // fresh from Postgres right before every spawn, not just once, so a
+  // settings change takes effect on the very next run.
+  await materializeCookiePool(cookiesDir, userId);
+  await writeProfileSettings(profileDir, userId);
 
+  const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const job: ScrapeJob = {
     id,
     userId,
@@ -314,7 +437,7 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
 
   const child = spawn(config.PYTHON_BIN, ['-u', 'main.py', '--niche', niche], {
     cwd: scraperDir,
-    env: { ...process.env, PYTHONIOENCODING: 'utf-8', YTDLP_COOKIES_DIR: cookieSubDir },
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', YTDLP_COOKIES_DIR: cookiesDir },
   });
   procs.set(id, child);
   appendLog(job, `▶ scrape started for ${cleanKeywords.length} keyword(s)`);
@@ -329,22 +452,17 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
     job.error = `Failed to launch scraper: ${err.message}`;
     job.finishedAt = new Date().toISOString();
     procs.delete(id);
-    fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
   });
 
   child.on('close', async (code, signal) => {
     releaseSlot(released);
     procs.delete(id);
-    try {
-      if (job.status === 'cancelled') {
-        appendLog(job, '■ cancelled');
-        job.finishedAt = new Date().toISOString();
-        return;
-      }
-      await finishJob(job, leadsPath, before, code, signal, importToCrm);
-    } finally {
-      await fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
+    if (job.status === 'cancelled') {
+      appendLog(job, '■ cancelled');
+      job.finishedAt = new Date().toISOString();
+      return;
     }
+    await finishJob(job, leadsPath, before, code, signal, importToCrm);
   });
 
   return job;
@@ -383,17 +501,17 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
   const profileDir = path.join(scraperDir, 'profiles', slug);
   const keywordsPath = path.join(profileDir, 'keywords.txt');
   const leadsPath = path.join(profileDir, 'leads.csv');
+  const cookiesDir = path.join(profileDir, 'cookies');
 
   await fs.mkdir(profileDir, { recursive: true });
   const before = new Set((await readLeads(leadsPath)).map((r) => r.email));
 
+  // Rebuild the on-disk cookie pool from Postgres before spawning, into this
+  // tenant's own profile dir — see the matching comment in startJob() above.
+  await materializeCookiePool(cookiesDir, userId);
+  await writeProfileSettings(profileDir, userId);
+
   const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const cookieSubDir = path.join(config.YTDLP_COOKIES_DIR || 'cookies', id);
-  const cookieDir = path.join(scraperDir, cookieSubDir);
-
-  // Rebuild the on-disk cookie pool from Postgres before spawning into a per-run directory.
-  await materializeCookiePool(scraperDir, userId, cookieSubDir);
-
   const job: ScrapeJob = {
     id,
     userId,
@@ -412,7 +530,7 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
   const child = spawn(
     config.PYTHON_BIN,
     ['-u', 'orchestrator.py', '--niche', niche, '--keywords', String(keywordCount), '--once'],
-    { cwd: scraperDir, env: { ...process.env, PYTHONIOENCODING: 'utf-8', YTDLP_COOKIES_DIR: cookieSubDir } },
+    { cwd: scraperDir, env: { ...process.env, PYTHONIOENCODING: 'utf-8', YTDLP_COOKIES_DIR: cookiesDir } },
   );
   procs.set(id, child);
   appendLog(job, `▶ auto-scrape started (${keywordCount} fresh keyword(s) via Gemini)`);
@@ -428,30 +546,25 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
       job.error = `Failed to launch scraper: ${err.message}`;
       job.finishedAt = new Date().toISOString();
       procs.delete(id);
-      fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
       resolve(job);
     });
 
     child.on('close', async (code, signal) => {
       releaseSlot(released);
       procs.delete(id);
-      try {
-        if (job.status === 'cancelled') {
-          appendLog(job, '■ cancelled');
-          job.finishedAt = new Date().toISOString();
-          resolve(job);
-          return;
-        }
-        // orchestrator.py generates + writes keywords.txt itself before running
-        // main.py — read it back now purely for job-history display.
-        job.keywords = await readKeywordsFile(keywordsPath);
-        // Auto-scheduled runs are hands-off by design (no user present to review),
-        // so they always import — the CSV-only toggle only applies to manual runs.
-        await finishJob(job, leadsPath, before, code, signal, true);
+      if (job.status === 'cancelled') {
+        appendLog(job, '■ cancelled');
+        job.finishedAt = new Date().toISOString();
         resolve(job);
-      } finally {
-        await fs.rm(cookieDir, { recursive: true, force: true }).catch(() => {});
+        return;
       }
+      // orchestrator.py generates + writes keywords.txt itself before running
+      // main.py — read it back now purely for job-history display.
+      job.keywords = await readKeywordsFile(keywordsPath);
+      // Auto-scheduled runs are hands-off by design (no user present to review),
+      // so they always import — the CSV-only toggle only applies to manual runs.
+      await finishJob(job, leadsPath, before, code, signal, true);
+      resolve(job);
     });
   });
 }

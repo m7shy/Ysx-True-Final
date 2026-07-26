@@ -30,6 +30,7 @@ import signal
 import sqlite3
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 from curl_cffi import requests
@@ -40,6 +41,7 @@ from google.genai import types as genai_types
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from yt_dlp.utils import DownloadError, ExtractorError
 
+import criteria
 import resilient_extractor as rex
 from cookie_manager import COOKIE_MANAGER
 from request_pacing import poisson_sleep
@@ -62,19 +64,6 @@ BACKOFF_BASE     = 2.0     # exponential backoff base (seconds)
 BACKOFF_CAP      = 120.0   # ceiling on a single backoff sleep
 POISSON_LAMBDA   = 1.2     # average inter-request sleep time (seconds) using Poisson distribution
 
-RECENT_DAYS = 15
-MIN_SUBS    = 500
-MAX_SUBS    = 10_000
-
-# yt-dlp search depth — top N results pulled per keyword.
-SEARCH_RESULTS = 50
-
-# How many of a channel's newest uploads feed the long-form / avg-views checks.
-UPLOADS_SAMPLE = 15
-
-# Visual gate: how many of the newest uploads' thumbnails get checked for a
-# human-face principal element before a channel is treated as faceless/automated.
-FACE_CHECK_SAMPLE = 3
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 ALLOWED_COUNTRIES = frozenset({"US", "GB", "CA", "AU"})
@@ -110,23 +99,69 @@ ZEROBOUNCE_TIMEOUT = 5   # seconds — on expiry the row is cached for re-check,
 # ZeroBounce statuses that mean "this address will bounce or trip a trap"
 ZEROBOUNCE_REJECT_STATUSES = frozenset({"invalid", "abuse", "spamtrap", "do_not_mail"})
 
-LONGFORM_MIN_SECS   = 60    # videos longer than this are counted as long-form
-# Proportional Shorts gate: a channel must be majority long-form. At least this
-# fraction of its recent uploads must exceed LONGFORM_MIN_SECS, else it is a
-# Shorts-dominated channel and routed to insufficient_content.
-MIN_LONGFORM_RATIO  = 0.40
-
 # CSV output columns — order matters; external_links is the new column
 CSV_FIELDS = ["url", "email", "avg_views", "social_links", "external_links", "priority_lane"]
 
-# ── Signals ───────────────────────────────────────────────────────────────────
-STRONG_SIGNALS = frozenset({
-    "course", "enroll", "gumroad", "teachable",
-    "kajabi", "stan.store", "masterclass",
-})
-WEAK_SIGNALS = frozenset({
-    "coaching", "program", "mentorship",
-})
+# ── Qualification criteria ────────────────────────────────────────────────────
+# Every threshold below (subscriber band, recency, view floor, long-form
+# ratio, crawl-depth samples, the re-check window) and the STRONG_SIGNALS /
+# WEAK_SIGNALS vocabulary that gates the pipeline live in criteria.py — the
+# single source of truth also read by orchestrator.py's Gemini prompt (see
+# criteria.describe_for_prompt()), which is what stops the prompt drifting
+# away from what run_gauntlet() actually accepts (criteria.py's docstring has
+# the 2026-07-25 drift incident that motivated centralizing this).
+#
+# score() does SUBSTRING matching against STRONG_SIGNALS/WEAK_SIGNALS, so
+# bare terms that sit inside common words are avoided in favour of a domain or
+# phrase — "whop" would match "whopping", "circle" matches "circles", "maven"
+# matches Apache Maven — see criteria.py's DEFAULT_STRONG_SIGNALS comment for
+# the full rationale (incl. why bare "skool"/"community"/"challenge" are
+# absent). score()==0 blacklists the channel permanently, so a missing term
+# costs a real lead forever while an extra term merely lets a channel through
+# to the later gates (views, long-form ratio, face check) which discard it
+# cheaply — the vocabulary is deliberately inclusive.
+#
+# use_profile() reloads all of this from the active profile's settings.json
+# (if any) via _apply_criteria(); until then these hold criteria.py's defaults.
+
+RECENT_DAYS: int
+MIN_SUBS: int
+MAX_SUBS: int
+MIN_AVG_VIEWS: int
+SEARCH_RESULTS: int
+UPLOADS_SAMPLE: int
+FACE_CHECK_SAMPLE: int
+LONGFORM_MIN_SECS: int
+MIN_LONGFORM_RATIO: float
+RECHECK_DAYS: int
+STRONG_SIGNALS: frozenset
+WEAK_SIGNALS: frozenset
+
+
+def _apply_criteria(c: criteria.Criteria) -> None:
+    """Rebind every qualification threshold/signal-list global from `c`.
+    Called once at import (process-wide defaults, profile_dir=None) and again
+    by use_profile() with the active profile's settings.json overlaid, so a
+    profiled run picks up that tenant's own thresholds."""
+    global RECENT_DAYS, MIN_SUBS, MAX_SUBS, MIN_AVG_VIEWS, SEARCH_RESULTS
+    global UPLOADS_SAMPLE, FACE_CHECK_SAMPLE, LONGFORM_MIN_SECS, MIN_LONGFORM_RATIO
+    global RECHECK_DAYS, STRONG_SIGNALS, WEAK_SIGNALS
+    RECENT_DAYS         = c.recent_days
+    MIN_SUBS            = c.min_subs
+    MAX_SUBS            = c.max_subs
+    MIN_AVG_VIEWS       = c.min_avg_views
+    SEARCH_RESULTS      = c.search_results
+    UPLOADS_SAMPLE      = c.uploads_sample
+    FACE_CHECK_SAMPLE   = c.face_check_sample
+    LONGFORM_MIN_SECS   = c.longform_min_secs
+    MIN_LONGFORM_RATIO  = c.min_longform_ratio
+    RECHECK_DAYS        = c.recheck_days
+    STRONG_SIGNALS      = c.strong_signals
+    WEAK_SIGNALS        = c.weak_signals
+
+
+CRITERIA = criteria.load(None)
+_apply_criteria(CRITERIA)
 
 # Existing monetization/sponsorship footprints in video descriptions — used to
 # route already-monetized creators into the high-ticket outreach lane.
@@ -1063,15 +1098,111 @@ _EMAIL_RE = re.compile(
 _OBFUS_AT  = re.compile(r"\s*[\[(]\s*at\s*[\])]\s*", re.IGNORECASE)
 _OBFUS_DOT = re.compile(r"\s*[\[(]\s*dot\s*[\])]\s*", re.IGNORECASE)
 
+# Crawled pages are HTML with embedded JSON, so an address is frequently
+# preceded by an escape sequence with no separating whitespace. Left in place
+# these bleed into the local part — a live run produced 'u003ehelp@skool.com'
+# from '>help@skool.com'. Replaced with a space so they act as delimiters;
+# neither sequence can ever be part of a genuine address.
+_ESCAPE_NOISE_RE = re.compile(
+    r"\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}|&[a-zA-Z]{2,10};|&#[0-9]{1,6};"
+)
+
+# Placeholder addresses shipped in website/theme boilerplate. These are not
+# leads — they are the template's demo text, present on every site using it.
+_PLACEHOLDER_EMAILS = frozenset({
+    "user@domain.com", "example@example.com", "email@example.com",
+    "name@example.com", "you@example.com", "your@email.com",
+    "name@email.com", "user@example.com", "info@example.com",
+    "yourname@email.com", "you@yoursite.com", "info@yourdomain.com",
+    "email@domain.com", "someone@example.com", "test@test.com",
+    "john@doe.com", "johndoe@example.com", "sample@email.com",
+})
+_PLACEHOLDER_DOMAINS = frozenset({
+    "example.com", "example.org", "example.net", "domain.com", "yourdomain.com",
+    "yoursite.com", "sentry.io", "wixpress.com", "email.com",
+})
+
+# Placeholder local parts, which recur on real domains too and so cannot be
+# caught by domain alone — a live crawl produced 'youremail@gmail.com' from a
+# newsletter signup form. Anything starting with 'your'/'my' plus an explicit
+# tail is template text; 'hello@', 'info@' and 'contact@' are deliberately NOT
+# here, since those are frequently a small creator's genuine address.
+# Matched exactly, never as a prefix: a bare "your"/"my" prefix rule also
+# rejects real names ("yourah@…"), so each template form is spelled out.
+_PLACEHOLDER_LOCALPARTS = frozenset({
+    "email", "emailaddress", "e-mail", "mail", "name", "firstname", "lastname",
+    "firstnamelastname", "username", "user", "someone", "example", "sample",
+    "test", "testing", "johndoe", "janedoe", "recipient", "address",
+    "youremail", "your-email", "your_email", "yourmail", "yourname",
+    "your-name", "your_name", "youraddress", "yourbusiness", "yourcompany",
+    "yoursite", "yourdomain", "myemail", "my-email", "mymail", "myname",
+})
+
+# Mailboxes that are never a person: sending here bounces or lands in an
+# unmonitored queue, and cold-mailing them only damages domain reputation.
+_ROLE_LOCALPARTS = frozenset({
+    "noreply", "no-reply", "donotreply", "do-not-reply", "postmaster",
+    "abuse", "webmaster", "mailer-daemon", "bounce", "bounces", "notifications",
+})
+
+# Course/community platforms a creator SELLS on. Their support addresses show
+# up all over a creator's linked pages, but an address at the platform's own
+# domain is the vendor's, never the creator's. Kept separate from
+# _SOCIAL_DOMAINS deliberately: a creator's own site is often hosted at
+# <them>.kajabi.com, so those hosts are still worth CRAWLING for an address —
+# it is only an email @that domain that is disqualifying.
+_PLATFORM_EMAIL_DOMAINS = frozenset({
+    "skool.com", "kajabi.com", "gumroad.com", "teachable.com", "thinkific.com",
+    "podia.com", "circle.so", "maven.com", "whop.com", "udemy.com",
+    "stan.store", "systeme.io", "convertkit.com", "kit.com", "mailchimp.com",
+    "squarespace.com", "wix.com", "wordpress.com", "shopify.com", "calendly.com",
+    "gmail.example", "sentry-next.wixpress.com",
+})
+
+
+def _is_junk_email(email: str) -> bool:
+    """True for addresses that are not a reachable human lead.
+
+    Three classes, all observed in live crawls: theme-boilerplate placeholders,
+    unattended role mailboxes, and support desks belonging to the course
+    PLATFORM a creator uses (help@skool.com) rather than the creator. The last
+    one reuses _SOCIAL_DOMAINS, which already enumerates exactly those
+    platform/aggregator hosts.
+    """
+    email = (email or "").strip().lower()
+    if not email or email in _PLACEHOLDER_EMAILS:
+        return True
+    local, _, domain = email.partition("@")
+    if not local or not domain:
+        return True
+    if domain in _PLACEHOLDER_DOMAINS or local in _ROLE_LOCALPARTS:
+        return True
+    if local in _PLACEHOLDER_LOCALPARTS:
+        return True
+    # A platform's or social network's own domain is never the creator's
+    # contact address (help@skool.com, support@kajabi.com, …).
+    if any(domain == d or domain.endswith("." + d) for d in _PLATFORM_EMAIL_DOMAINS):
+        return True
+    return _is_social(domain)
+
 
 def extract_email(text: str) -> str:
-    text = text or ""
-    m = _EMAIL_RE.search(text)
-    if m:
-        return m.group(0)
+    """Return the first genuine-looking email in `text`, or ''.
+
+    Junk matches are skipped rather than aborting the scan, so a page whose
+    footer carries a template placeholder can still yield the real address
+    further down.
+    """
+    text = _ESCAPE_NOISE_RE.sub(" ", text or "")
+    for candidate in _EMAIL_RE.findall(text):
+        if not _is_junk_email(candidate):
+            return candidate
+
     normalized = _OBFUS_DOT.sub(".", _OBFUS_AT.sub("@", text))
-    m = _EMAIL_RE.search(normalized)
-    return m.group(0) if m else ""
+    for candidate in _EMAIL_RE.findall(normalized):
+        if not _is_junk_email(candidate):
+            return candidate
+    return ""
 
 
 _URL_RE = re.compile(r'https?://[^\s\'"<>]+|www\.[^\s\'"<>]+')
@@ -1089,13 +1220,91 @@ def extract_social_links(desc: str) -> str:
     return " | ".join(links)
 
 
-def extract_external_links(channel: dict) -> str:
-    """Return custom/external links from brandingSettings.channel.customLinks.
+# ── About-tab external links ─────────────────────────────────────────────────
+# brandingSettings.channel.customLinks is dead: YouTube's API stopped populating
+# it, and the web layer (yt-dlp) never exposed it either, so channel dicts built
+# by channel_batch() always carried an empty list. That silently disabled the
+# deep-link email recovery below — the mechanism that turns a qualified channel
+# with no email in its description into a contactable lead.
+#
+# The links do still exist in the channel page's server-rendered payload, where
+# every outbound link is wrapped in a /redirect?...&q=<url-encoded target> hop.
+# Parsing those redirect hops is far more robust than walking the deep
+# (frequently renamed) ytInitialData JSON path.
+#
+# `event` records where a link came from, and we rank by it: the channel's own
+# About-tab/header links are the creator's real site, whereas video_description
+# links are often a sponsor's. Highest-trust first, so crawl_for_email() spends
+# its one fetch on the most likely candidate.
+_ABOUT_EVENT_PRIORITY = {"channel_header": 0, "channel_description": 1}
+_ABOUT_EVENT_FALLBACK = 2
 
-    YouTube's web layer (yt-dlp) does not expose the About-tab custom links, so
-    channel dicts built by channel_batch() carry an empty customLinks list and
-    this returns ''. The field is kept so run_gauntlet() and the CSV schema are
-    unchanged, and so API-shaped dicts from other pipelines still work.
+_YT_REDIRECT_RE = re.compile(r'youtube\.com/redirect\?([^"\'<>\s]+)', re.IGNORECASE)
+
+# The payload is JSON embedded in HTML, so '&' and '/' arrive JSON-escaped as
+# the literal sequences & and \/. Built via chr(92) so the intent survives
+# any future reformatting of this file.
+_JSON_ESC_AMP = chr(92) + "u0026"
+_JSON_ESC_SLASH = chr(92) + "/"
+
+# One page fetch per channel per run, at most.
+_ABOUT_LINKS_CACHE: dict[str, list[str]] = {}
+
+
+def _about_page_links(channel_id: str) -> list[str]:
+    """Scrape a channel's external links from its About tab.
+
+    Uses _fetch_html(), so this inherits the same proxy rotation, browser
+    impersonation and 429 backoff as every other HTTP path here. Returns []
+    on any failure — a missing link list must never break qualification.
+    """
+    if not channel_id:
+        return []
+    cached = _ABOUT_LINKS_CACHE.get(channel_id)
+    if cached is not None:
+        return cached
+
+    links: list[str] = []
+    html = _fetch_html(f"https://www.youtube.com/channel/{channel_id}/about")
+    if html:
+        normalized = (
+            html.replace(_JSON_ESC_AMP, "&")
+            .replace("&amp;", "&")
+            .replace(_JSON_ESC_SLASH, "/")
+        )
+        ranked: list[tuple[int, int, str]] = []
+        seen: set[str] = set()
+        for order, query in enumerate(_YT_REDIRECT_RE.findall(normalized)):
+            params = urllib.parse.parse_qs(query)
+            target = (params.get("q") or [""])[0].strip()
+            if not target:
+                continue
+            target = urllib.parse.unquote(target)
+            if not target.startswith(("http://", "https://")):
+                continue
+            if target in seen:
+                continue
+            seen.add(target)
+            event = (params.get("event") or [""])[0]
+            rank = _ABOUT_EVENT_PRIORITY.get(event, _ABOUT_EVENT_FALLBACK)
+            # `order` keeps the page's own ordering stable within a rank.
+            ranked.append((rank, order, target))
+        links = [target for _, _, target in sorted(ranked)]
+
+    _ABOUT_LINKS_CACHE[channel_id] = links
+    return links
+
+
+def extract_external_links(channel: dict) -> str:
+    """Return a channel's custom/external links joined by ' | ', or ''.
+
+    Prefers brandingSettings.channel.customLinks when present, so API-shaped
+    dicts from the sibling process_*.py pipelines keep working unchanged, and
+    falls back to scraping the About tab for dicts built by channel_batch()
+    (where that field is always empty — see the note above).
+
+    Only called for channels that already passed the gauntlet, so the extra
+    fetch is bounded by the qualified-lead count, not the crawl size.
     """
     links: list[str] = []
     branding = (channel or {}).get("brandingSettings", {}) or {}
@@ -1103,6 +1312,10 @@ def extract_external_links(channel: dict) -> str:
         url = (item.get("linkUrl", "") or "").strip()
         if url:
             links.append(url)
+
+    if not links:
+        links = _about_page_links(((channel or {}).get("id") or "").strip())
+
     return " | ".join(links)
 
 
@@ -1117,6 +1330,17 @@ def make_url(channel: dict) -> str:
 # raw HTML — recovering leads that would otherwise be discarded.
 
 _CRAWL_TIMEOUT = 5   # strict per-request ceiling (seconds)
+# Distinct hosts tried per channel before giving up (bounds worst-case time).
+_CRAWL_MAX_CANDIDATES = 3
+# Hard ceiling on pages fetched per channel across all hosts.
+_CRAWL_MAX_FETCHES = 7
+# An About-tab link is usually a campaign landing page ("/exitplan",
+# "/starthere") which carries no contact details, while the site root and
+# /contact almost always do — observed live on a 43k-sub lead whose 11 links
+# were all deep pages with zero emails, while its root served
+# support@<domain>. So each host is probed root-first, then its /contact, then
+# the linked page itself.
+_CONTACT_PATHS = ("", "/contact")
 # Aggregators / social platforms are not the lead's own site — skip them and
 # crawl the first genuinely custom domain instead.
 _SOCIAL_DOMAINS = frozenset({
@@ -1140,33 +1364,63 @@ def _is_social(host: str) -> bool:
 
 
 def crawl_for_email(external_links: list[str]) -> str:
-    """Fetch the FIRST non-social custom website among external_links and scan
-    its HTML for an email address.
+    """Scan the non-social custom websites among external_links for an email.
 
-    Mocks a standard browser User-Agent and enforces a strict 5-second timeout.
-    Every network failure (timeout, connection reset, DNS, TLS, bad status, …)
-    is swallowed and returns '' so the crawler can never crash the main thread.
+    Tries up to _CRAWL_MAX_CANDIDATES distinct hosts, in the order given (see
+    _about_page_links, which ranks the creator's own About-tab links ahead of
+    sponsor links lifted from video descriptions). A candidate that fails or
+    simply has no address on it falls through to the next rather than
+    abandoning the rest — the first link is frequently a slow or unreachable
+    vanity domain, and giving up there discarded recoverable leads.
+
+    Mocks a standard browser User-Agent and enforces a strict per-request
+    timeout, so worst case is bounded at _CRAWL_MAX_CANDIDATES × _CRAWL_TIMEOUT
+    for a channel that has already passed the gauntlet. Every network failure
+    (timeout, connection reset, DNS, TLS, bad status, …) is swallowed so the
+    crawler can never crash the main thread.
     """
+    tried: set[str] = set()
+    fetches = 0
     for raw in external_links:
         url = (raw or "").strip()
         if not url:
             continue
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        if _is_social(_host_of(url)):
+        host = _host_of(url)
+        if _is_social(host) or host in tried:
             continue
-        # First custom domain found — this is the one we crawl (per spec).
-        try:
-            resp = requests.get(
-                url,
-                timeout=_CRAWL_TIMEOUT,
-                allow_redirects=True,
-                impersonate=_IMPERSONATE,
-            )
-            return extract_email(resp.text or "")
-        except Exception:
-            # requests.RequestException + any defensive edge — never propagate.
-            return ""
+        tried.add(host)
+
+        # Root and /contact first, then the linked page itself.
+        pages: list[str] = []
+        for path in _CONTACT_PATHS:
+            candidate = f"https://{host}{path}"
+            if candidate not in pages:
+                pages.append(candidate)
+        if url not in pages:
+            pages.append(url)
+
+        for page in pages:
+            if fetches >= _CRAWL_MAX_FETCHES:
+                return ""
+            fetches += 1
+            try:
+                resp = requests.get(
+                    page,
+                    timeout=_CRAWL_TIMEOUT,
+                    allow_redirects=True,
+                    impersonate=_IMPERSONATE,
+                )
+                email = extract_email(resp.text or "")
+                if email:
+                    return email
+            except Exception:
+                # requests.RequestException + any defensive edge — never propagate.
+                pass
+
+        if len(tried) >= _CRAWL_MAX_CANDIDATES:
+            break
     return ""
 
 
@@ -1230,6 +1484,16 @@ def _connect_tracking_db() -> sqlite3.Connection:
     return _TRACKING_CONN
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
+    """Idempotent ALTER TABLE ADD COLUMN: SQLite has no native
+    "ADD COLUMN IF NOT EXISTS", so check PRAGMA table_info first. Safe to call
+    against a DB that already has the column (no-op) or one that predates it
+    (adds it, defaulting existing rows to NULL)."""
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def init_tracking_db() -> None:
     """Create the tracking tables + indices (idempotent) and run the one-time
     legacy-CSV migration. Safe to call at the top of every entry point."""
@@ -1252,6 +1516,18 @@ def init_tracking_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_channels(status);
         """
+    )
+    # recheck_after: when set (status='recheck'), the channel is temporarily
+    # deferred rather than permanently blacklisted — is_seen() treats an
+    # expired recheck_after as unseen. reason: the structured skip reason
+    # (e.g. "subs_out_of_band:450"), stored so a future criteria change can
+    # tell which recheck/blacklist rows it would now release without
+    # re-deriving it from skipped.log.
+    _ensure_column(conn, "processed_channels", "recheck_after", "TEXT")
+    _ensure_column(conn, "processed_channels", "reason", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_processed_recheck "
+        "ON processed_channels(status, recheck_after)"
     )
     conn.commit()
     _migrate_legacy_state()
@@ -1330,27 +1606,81 @@ def _migrate_legacy_state() -> None:
 
 def is_seen(cid: str) -> bool:
     """Fast native existence check: True if `cid` is already processed or
-    blacklisted. Uses the primary-key indices on both tables."""
+    blacklisted. Uses the primary-key indices on both tables.
+
+    A processed_channels row with status='recheck' is the one exception: it
+    only counts as seen while its recheck_after is still in the future. Once
+    that date passes, the channel reads as unseen again and re-enters the
+    candidate pool on its own — no manual release needed, unlike a genuine
+    blacklist row (see mark_recheck())."""
     if not cid:
         return False
     conn = _connect_tracking_db()
     row = conn.execute(
-        "SELECT 1 WHERE EXISTS (SELECT 1 FROM processed_channels WHERE channel_id = ?) "
-        "OR EXISTS (SELECT 1 FROM blacklist WHERE channel_id = ?)",
+        "SELECT 1 WHERE EXISTS ("
+        "  SELECT 1 FROM processed_channels WHERE channel_id = ? "
+        "  AND NOT (status = 'recheck' AND recheck_after <= datetime('now'))"
+        ") OR EXISTS (SELECT 1 FROM blacklist WHERE channel_id = ?)",
         (cid, cid),
     ).fetchone()
     return row is not None
 
 
 def mark_processed(cid: str, status: str = "seen") -> None:
-    """Record a channel as processed. INSERT OR IGNORE handles the duplicate
-    constraint natively — no pre-check needed."""
+    """Record/transition a channel's processed_channels row.
+
+    Upserts on conflict rather than INSERT OR IGNORE, so a status transition
+    actually lands — e.g. a channel parked as 'recheck' that has since fully
+    qualified (called with status='seen' after a successful re-crawl), or one
+    that failed a permanent gate on this run (append_to_blacklist routes
+    through here too). INSERT OR IGNORE would silently no-op against the
+    existing 'recheck' row, leaving the channel stuck in an endless
+    re-check loop even after it stopped meeting the recheck condition.
+
+    Always clears recheck_after/reason: this function is never called with
+    status='recheck' (that's mark_recheck()'s job), so any prior recheck
+    window is stale the moment a channel lands with a different status here.
+    """
     if not cid:
         return
     conn = _connect_tracking_db()
     conn.execute(
-        "INSERT OR IGNORE INTO processed_channels (channel_id, status) VALUES (?, ?)",
+        "INSERT INTO processed_channels (channel_id, status) VALUES (?, ?) "
+        "ON CONFLICT(channel_id) DO UPDATE SET "
+        "status = excluded.status, processed_at = datetime('now'), "
+        "recheck_after = NULL, reason = NULL",
         (cid, status),
+    )
+    conn.commit()
+
+
+def mark_recheck(cid: str, reason: str, days: "int | None" = None) -> None:
+    """Defer a channel instead of permanently blacklisting it.
+
+    For gates that describe *current*, not permanent, state — subscriber
+    band, avg-views floor, long-form ratio, upload recency — a channel that
+    fails today could pass on a later run as it grows or becomes active
+    again. Recording these as status='recheck' with a due date lets is_seen()
+    treat an expired window as unseen, so the channel re-enters the candidate
+    pool by itself once `days` (default RECHECK_DAYS) have passed, instead of
+    needing a manual tracking.db release the way a genuine blacklist entry
+    does (see release_blacklist.py).
+
+    Upserts on conflict for the same reason mark_processed() does: a channel
+    that later fails a *permanent* gate must be able to transition out of
+    'recheck' via append_to_blacklist(), not get stuck here forever.
+    """
+    if not cid:
+        return
+    days = RECHECK_DAYS if days is None else days
+    conn = _connect_tracking_db()
+    conn.execute(
+        "INSERT INTO processed_channels (channel_id, status, recheck_after, reason) "
+        "VALUES (?, 'recheck', datetime('now', ?), ?) "
+        "ON CONFLICT(channel_id) DO UPDATE SET "
+        "status = 'recheck', recheck_after = excluded.recheck_after, "
+        "reason = excluded.reason, processed_at = datetime('now')",
+        (cid, f"+{days} days", reason or None),
     )
     conn.commit()
 
@@ -1383,9 +1713,12 @@ def load_seen_ids() -> "SeenIds":
 
 
 def append_to_blacklist(cid: str, reason: str = "") -> None:
-    """Blacklist a channel natively: INSERT OR IGNORE into both the blacklist
-    table and processed_channels, so duplicate targets are absorbed at the DB
-    layer."""
+    """Permanently blacklist a channel: INSERT OR IGNORE into blacklist (first
+    reason recorded wins on a duplicate — release_blacklist.py's skipped.log
+    fallback exists precisely for the channels blacklisted before reasons were
+    tracked), then transition processed_channels via mark_processed() so a
+    channel previously parked as 'recheck' actually moves to 'blacklist'
+    instead of the write being dropped."""
     if not cid:
         return
     conn = _connect_tracking_db()
@@ -1393,17 +1726,8 @@ def append_to_blacklist(cid: str, reason: str = "") -> None:
         "INSERT OR IGNORE INTO blacklist (channel_id, reason) VALUES (?, ?)",
         (cid, reason or None),
     )
-    conn.execute(
-        "INSERT OR IGNORE INTO processed_channels (channel_id, status) VALUES (?, 'blacklist')",
-        (cid,),
-    )
     conn.commit()
-
-
-def append_to_insufficient(cid: str) -> None:
-    """Record a Shorts-dominated channel as processed with 'insufficient' status
-    (native INSERT OR IGNORE)."""
-    mark_processed(cid, "insufficient")
+    mark_processed(cid, "blacklist")
 
 
 def normalize_leads_csv() -> None:
@@ -1705,11 +2029,16 @@ def run_gauntlet(channels: list[dict], seen_ids: set[str], new_rows_out: list[di
         desc = snippet.get("description", "")
 
         # ── Tier 1: zero-cost filters ─────────────────────────────────────────
+        # Permanent disqualifications below (hidden subs, geo/language block,
+        # no qualification signals) describe the channel itself, not a
+        # snapshot of it — they don't get re-checked. Each append_to_blacklist
+        # call carries a structured reason now (previously most passed none),
+        # so a future criteria change or audit doesn't need to re-derive the
+        # cause from skipped.log the way last session had to.
         stats = ch.get("statistics", {}) or {}
         if stats.get("hiddenSubscriberCount", False):
             skip_log.info(f"SKIP {cid} ({name}): subscriber count hidden")
-            append_to_blacklist(cid)
-            seen_ids.add(cid)
+            append_to_blacklist(cid, "hidden_subs")
             continue
 
         try:
@@ -1720,34 +2049,33 @@ def run_gauntlet(channels: list[dict], seen_ids: set[str], new_rows_out: list[di
             skip_log.info(
                 f"SKIP {cid} ({name}): {subs:,} subs — outside {MIN_SUBS:,}–{MAX_SUBS:,}"
             )
-            append_to_blacklist(cid)
-            seen_ids.add(cid)
+            # Temporal, not permanent: a channel can grow (or shrink) into the
+            # band later, so this parks it for re-check instead of blacklisting
+            # it forever — see mark_recheck(). The count is still recorded in
+            # the reason for observability/release-tool eligibility.
+            mark_recheck(cid, f"subs_out_of_band:{subs}")
             continue
 
         country = snippet.get("country", "")
         if country and country not in ALLOWED_COUNTRIES:
             skip_log.info(f"SKIP {cid} ({name}): country={country!r} blocked")
-            append_to_blacklist(cid)
-            seen_ids.add(cid)
+            append_to_blacklist(cid, f"country_blocked:{country}")
             continue
         if not country and has_india_signals(f"{name} {desc}"):
             skip_log.info(f"SKIP {cid} ({name}): country unset — India signals detected")
-            append_to_blacklist(cid)
-            seen_ids.add(cid)
+            append_to_blacklist(cid, "india_signals")
             continue
 
         lang = snippet.get("defaultLanguage", "")
         if lang and lang not in ALLOWED_LANGUAGES:
             skip_log.info(f"SKIP {cid} ({name}): language={lang!r} unsupported")
-            append_to_blacklist(cid)
-            seen_ids.add(cid)
+            append_to_blacklist(cid, f"lang_unsupported:{lang}")
             continue
 
         sig = score(desc)
         if sig == 0:
             skip_log.info(f"SKIP {cid} ({name}): no qualification signals")
-            append_to_blacklist(cid)
-            seen_ids.add(cid)
+            append_to_blacklist(cid, "no_signals")
             continue
 
         # ── Tier 2: API-cost filters ──────────────────────────────────────────
@@ -1772,6 +2100,11 @@ def run_gauntlet(channels: list[dict], seen_ids: set[str], new_rows_out: list[di
 
         if not active:
             skip_log.info(f"SKIP {cid} ({name}): no upload in last {RECENT_DAYS} days")
+            # Temporal: an inactive channel can post again. Previously this
+            # path recorded nothing at all, so it was re-crawled from scratch
+            # on every run — now it's parked for re-check like the other
+            # snapshot-in-time gates below.
+            mark_recheck(cid, "no_recent_upload")
             continue
 
         if not fits("videos.list"):
@@ -1791,29 +2124,31 @@ def run_gauntlet(channels: list[dict], seen_ids: set[str], new_rows_out: list[di
                 f"SKIP {cid} ({name}): {longform_count}/{total_videos} long-form "
                 f"({longform_ratio:.0%}) — below {MIN_LONGFORM_RATIO:.0%} ratio — insufficient_content"
             )
-            append_to_insufficient(cid)
-            seen_ids.add(cid)
+            # Temporal: a channel's upload mix shifts over time. Was a
+            # permanent 'insufficient' status; now recheckable.
+            mark_recheck(cid, f"longform_ratio_low:{longform_count}/{total_videos}")
             continue
 
-        if avg_views < 1_000:
+        if avg_views < MIN_AVG_VIEWS:
             skip_log.info(
-                f"SKIP {cid} ({name}): {avg_views:,} avg views — below 1k threshold"
+                f"SKIP {cid} ({name}): {avg_views:,} avg views — below {MIN_AVG_VIEWS:,} threshold"
             )
-            append_to_blacklist(cid)
-            seen_ids.add(cid)
+            # Temporal: views can grow. Was a permanent blacklist; now
+            # recheckable, same as the subs-band gate above.
+            mark_recheck(cid, f"avg_views_low:{avg_views}")
             continue
 
         # ── Tier 2b: visual gate ────────────────────────────────────────────
         # Faceless/automated channels (compilations, TTS narration, meme
         # streams) can pass every check above; this rejects them on thumbnail
-        # content instead of metadata.
+        # content instead of metadata. Permanent: a channel's format doesn't
+        # change on its own.
         if not check_face_present(video_ids):
             skip_log.info(
                 f"SKIP {cid} ({name}): no human face detected across "
                 f"{min(len(video_ids), FACE_CHECK_SAMPLE)} sampled thumbnails — faceless/automated content"
             )
             append_to_blacklist(cid, "faceless_content")
-            seen_ids.add(cid)
             continue
 
         # ── Qualified lead ────────────────────────────────────────────────────
@@ -1851,7 +2186,6 @@ def run_gauntlet(channels: list[dict], seen_ids: set[str], new_rows_out: list[di
             if verdict == "invalid":
                 skip_log.info(f"SKIP {cid} ({name}): email '{email}' failed ZeroBounce validation")
                 append_to_blacklist(cid, "invalid_email")
-                seen_ids.add(cid)
                 continue
             if verdict == "timeout":
                 skip_log.info(f"CACHE {cid} ({name}): ZeroBounce timed out — parked for re-check")
@@ -1888,7 +2222,7 @@ def use_profile(profile: SessionProfile) -> None:
     """
     global OUTPUT_FILE, QUALIFIED_FILE, BLACKLIST_FILE, INSUFFICIENT_FILE
     global SKIP_LOG_FILE, WEBHOOK_DB_FILE, TRACKING_DB_FILE, DAEMON_STATE_FILE
-    global _TRACKING_CONN
+    global _TRACKING_CONN, CRITERIA
 
     # Serialize/close the outgoing profile's DB handle before repointing.
     if _TRACKING_CONN is not None:
@@ -1906,6 +2240,13 @@ def use_profile(profile: SessionProfile) -> None:
     WEBHOOK_DB_FILE   = profile.webhook_db
     TRACKING_DB_FILE  = profile.tracking_db
     DAEMON_STATE_FILE = profile.daemon_state
+
+    # Reload qualification thresholds/signals from this profile's settings.json
+    # (if any) — see the "Qualification criteria" block near the top of this
+    # file. Falls back to criteria.py's defaults when the tenant hasn't set
+    # anything, exactly like the un-profiled path.
+    CRITERIA = criteria.load(profile.dir)
+    _apply_criteria(CRITERIA)
 
     _bind_skip_log(SKIP_LOG_FILE)
     safe_print(f"[profile] active niche '{profile.niche}' → {profile.dir}")

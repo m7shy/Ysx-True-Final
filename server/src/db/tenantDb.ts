@@ -41,6 +41,7 @@ const TENANT_MODELS = new Set<string>([
   'FollowupJob',
   'CampaignRecipient',
   'ScraperSchedule',
+  'ScraperSettings',
   'Client',
   'Project',
   'Invoice',
