@@ -322,6 +322,13 @@ describe('portal logout clears the refresh cookie', () => {
       c.startsWith('ysxportal_rt='),
     );
     expect(cleared).toBeTruthy();
-    expect(cleared).toMatch(/ysxportal_rt=;|Expires=Thu, 01 Jan 1970/);
+    // The value must be emptied AND the cookie actually deleted. The first
+    // version of this assertion accepted either condition, so it passed while
+    // clearCookie was inheriting maxAge from the set-options and re-issuing the
+    // cookie with a 30-day future expiry - the token was destroyed, but the
+    // cookie lingered. Caught by reading the live Set-Cookie header after
+    // deploy, not by the test.
+    expect(cleared).toMatch(/ysxportal_rt=;/);
+    expect(cleared).not.toMatch(/Max-Age=\d{3,}/);
   });
 });

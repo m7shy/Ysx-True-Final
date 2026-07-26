@@ -45,6 +45,23 @@ function cookieOptions(path: string): CookieOptions {
   };
 }
 
+/**
+ * Options for CLEARING a cookie: identical to the set options except that
+ * maxAge/expires must be omitted.
+ *
+ * res.clearCookie() applies whatever options it is given, so passing the same
+ * object used to set the cookie re-sends maxAge and the browser stores an empty
+ * value for another 30 days instead of deleting the cookie. Observed on the
+ * live response after deploy:
+ *   Set-Cookie: ysxflow_rt=; Max-Age=2592000; Expires=<30 days ahead>
+ * The session still ended — the token value is destroyed, which is the
+ * security-relevant part — but the cookie lingered rather than being removed.
+ */
+function clearOptions(path: string): CookieOptions {
+  const { maxAge: _maxAge, ...rest } = cookieOptions(path);
+  return rest;
+}
+
 // ── CRM helpers ───────────────────────────────────────────────────────────────
 
 const CRM_REFRESH_PATH = '/api/auth/refresh';
@@ -54,7 +71,7 @@ export function setCrmRefreshCookie(res: Response, refreshToken: string): void {
 }
 
 export function clearCrmRefreshCookie(res: Response): void {
-  res.clearCookie(CRM_REFRESH_COOKIE, cookieOptions(CRM_REFRESH_PATH));
+  res.clearCookie(CRM_REFRESH_COOKIE, clearOptions(CRM_REFRESH_PATH));
 }
 
 // ── Portal helpers ────────────────────────────────────────────────────────────
@@ -66,7 +83,7 @@ export function setPortalRefreshCookie(res: Response, refreshToken: string): voi
 }
 
 export function clearPortalRefreshCookie(res: Response): void {
-  res.clearCookie(PORTAL_REFRESH_COOKIE, cookieOptions(PORTAL_REFRESH_PATH));
+  res.clearCookie(PORTAL_REFRESH_COOKIE, clearOptions(PORTAL_REFRESH_PATH));
 }
 
 // ── OAuth state binding ───────────────────────────────────────────────────────
@@ -102,5 +119,6 @@ export function setOAuthStateCookie(res: Response, secret: string): void {
 }
 
 export function clearOAuthStateCookie(res: Response): void {
-  res.clearCookie(OAUTH_STATE_COOKIE, oauthStateCookieOptions());
+  const { maxAge: _maxAge, ...rest } = oauthStateCookieOptions();
+  res.clearCookie(OAUTH_STATE_COOKIE, rest);
 }
