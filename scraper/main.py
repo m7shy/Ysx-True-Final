@@ -2222,6 +2222,7 @@ def use_profile(profile: SessionProfile) -> None:
     """
     global OUTPUT_FILE, QUALIFIED_FILE, BLACKLIST_FILE, INSUFFICIENT_FILE
     global SKIP_LOG_FILE, WEBHOOK_DB_FILE, TRACKING_DB_FILE, DAEMON_STATE_FILE
+    global PENDING_VERIFICATION_FILE
     global _TRACKING_CONN, CRITERIA
 
     # Serialize/close the outgoing profile's DB handle before repointing.
@@ -2240,6 +2241,12 @@ def use_profile(profile: SessionProfile) -> None:
     WEBHOOK_DB_FILE   = profile.webhook_db
     TRACKING_DB_FILE  = profile.tracking_db
     DAEMON_STATE_FILE = profile.daemon_state
+    # Was missed when profile isolation was introduced: session_profile.py has
+    # always mapped "pending_verification" into the profile directory, but this
+    # global was never rebound, so every tenant appended to one shared
+    # pending_email_verification.csv at the process CWD — one tenant's
+    # unverified lead addresses landing in another's file.
+    PENDING_VERIFICATION_FILE = profile.pending_verification
 
     # Reload qualification thresholds/signals from this profile's settings.json
     # (if any) — see the "Qualification criteria" block near the top of this

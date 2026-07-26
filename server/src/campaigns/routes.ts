@@ -65,7 +65,7 @@ const sequenceStepSchema = z.object({
 
 const MAX_STEPS = 10;
 
-const createSchema = z.object({
+const createSchemaBase = z.object({
   name: z.string().min(1, 'name is required'),
   subject: z.string().max(50_000, 'subject is too long').optional(),
   body: z.string().max(50_000, 'body is too long').optional(),
@@ -94,9 +94,34 @@ const createSchema = z.object({
   followUpPercent: z.number().int().min(0).max(100).optional(),
 });
 
-const updateSchema = createSchema.partial().extend({
-  progress: z.number().int().min(0).max(100).optional(),
-});
+/**
+ * A send window needs BOTH ends. isWithinSendWindow() only applies the window
+ * when start and end are both non-null, so accepting one without the other
+ * stored a half-configured window that was silently ignored — the campaign
+ * sent around the clock while the UI showed a start time. Failing the request
+ * is better than storing a setting that does nothing.
+ */
+function requireCompleteSendWindow(
+  value: { sendWindowStart?: number | null; sendWindowEnd?: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  const hasStart = value.sendWindowStart != null;
+  const hasEnd = value.sendWindowEnd != null;
+  if (hasStart !== hasEnd) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [hasStart ? 'sendWindowEnd' : 'sendWindowStart'],
+      message: 'sendWindowStart and sendWindowEnd must be set together (a one-sided send window is ignored)',
+    });
+  }
+}
+
+const createSchema = createSchemaBase.superRefine(requireCompleteSendWindow);
+
+const updateSchema = createSchemaBase
+  .partial()
+  .extend({ progress: z.number().int().min(0).max(100).optional() })
+  .superRefine(requireCompleteSendWindow);
 
 function toErrorPayload(err: unknown): { status: number; code: string; message: string } {
   if (err instanceof z.ZodError) {

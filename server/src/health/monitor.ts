@@ -80,7 +80,12 @@ export async function runDeepChecks(): Promise<DeepHealth> {
             ? { status: 'degraded', detail: 'no connected mailboxes' }
             : { status: 'ok', detail: `${active} active` };
     } catch (err) {
-      checks.mailboxes = { status: 'degraded', detail: `lookup failed: ${err instanceof Error ? err.message : String(err)}` };
+      // Generic for the same reason the db check above is: a Prisma/pg error
+      // embeds the datasource host, port, database and often the username, and
+      // this payload is readable by anything holding HEALTH_TOKEN. The db check
+      // was sanitized previously; this sibling was left echoing err.message.
+      logger.error({ err }, 'Deep health: mailbox lookup failed');
+      checks.mailboxes = { status: 'degraded', detail: 'mailbox lookup failed' };
     }
   } else {
     checks.mailboxes = { status: 'disabled', detail: 'db unavailable' };

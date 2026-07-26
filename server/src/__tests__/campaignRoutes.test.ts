@@ -333,3 +333,29 @@ describe('pausing suspends follow-ups instead of destroying them', () => {
     expect(cancelCampaignCalls[0]).toMatchObject({ campaignId, reason: 'campaign_deleted' });
   });
 });
+
+describe('send window must be configured at both ends', () => {
+  // isWithinSendWindow() only applies a window when BOTH ends are non-null, so
+  // storing one without the other produced a setting that silently did nothing
+  // — the campaign sent around the clock while the UI showed a start time.
+  it('rejects a start without an end', async () => {
+    const res = await authed('post', '/api/campaigns').send({ name: '[TEST] w', sendWindowStart: 540 });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION');
+    expect(res.body.message).toMatch(/sendWindow/i);
+  });
+
+  it('rejects an end without a start', async () => {
+    const res = await authed('post', '/api/campaigns').send({ name: '[TEST] w', sendWindowEnd: 1020 });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts both together, and neither', async () => {
+    const both = await authed('post', '/api/campaigns').send({
+      name: '[TEST] w', sendWindowStart: 540, sendWindowEnd: 1020,
+    });
+    expect(both.status).toBe(201);
+    const neither = await authed('post', '/api/campaigns').send({ name: '[TEST] w2' });
+    expect(neither.status).toBe(201);
+  });
+});
