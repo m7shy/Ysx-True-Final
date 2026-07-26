@@ -1,18 +1,24 @@
 # Set PORTAL_SMTP_PASS in server/.env without the secret ever appearing on
 # screen, in shell history, or in a chat transcript.
 #
-# Why this exists: PORTAL_SMTP_PASS being empty is the reason there is no
-# alerting on anything. The watchdog has been detecting real failures and
-# writing them to a logfile nobody reads (see HANDOFF 2026-07-25). Everything
-# else for alerting is already configured — HOST, PORT, USER, FROM and
-# ALERT_EMAIL are all set.
+# Provider-agnostic: PORTAL_SMTP_* is a plain host/port/user/pass transport, so
+# it works with Outlook/M365, Gmail, SendPulse or any other SMTP server. Only
+# the password is set here; set HOST/PORT/USER/FROM in .env directly.
+#
+# CURRENT SETUP (2026-07-26): pointed at Outlook —
+#   smtp.office365.com:587 as YoussefAhmed@outreach.ysxvisuals.com,
+#   reusing MICROSOFT_APP_PASSWORD, which was verified to authenticate.
+# Gmail was the earlier choice and its app password is REVOKED
+# (534-5.7.9 WebLoginRequired), so do not reach for Gmail by default.
+#
+# This script therefore exists for ROTATION — when the Outlook app password is
+# changed, or when moving the fallback to a different provider.
 #
 # Usage, from server\:
 #   powershell -ExecutionPolicy Bypass -File scripts\set-smtp-pass.ps1
 #
-# Get the value first: https://myaccount.google.com/apppasswords
-# (requires 2-Step Verification on that Google account). It is 16 characters,
-# usually shown in four groups of four — spaces are stripped automatically.
+# App passwords are typically 16 characters and are often displayed in groups
+# of four; the display spaces are stripped automatically.
 #
 # Afterwards, restart the service and confirm alerting flipped to ok:
 #   Restart-Service -Name ysx-backend -Force        (elevated)
@@ -23,7 +29,7 @@ $ErrorActionPreference = 'Stop'
 $envPath = Join-Path $PSScriptRoot '..\.env' | Resolve-Path
 Write-Host "Target: $envPath"
 
-$secure = Read-Host -Prompt 'Gmail app password (input hidden)' -AsSecureString
+$secure = Read-Host -Prompt 'SMTP app password for PORTAL_SMTP_USER (input hidden)' -AsSecureString
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 try {
   $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
