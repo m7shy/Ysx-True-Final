@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import express, { Request, Response } from 'express';
 
+import { AccountStatus } from '@prisma/client';
+import { prisma } from '../db/prisma.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { MailError } from '../httpErrors.js';
@@ -9,6 +11,7 @@ import { exchangeAuthorizationCode, type OAuthProvider } from '../creds/oauth.js
 import { upsertMailbox } from '../creds/mailboxStore.js';
 import { requireAuth, requireUserId } from './middleware.js';
 import { signOAuthState, verifyOAuthState } from './jwt.js';
+import { OAUTH_STATE_COOKIE, setOAuthStateCookie, clearOAuthStateCookie } from './cookies.js';
 
 /**
  * Interactive OAuth2 consent flow for connecting a mailbox (Google Workspace /
@@ -51,12 +54,33 @@ function canonicalProvider(raw: string): OAuthProvider | null {
 }
 
 function providerClientId(provider: OAuthProvider): string {
-  const id = provider === 'gmail' ? process.env.GMAIL_OAUTH_CLIENT_ID : process.env.MICROSOFT_CLIENT_ID;
+  // Read through `config` rather than process.env directly, so a missing value
+  // is visible in the boot-time configReport() fingerprint dump instead of only
+  // surfacing as a 500 the first time someone tries to connect a mailbox.
+  const id = provider === 'gmail' ? config.GMAIL_OAUTH_CLIENT_ID : config.MICROSOFT_CLIENT_ID;
   if (!id) {
     // Server misconfiguration, not a client error.
     throw new Error(`OAuth client id is not configured for ${provider}`);
   }
   return id;
+}
+
+/**
+ * Provider error strings are attacker-influencable and end up in the address
+ * bar, browser history and Referer headers. Map them to a fixed set and log the
+ * raw text server-side instead of forwarding it.
+ */
+function safeOAuthErrorMessage(rawCode: string): string {
+  switch (rawCode) {
+    case 'access_denied':
+      return 'You declined the connection request.';
+    case 'invalid_scope':
+    case 'invalid_request':
+    case 'unauthorized_client':
+      return 'The provider rejected this connection request. Please contact support.';
+    default:
+      return 'Could not connect the mailbox. Please try again.';
+  }
 }
 
 /** Base URL of this backend (config override wins; else derive from the request). */
@@ -123,6 +147,27 @@ function emailFromClaims(claims: Record<string, unknown> | null): string | null 
   return typeof candidate === 'string' && candidate.includes('@') ? candidate.toLowerCase() : null;
 }
 
+function sha256(v: string): string {
+  return crypto.createHash('sha256').update(v).digest('hex');
+}
+
+/**
+ * Connecting a mailbox is a mutation even though /start is a GET, so it must
+ * respect the same billing/status gate as every other mutating route. It cannot
+ * rely on requireActiveTenant: that middleware short-circuits on GET/HEAD, so
+ * mounting it on this router would enforce nothing.
+ */
+async function assertActiveTenant(userId: string): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { status: true } });
+  if (!user) throw new MailError('DENIED', 'Account no longer exists');
+  if (user.status === AccountStatus.UNPAID) {
+    throw new MailError('DENIED', 'Your subscription has expired or a payment bounced. Renew your plan to connect a mailbox.');
+  }
+  if (user.status === AccountStatus.INACTIVE) {
+    throw new MailError('DENIED', 'This account is inactive. Contact support to reactivate it.');
+  }
+}
+
 /** Redirect the browser back to the SPA with a small status query. */
 function redirectToFrontend(res: Response, params: Record<string, string>): void {
   const url = new URL(config.WEB_ORIGIN);
@@ -144,7 +189,7 @@ function jsonError(res: Response, err: unknown): void {
  * GET /api/auth/oauth/:provider/start
  * Authenticated. Returns { authorizeUrl } for the frontend to navigate to.
  */
-router.get('/:provider/start', requireAuth, (req: Request, res: Response) => {
+router.get('/:provider/start', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = requireUserId(req);
     const provider = canonicalProvider(req.params.provider);
@@ -152,10 +197,18 @@ router.get('/:provider/start', requireAuth, (req: Request, res: Response) => {
       res.status(400).json({ code: 'INVALID_PROVIDER', message: "provider must be 'gmail' or 'microsoft'" });
       return;
     }
+    await assertActiveTenant(userId);
 
     const clientId = providerClientId(provider);
     const redirectUri = callbackUrl(req, provider);
-    const state = signOAuthState({ userId, provider, nonce: crypto.randomBytes(16).toString('hex') });
+
+    // Browser binding: the raw secret goes in an HttpOnly cookie, only its
+    // hash goes in the signed state. The callback demands both. This is what
+    // stops an attacker's authorize URL, phished to a victim, from attaching
+    // the victim's mailbox to the attacker's tenant.
+    const bindingSecret = crypto.randomBytes(32).toString('base64url');
+    const state = signOAuthState({ userId, provider, bnd: sha256(bindingSecret) });
+    setOAuthStateCookie(res, bindingSecret);
 
     const authorizeUrl =
       provider === 'gmail'
@@ -179,9 +232,11 @@ router.get('/:provider/callback', async (req: Request, res: Response) => {
 
   // The provider surfaces user-denied consent / errors as query params.
   if (typeof req.query.error === 'string' && req.query.error) {
+    // Log the provider's raw text; send the browser a fixed, safe message.
     const detail = typeof req.query.error_description === 'string' ? req.query.error_description : req.query.error;
-    logger.warn({ provider, error: req.query.error }, 'OAuth provider returned an error');
-    redirectToFrontend(res, { oauth_error: String(detail) });
+    logger.warn({ provider, error: req.query.error, detail }, 'OAuth provider returned an error');
+    clearOAuthStateCookie(res);
+    redirectToFrontend(res, { oauth_error: safeOAuthErrorMessage(req.query.error) });
     return;
   }
 
@@ -204,6 +259,22 @@ router.get('/:provider/callback', async (req: Request, res: Response) => {
     if (state.provider !== provider) {
       throw new MailError('DENIED', 'OAuth state does not match the callback provider');
     }
+
+    // ── Browser binding: the state must be redeemed by the SAME browser that
+    //    started the flow. A valid signature alone is not enough — see
+    //    jwt.ts OAuthStateClaims for why the reverse-direction attack (attacker
+    //    phishes a victim with the attacker's own authorize URL) is the one
+    //    that matters. Compared in constant time; the cookie is single-use.
+    const bindingSecret = req.cookies?.[OAUTH_STATE_COOKIE];
+    if (typeof bindingSecret !== 'string' || bindingSecret.length === 0) {
+      throw new MailError('DENIED', 'This connection link was not started in this browser. Please start again.');
+    }
+    const expected = Buffer.from(state.bnd);
+    const actual = Buffer.from(sha256(bindingSecret));
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+      throw new MailError('DENIED', 'This connection link was not started in this browser. Please start again.');
+    }
+
     const userId = state.sub;
 
     // Exchange the code with the backend client credentials.
@@ -239,10 +310,19 @@ router.get('/:provider/callback', async (req: Request, res: Response) => {
     });
 
     logger.info({ userId, provider, email: maskEmail(email) }, 'Connected mailbox via OAuth');
-    redirectToFrontend(res, { connected: provider, email });
+    // The state has now been redeemed — burn the binding cookie so it is
+    // single-use even inside the 10-minute TTL.
+    clearOAuthStateCookie(res);
+    // Deliberately NOT echoing the mailbox address: it would land in browser
+    // history and in any Referer the SPA emits. The SPA reloads the mailbox
+    // list from the API, which already knows which one was connected.
+    redirectToFrontend(res, { connected: provider });
   } catch (err) {
-    const message = err instanceof MailError ? err.message : 'OAuth connection failed';
+    // MailError messages here are our own fixed strings (including the browser
+    // binding failures above), never provider-supplied text.
+    const message = err instanceof MailError ? err.message : 'Could not connect the mailbox. Please try again.';
     logger.error({ provider, err: err instanceof Error ? err.message : String(err) }, 'OAuth callback failed');
+    clearOAuthStateCookie(res);
     redirectToFrontend(res, { oauth_error: message });
   }
 });

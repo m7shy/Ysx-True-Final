@@ -147,6 +147,11 @@ app.get('/api/health/deep', healthTokenGuard, async (_req, res) => {
 // the auth router so its paths take precedence. The /start leg is gated by
 // requireAuth inside the router; the /callback leg is a provider browser redirect
 // with no Authorization header and is instead protected by the signed `state`.
+// NOT wrapped in requireActiveTenant, deliberately: both legs of this flow are
+// GETs, and requireActiveTenant lets safe methods through by design — mounting
+// it here would look like a gate while enforcing nothing. Connecting a mailbox
+// IS a mutation despite the verb, so the billing/status check lives inside the
+// /start handler instead (see assertActiveTenant in oauthRoutes.ts).
 app.use('/api/auth/oauth', oauthRouter);
 
 // Credential-stuffing guard: login/signup get a much tighter budget than the

@@ -110,6 +110,13 @@ const configSchema = z.object({
   // session (never anonymous).
   HEALTH_TOKEN: z.string().min(16).optional(),
 
+  // OAuth client ids for the mailbox-connect consent flow. Declared here rather
+  // than read straight from process.env so a missing/typo'd value shows up in
+  // the boot-time configReport() fingerprints instead of only surfacing as a
+  // 500 the first time a user tries to connect a mailbox.
+  GMAIL_OAUTH_CLIENT_ID: z.string().optional(),
+  MICROSOFT_CLIENT_ID: z.string().optional(),
+
   SCRAPER_DIR: z.string().optional(),
   PYTHON_BIN: z.string().default('python'),
   // Path to a Netscape-format cookies.txt from a logged-in Google/YouTube

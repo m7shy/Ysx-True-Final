@@ -122,7 +122,7 @@ describe('auth HTTP flow', () => {
     // Refresh exchange.
     const refresh = await request(app)
       .post('/api/auth/refresh')
-      .send({ refreshToken: refreshTokenFrom(login) });
+      .set('Cookie', [`ysxflow_rt=${refreshTokenFrom(login)}`]);
     expect(refresh.status).toBe(200);
     expect(refresh.body.accessToken).toBeTruthy();
 
@@ -142,8 +142,29 @@ describe('auth HTTP flow', () => {
 
   it('rejects a refresh token whose tokenVersion is stale', async () => {
     const stale = signRefreshToken({ userId: 'ghost', email: 'g@h.com', tokenVersion: 5 });
-    const res = await request(app).post('/api/auth/refresh').send({ refreshToken: stale });
+    const res = await request(app).post('/api/auth/refresh').set('Cookie', [`ysxflow_rt=${stale}`]);
     expect(res.status).toBe(401);
+  });
+
+  // The HttpOnly-cookie migration is worth nothing while a body fallback also
+  // accepts the token: anything exfiltrated from localStorage before the
+  // migration (or via any XSS since) stays usable by POSTing it as JSON from
+  // any context, and CORS does not prevent sending such a request.
+  it('does NOT accept a refresh token supplied in the request body', async () => {
+    const signup = await request(app)
+      .post('/api/auth/signup')
+      .send({ email: 'bodyfallback@example.com', password: 'correct-horse-battery' });
+    expect(signup.status).toBe(201);
+    const token = refreshTokenFrom(signup);
+    expect(token).toBeTruthy();
+
+    // Deliberately no Cookie header — body only, exactly as a pre-cookie
+    // client or an attacker replaying a stolen token would send it.
+    const res = await request(app).post('/api/auth/refresh').send({ refreshToken: token });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION');
+    expect(res.body.accessToken).toBeUndefined();
   });
 });
 
@@ -156,7 +177,7 @@ describe('logout-all', () => {
     const accessToken = signup.body.accessToken;
     const refreshToken = refreshTokenFrom(signup);
 
-    const before = await request(app).post('/api/auth/refresh').send({ refreshToken });
+    const before = await request(app).post('/api/auth/refresh').set('Cookie', [`ysxflow_rt=${refreshToken}`]);
     expect(before.status).toBe(200);
 
     const logout = await request(app)
@@ -166,7 +187,7 @@ describe('logout-all', () => {
     expect(logout.body.ok).toBe(true);
 
     // Same refresh token, minted against the pre-logout tokenVersion, is now revoked.
-    const after = await request(app).post('/api/auth/refresh').send({ refreshToken });
+    const after = await request(app).post('/api/auth/refresh').set('Cookie', [`ysxflow_rt=${refreshToken}`]);
     expect(after.status).toBe(401);
   });
 
@@ -216,7 +237,7 @@ describe('change-password', () => {
     expect(refreshCookie(change)).toMatch(/HttpOnly/i);
 
     // The old refresh token (pre-change tokenVersion) is now revoked.
-    const oldRefresh = await request(app).post('/api/auth/refresh').send({ refreshToken: oldRefreshToken });
+    const oldRefresh = await request(app).post('/api/auth/refresh').set('Cookie', [`ysxflow_rt=${oldRefreshToken}`]);
     expect(oldRefresh.status).toBe(401);
 
     // The freshly issued pair from the change-password response still works.

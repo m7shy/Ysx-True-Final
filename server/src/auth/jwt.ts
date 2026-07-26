@@ -29,15 +29,31 @@ export interface RefreshTokenClaims {
 /**
  * Short-lived, signed CSRF/identity token carried through the OAuth consent
  * round-trip as the `state` parameter. The OAuth callback is a top-level browser
- * redirect from the provider and therefore has NO Authorization header — this
- * signed state is what binds the callback to the user who started the flow.
- * Because only an authenticated `/start` call can mint one, an attacker cannot
- * forge a state to graft their own mailbox onto a victim's account.
+ * redirect from the provider and therefore has NO Authorization header.
+ *
+ * ⚠️ A signature alone is NOT sufficient here, and reasoning only about
+ * forgery is the trap this comment used to set. "An attacker cannot forge a
+ * state" is true but answers the wrong question. The dangerous direction is the
+ * reverse: an attacker calls /start on their OWN account, obtains a perfectly
+ * valid state, and phishes a victim with that authorize URL. The victim
+ * consents with their own mailbox, and the callback — seeing a valid signature
+ * and the attacker's `sub` — attaches THE VICTIM'S mailbox tokens to the
+ * ATTACKER'S tenant.
+ *
+ * The defence is binding the state to the *browser*, not just to a userId:
+ * `bnd` is the SHA-256 of a random secret that /start also drops in an
+ * HttpOnly cookie. The callback requires the cookie to be present and to hash
+ * to `bnd`, then clears it. That makes the state both browser-bound (the
+ * attacker's cookie is not in the victim's browser) and genuinely single-use.
+ *
+ * This replaces an earlier `nonce` field that was minted, signed, and then
+ * never stored or compared anywhere — it documented replay protection that did
+ * not exist.
  */
 export interface OAuthStateClaims {
   sub: string; // userId that initiated the connect flow
   provider: 'gmail' | 'microsoft';
-  nonce: string; // per-request random value (defense-in-depth against replay)
+  bnd: string; // sha256(binding secret) — must match the /start cookie
   typ: 'oauth_state';
 }
 
@@ -123,12 +139,12 @@ const OAUTH_STATE_TTL = '10m';
 export function signOAuthState(input: {
   userId: string;
   provider: 'gmail' | 'microsoft';
-  nonce: string;
+  bnd: string;
 }): string {
   const claims: OAuthStateClaims = {
     sub: input.userId,
     provider: input.provider,
-    nonce: input.nonce,
+    bnd: input.bnd,
     typ: 'oauth_state',
   };
   return jwt.sign(claims, getSecret(), signOptions(OAUTH_STATE_TTL));
@@ -139,5 +155,12 @@ export function verifyOAuthState(token: string): OAuthStateClaims {
   if (typeof decoded === 'string' || (decoded as jwt.JwtPayload).typ !== 'oauth_state') {
     throw new Error('Not an oauth state token');
   }
-  return decoded as unknown as OAuthStateClaims;
+  const claims = decoded as unknown as OAuthStateClaims;
+  // A state minted before browser binding existed carries no `bnd`. Reject it
+  // rather than treating a missing binding as "nothing to check" — that would
+  // reopen the hole for anyone able to present an old token.
+  if (typeof claims.bnd !== 'string' || claims.bnd.length === 0) {
+    throw new Error('OAuth state is missing its browser binding');
+  }
+  return claims;
 }

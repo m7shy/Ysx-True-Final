@@ -125,10 +125,18 @@ router.post('/login', async (req: Request, res: Response) => {
  * body (transitional fallback for clients running a pre-cookie bundle).
  */
 router.post('/refresh', async (req: Request, res: Response) => {
-  // Prefer the cookie; fall back to the body for one release so users with a
-  // stale cached bundle are not hard-locked out.
-  const rawToken: string | undefined =
-    req.cookies?.[CRM_REFRESH_COOKIE] || req.body?.refreshToken;
+  // Cookie ONLY. The body fallback that lived here was a transitional shim for
+  // clients still running a pre-cookie bundle; that transition is complete —
+  // the cookie migration deployed and forced a one-time logout for every user,
+  // so no live client sends a body token any more.
+  //
+  // It is deliberately gone rather than merely unused: while it stood, the
+  // HttpOnly migration bought nothing. Any refresh token exfiltrated from
+  // localStorage before the migration (or via any XSS since) stayed fully
+  // usable by POSTing it as JSON from any context. CORS does not help — it
+  // governs who may READ a cross-origin response, not who may send a request,
+  // and a server-side script is unconstrained either way.
+  const rawToken: string | undefined = req.cookies?.[CRM_REFRESH_COOKIE];
 
   if (!rawToken) {
     res.status(400).json({ code: 'VALIDATION', message: 'refreshToken is required' });

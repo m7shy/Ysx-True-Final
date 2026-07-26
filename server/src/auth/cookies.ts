@@ -68,3 +68,39 @@ export function setPortalRefreshCookie(res: Response, refreshToken: string): voi
 export function clearPortalRefreshCookie(res: Response): void {
   res.clearCookie(PORTAL_REFRESH_COOKIE, cookieOptions(PORTAL_REFRESH_PATH));
 }
+
+// ── OAuth state binding ───────────────────────────────────────────────────────
+// Ties an in-flight OAuth consent round-trip to the browser that started it.
+// /start stores a random secret here and puts its SHA-256 in the signed state;
+// /callback requires both to match, then clears this cookie so the state cannot
+// be replayed. Without this, a valid state is a bearer token: an attacker can
+// phish a victim with their own authorize URL and capture the victim's mailbox
+// into the attacker's tenant (see jwt.ts OAuthStateClaims).
+//
+// SameSite MUST stay 'lax', not 'strict': the callback is a top-level GET
+// navigation from the provider's domain, and Lax is what allows the cookie to
+// ride along with it. 'strict' would drop the cookie and break every connect.
+
+export const OAUTH_STATE_COOKIE = 'ysx_oauth_state';
+const OAUTH_STATE_PATH = '/api/auth/oauth';
+// Matches OAUTH_STATE_TTL in jwt.ts — the consent round-trip is seconds, and a
+// short window limits how long a captured cookie is worth anything.
+const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
+
+function oauthStateCookieOptions(): CookieOptions {
+  return {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: config.NODE_ENV === 'production',
+    path: OAUTH_STATE_PATH,
+    maxAge: OAUTH_STATE_MAX_AGE_MS,
+  };
+}
+
+export function setOAuthStateCookie(res: Response, secret: string): void {
+  res.cookie(OAUTH_STATE_COOKIE, secret, oauthStateCookieOptions());
+}
+
+export function clearOAuthStateCookie(res: Response): void {
+  res.clearCookie(OAUTH_STATE_COOKIE, oauthStateCookieOptions());
+}
