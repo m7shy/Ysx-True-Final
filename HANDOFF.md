@@ -140,6 +140,44 @@ migration-ready until alerting works, the encryption key exists somewhere off th
 scraper's tracking state is either backed up or moved into Postgres. The first two are small; the
 third is the only one that needs design.
 
+### Work done on the three blockers (same session)
+
+**Blocker 3 — automated backup: DONE.**
+- `server/scripts/backup-db.mjs` now archives `SCRAPER_DIR/profiles` alongside the Neon dump,
+  excluding the redundant `*.bak-*` copies. **This closes the scraper migration gap above.**
+- Placement was the real bug: the first version sat after `if (usedFallback) process.exit(0)`,
+  and since this VM has no `pg_dump` the fallback is the *only* path — so the scraper backup
+  never ran while the script still reported success. Caught by running it and checking the output
+  directory rather than trusting the exit code. It is now a function called on both paths.
+- Windows Scheduled Task **"YSX DB Backup"** registered, daily 03:00. Triggered on demand and
+  verified: `LastTaskResult 0`, next run confirmed. Produces `ysx-<date>.json.gz` (30 KB) and
+  `ysx-scraper-<date>.tar.gz` (2.3 MB, 62 files, all 9 `tracking.db` present) in `C:\backups\ysx`.
+
+**Blocker 2 — offline `.env` copy: helper written, needs one command from the user.**
+`server/scripts/backup-env.sh` encrypts `.env` with AES-256-CBC + PBKDF2 (600k iterations) and
+then **decrypts its own output and byte-compares it against the original** before declaring
+success — an unverified backup is not a backup. `.env` must never go to cloud storage in
+plaintext: it holds `MAILBOX_ENCRYPTION_KEY` (unrecoverable), `JWT_SECRET`, the live database
+URL, three mail passwords and the Gemini key, and cloud copies persist after deletion.
+
+**Blocker 1 — alerting: helper written, needs a Gmail app password from the user.**
+Everything else is already configured (`HOST`/`PORT`/`USER`/`FROM`/`ALERT_EMAIL`); only
+`PORTAL_SMTP_PASS` is empty. `server/scripts/set-smtp-pass.ps1` writes it from a hidden prompt so
+the credential never reaches the screen, shell history, or a chat transcript, strips Google's
+display spaces, backs up `.env` first, and reports only the length written.
+
+**Google Drive backup folder created:** `YSX-Prod-Backups`
+(`https://drive.google.com/drive/folders/1XGySXiZ4iLobhP_H4xZ-zT2BPYdeyUrE`), permissions
+verified **owner-only**. Contains `README-RESTORE.md` documenting what belongs there, why the
+encryption key is the one unrecoverable item, and the restore procedure.
+
+⚠️ **The Drive MCP cannot carry the bulk backups.** It takes file content inline as base64, and
+Bash output truncates at 30k characters — so the 2.3 MB scraper archive (~750k tokens) and even
+the 30 KB database dump cannot pass through. Only small files (≲20 KB, e.g. `.env.enc`) are
+practical this way. The durable fix is **Google Drive for Desktop mirroring `C:\backups\ysx`**
+into that folder — not currently installed on the VM. Until then the daily task's output stays on
+the VM, which protects against Neon loss but *not* against VM loss.
+
 ---
 
 ## 2026-07-26 (later) — Next-steps 1–4 done, #6 designed. Committed, NOT pushed, NOT deployed.
