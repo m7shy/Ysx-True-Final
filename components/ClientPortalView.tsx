@@ -21,6 +21,7 @@ import {
   TH,
   TD,
 } from '../src/design/ui';
+import { safeHttpUrl } from '../services/safeUrl';
 import { blurIn } from '../src/design/motion';
 import {
   STAGES,
@@ -643,7 +644,7 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
           <ul className="space-y-1">
             {(project.fileLinks ?? []).map((f) => (
               <li key={f.id} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white/[0.03]">
-                <a href={f.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-w-0 items-center gap-1.5 text-neutral-300 hover:text-white">
+                <a href={safeHttpUrl(f.url)} target="_blank" rel="noopener noreferrer" className="inline-flex min-w-0 items-center gap-1.5 text-neutral-300 hover:text-white">
                   <ExternalLink className="h-3 w-3 shrink-0 text-neutral-600" />
                   <span className="truncate">{f.label}</span>
                   {f.version > 1 && <Badge variant="neutral">v{f.version}</Badge>}

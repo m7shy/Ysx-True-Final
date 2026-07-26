@@ -1,4 +1,5 @@
 import React from 'react';
+import { safeHttpUrl } from '../../services/safeUrl';
 import { motion } from 'motion/react';
 import {
   ArrowLeft,
@@ -188,7 +189,7 @@ export const ProjectPage: React.FC<{ id: string }> = ({ id }) => {
                     {files.map((f) => (
                       <li key={f.id}>
                         <a
-                          href={f.url}
+                          href={safeHttpUrl(f.url)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="group flex items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] hover:text-white transition-colors"

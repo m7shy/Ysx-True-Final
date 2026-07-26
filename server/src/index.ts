@@ -128,19 +128,27 @@ app.get('/api/health', (_req, res) => {
 // poll it — and otherwise by a normal admin session. Never anonymous.
 const healthTokenGuard: express.RequestHandler = (req, res, next) => {
   const expected = config.HEALTH_TOKEN;
-  if (!expected) return requireAuth(req, res, next);
 
-  // Header is preferred; the query fallback exists because some uptime
-  // monitors cannot send custom headers. Query strings land in access logs,
-  // so treat a token used that way as lower-trust and rotate it if leaked.
-  const supplied = req.get('x-health-token') ?? (typeof req.query.token === 'string' ? req.query.token : '');
-  const a = Buffer.from(supplied);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    res.status(401).json({ code: 'AUTH', message: 'Unauthorized' });
-    return;
+  if (expected) {
+    // Header is preferred; the query fallback exists because some uptime
+    // monitors cannot send custom headers. Query strings land in access logs,
+    // so treat a token used that way as lower-trust and rotate it if leaked.
+    const supplied = req.get('x-health-token') ?? (typeof req.query.token === 'string' ? req.query.token : '');
+    const a = Buffer.from(supplied);
+    const b = Buffer.from(expected);
+    if (a.length === b.length && timingSafeEqual(a, b)) {
+      next();
+      return;
+    }
   }
-  next();
+
+  // Either no token is configured, or this caller did not present a valid one.
+  // Fall back to a normal admin session rather than rejecting outright: the
+  // previous version returned early when HEALTH_TOKEN was set, so configuring a
+  // token for the uptime monitor silently locked admins out of their own
+  // diagnostics in the UI. A monitor and a human should both be able to read
+  // this. Still never anonymous — requireAuth is the floor in both paths.
+  return requireAuth(req, res, next);
 };
 
 app.get('/api/health/deep', healthTokenGuard, async (_req, res) => {
@@ -172,6 +180,23 @@ const authLimiter = rateLimit({
 });
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/signup', authLimiter);
+// /refresh mints access tokens from a bearer refresh token, so it deserves its
+// own budget rather than only the global 120/min. Looser than login: a normal
+// client refreshes on boot and every ~15 min, and several tabs refresh
+// independently, so this must not throttle real use. skipSuccessfulRequests
+// means only rejected attempts count — brute force is bounded, legitimate
+// clients are unaffected however often they refresh.
+app.use(
+  '/api/auth/refresh',
+  rateLimit({
+    windowMs: 15 * 60_000,
+    max: 30,
+    skipSuccessfulRequests: true,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { code: 'RATE_LIMITED', message: 'Too many attempts — try again in a few minutes' },
+  }),
+);
 
 // Public auth endpoints (signup / login / refresh).
 app.use('/api/auth', authRouter);
