@@ -298,8 +298,24 @@ async function processCampaign(campaign: Campaign): Promise<void> {
   // assumes counterDate is already current for the whole tick).
   const today = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
   if (campaign.counterDate.getTime() < today.getTime()) {
-    await prisma.campaign.update({ where: { id: campaign.id }, data: { sentToday: 0, counterDate: today } });
-    campaign = { ...campaign, sentToday: 0, counterDate: today };
+    // Conditional compare-and-set, not a blind update: two workers crossing UTC
+    // midnight in the same tick could both read the stale counterDate, and the
+    // second unconditional write would reset a counter the first had already
+    // begun incrementing — letting the campaign exceed its daily cap for that
+    // day. Guarding on the old date means exactly one of them wins the roll.
+    const rolled = await prisma.campaign.updateMany({
+      where: { id: campaign.id, counterDate: { lt: today } },
+      data: { sentToday: 0, counterDate: today },
+    });
+    if (rolled.count === 1) {
+      campaign = { ...campaign, sentToday: 0, counterDate: today };
+    } else {
+      // Another worker rolled it first — re-read rather than trusting our now
+      // stale in-memory copy, whose sentToday would under-count their sends.
+      const fresh = await prisma.campaign.findUnique({ where: { id: campaign.id } });
+      if (!fresh) return;
+      campaign = fresh;
+    }
   }
 
   const tickCap = campaign.sendIntervalMinutes != null ? 1 : BATCH_SIZE;

@@ -83,9 +83,22 @@ function safeOAuthErrorMessage(rawCode: string): string {
   }
 }
 
-/** Base URL of this backend (config override wins; else derive from the request). */
+/**
+ * Base URL of this backend.
+ *
+ * The Host-header fallback is for local development only. `Host` is
+ * caller-controlled, so in production it would let a request influence the
+ * redirect_uri we build; providers validate redirect_uri against a registered
+ * allowlist so a poisoned host fails the exchange rather than redirecting
+ * anywhere, but deriving a security-relevant URL from an attacker-supplied
+ * header is not something to leave standing. In production the value must be
+ * configured explicitly.
+ */
 function backendBaseUrl(req: Request): string {
   if (config.OAUTH_REDIRECT_BASE_URL) return config.OAUTH_REDIRECT_BASE_URL.replace(/\/+$/, '');
+  if (config.NODE_ENV === 'production') {
+    throw new Error('OAUTH_REDIRECT_BASE_URL must be set in production (refusing to derive it from the Host header)');
+  }
   return `${req.protocol}://${req.get('host')}`;
 }
 
