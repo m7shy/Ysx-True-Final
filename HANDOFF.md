@@ -1,5 +1,147 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-26 (later still) — Two-round deep review of the whole codebase, 23 findings fixed. Pushed, NOT deployed.
+
+**Context:** After the next-steps work below, the user asked for a full deep review in **two
+independent rounds** — round 1 by hand, round 2 delegated to `agy` — over the **entire** tree
+(~33.7k lines of real code; `scraper/venv` excluded as vendored). Then: fix everything.
+
+**11 commits, `9de5ae2..fb5b849`, pushed to origin. NOT deployed — prod is still on `91564a0`.**
+`tsc` clean (server + root), **vitest 192/192** (was 175). Every fix was verified by reverting it
+and confirming the new test fails — not merely that it passes.
+
+Full detail: `.plans/REVIEW-2026-07-26-round1-manual.md`,
+`.plans/REVIEW-2026-07-26-round2-synthesis.md`, `.plans/REVIEW-2026-07-26-fix-status.md`,
+raw unverified worker output in `.plans/round2-agy-raw/`.
+
+### 🔴 The worst defect: signing out did not sign you out (either app)
+
+Round 2 flagged the portal half. Tracing it rather than trusting the description found the CRM
+half is worse: **`POST /api/auth/logout` did not exist.** The SPA has always called it on
+sign-out and swallowed the 404 with `.catch(() => {})`, so the failure was invisible. The portal
+called no endpoint at all.
+
+Both apps therefore left an HttpOnly refresh cookie live for **30 days** after "Sign out": the
+next page load ran the boot-time silent refresh and restored the session. On a shared computer
+the next person to open the app was signed in as the previous user. **This was a regression from
+moving refresh tokens out of `localStorage`** — sign-out used to work by accident of where the
+token lived. Both routes added, portal SPA wired up, tests assert the cookie is actively expired.
+
+### Other HIGH/MEDIUM fixes
+
+- **OAuth `state` was not bound to the browser.** The old comment reasoned only about forgery
+  ("an attacker cannot forge a state") — true, and the wrong question. The reverse works: the
+  attacker calls `/start` on their own account, phishes the victim with that authorize URL, and
+  the callback attaches **the victim's mailbox to the attacker's tenant**. Now bound via an
+  HttpOnly cookie whose hash is in the state. The `nonce` it replaces was minted, signed, and
+  **never compared anywhere** — documented replay protection that did not exist.
+- **Token revocation did not apply to reads** — after logout-all/password-change a stolen token
+  kept full read access for ~15 min. Both rounds found this independently.
+- **`/api/auth/refresh` accepted the token from the request body**, undoing the HttpOnly
+  migration entirely. The "one release" transition had long since shipped.
+- **`ClientUser.email` and `CookieFile.name` were globally `@unique`** — same bug class as the
+  `Receipt.number` fix earlier the same day: a per-tenant identifier constrained across all
+  tenants. The second agency to invite a given address failed permanently; the first tenant to
+  upload `cookies.txt` claimed that filename for everyone.
+- **Pausing a campaign permanently destroyed its scheduled follow-ups.** An unintended
+  consequence of the 2026-07-25 pause fix — correct about the leak, wrong about the mechanism.
+  Now suspended (the send path declines while not ACTIVE) so nothing sends *and* nothing is lost.
+- **A delivered email could be sent twice.** The `PENDING → SENDING` claim guards concurrent
+  workers and pre-send crashes, but the catch releases back to `PENDING`, and any failure *after*
+  the SMTP handoff took that path. A delivered message is now never retried.
+- **Follow-ups ignored the send window and daily cap** (R1-09). Decision made rather than
+  deferred: **send window enforced** (deferred, not dropped — it governs when a recipient is
+  contacted, and follow-ups are most of a sequence); **daily cap counted, not blocked** (counting
+  makes the limit honest and makes new outreach yield to in-flight sequences; blocking would
+  strand sequences mid-way, which reads as ghosting and only reorders the mail).
+- **`PENDING_VERIFICATION_FILE` was shared across tenants** — `session_profile.py` always mapped
+  it per-profile, but `use_profile()` never rebound it, so every tenant appended unverified lead
+  addresses to one CSV.
+- Plus: `HEALTH_TOKEN` locking admins out of `/api/health/deep` (**was live in prod**), a
+  half-configured send window being silently ignored, a raw DB error echoed in the health
+  payload, the daily-counter rollover race, `Host`-header fallback, render-time URL guard,
+  refresh rate limit.
+
+### What the two-round design actually bought
+
+Round 2 found the two global-`@unique` tenancy bugs and the destructive pause — round 1 had read
+`schema.prisma` for *missing* tenant keys and never asked the inverse question. Round 1 found the
+OAuth hole, which **round 2 explicitly cleared as sound**, reproducing the same reasoning error as
+the source comment. Two reviewers anchored by one misleading comment reached the same wrong
+conclusion, so the comment was rewritten alongside the code.
+
+**Four of agy's HIGH/HIGH-confidence findings were wrong** (a "cross-tenant localStorage leak"
+already fixed 8 lines below the cited line; a portal XSS that the write path validates; an
+"infinite retry loop" that finalizes as SENT; an "unindexed `nextRetryAt`" that is only ever
+written). Every finding was checked against source before being acted on — see
+`.plans/known-failures.md`.
+
+### Coverage gaps, stated plainly
+
+`agy` hit its account quota three separate times and produced **no deliverable for `portal`,
+`mail`, or `frontend_views`**. The portal backend, the mail/IMAP layer and the 13k-line component
+tree have **no independent second opinion**. A tail of ~7 LOW/MEDIUM round-2 findings remains
+**unverified** in `.plans/round2-agy-raw/` — do not act on them without checking source.
+
+### ⚠️ Deploy notes — different from the last two deploys
+
+1. **A frontend rebuild IS required** (`services/safeUrl.ts`, `components/ClientPortalView.tsx`,
+   `portal/pages/ProjectPage.tsx` changed).
+2. `prisma migrate deploy` for `20260726160000_scope_unique_constraints_per_tenant`.
+3. **The stale-Prisma-client trap applies** — regenerate AND sync
+   `server/node_modules/.prisma/client` before restarting, or Prisma rejects the new fields at
+   runtime. On prod the plain `cp -r` fails because the service holds the engine DLL open; copy
+   everything except `*.node`. See `.plans/known-failures.md`.
+4. **Expected: everyone is logged out once.** That is the correct outcome given the logout fix.
+
+---
+
+## Is the app migration-ready, code-wise?
+
+Asked directly, answered honestly: **the CRM/campaign/portal core, yes. The scraper, no. And the
+operational prerequisites are not ready regardless of code.**
+
+**Ready — the core.** Campaign, follow-up, lead, client, invoice and mailbox state all live in
+Neon, not on the VM. A new VM pointed at the same `DATABASE_URL` resumes on its own (the
+stale-`SENDING` reapers reclaim anything stranded mid-flight). `docs/RECOVERY.md` is a real
+rebuild runbook, config is validated and fingerprinted at boot, and mailbox tokens are encrypted
+at rest. Today's work materially improved the security posture on top of that.
+
+**NOT ready — the scraper's local state.** Measured, not assumed:
+
+| Profile | processed_channels | blacklist |
+|---|---|---|
+| crm-cmremz0ki… (main) | 5,433 | 4,684 |
+| crm-cmrdy0hak… | 4,060 | 4,039 |
+| 5 others | 872 | 866 |
+| **Total** | **10,365** | **9,589** |
+
+All of it is SQLite on the VM's disk under `SCRAPER_DIR/profiles/<slug>/tracking.db`, and
+**`server/scripts/backup-db.mjs` backs up Postgres only** — nothing backs up `profiles/`. Lose
+the VM and you lose every "already evaluated this channel" record: the scraper re-crawls ~10k
+channels it has already rejected, burning crawl budget and YouTube quota, and re-surfacing
+channels it previously judged unqualified. The leads themselves are safe (they are in Postgres);
+the *dedup and blacklist state* is not. This is the one genuine code/architecture gap for
+migration — either back up `profiles/` alongside the DB, or move the tracking state into Postgres.
+
+**NOT ready — operational, and independent of code:**
+- **There is still no alerting.** `PORTAL_SMTP_PASS` is empty, so the watchdog cannot email. The
+  2026-07-25 entry records exactly what this costs: the scraper was broken for days because the
+  watchdog was writing real failures to a logfile nobody reads. On a fresh VM you would be blind.
+- **No offline copy of prod `server/.env`.** `MAILBOX_ENCRYPTION_KEY` is unrecoverable if lost —
+  losing it means every stored mailbox token is undecryptable and every mailbox must be
+  reconnected by hand. Outstanding since 2026-07-20.
+- **No automated backup.** `backup-db.mjs` works and has been run once by hand; the daily
+  Scheduled Task was never created.
+- **No static IP.** Mitigated to a 30-min TTL, not fixed.
+
+**Verdict:** code-wise the core would survive a VM rebuild today. I would not call the *system*
+migration-ready until alerting works, the encryption key exists somewhere off the VM, and the
+scraper's tracking state is either backed up or moved into Postgres. The first two are small; the
+third is the only one that needs design.
+
+---
+
 ## 2026-07-26 (later) — Next-steps 1–4 done, #6 designed. Committed, NOT pushed, NOT deployed.
 
 **Context:** Direct continuation of the entry below, working its "Next steps" list. User chose:
