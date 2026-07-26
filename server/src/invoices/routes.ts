@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 
 import { prisma } from '../db/prisma.js';
 import { tenantDb } from '../db/tenantDb.js';
@@ -48,12 +49,53 @@ function badRequest(res: Response, err: z.ZodError): void {
   res.status(400).json({ code: 'VALIDATION', message: err.issues.map((i) => i.message).join('; ') });
 }
 
+/**
+ * True for a Prisma unique-constraint violation (P2002).
+ *
+ * Deliberately not a bare `instanceof PrismaClientKnownRequestError`: this repo
+ * resolves `@prisma/client` from two separate node_modules trees (the root one
+ * and server/'s own), and an error raised through one copy is not an instanceof
+ * the class imported from the other — so instanceof alone can silently fail to
+ * match a genuine P2002 at runtime. Check the class first, then fall back to the
+ * stable error code.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) return err.code === 'P2002';
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'P2002';
+}
+
+/**
+ * Retry helper for unique-constraint races (Prisma P2002).
+ *
+ * Wraps the ENTIRE callback, including any $transaction inside it, up to
+ * `maxAttempts` times. Any non-P2002 error propagates immediately without retry.
+ *
+ * The retry MUST stay outside $transaction: on a throw, Prisma rolls the whole
+ * transaction back (including the invoice status claim in mark-paid), so the
+ * retry re-runs the claim atomically. Retrying inside would see its own earlier
+ * status write, match 0 rows, and return a bogus 409.
+ */
+async function withUniqueRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    attempt++;
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt < maxAttempts && isUniqueViolation(err)) {
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /** Next sequential per-tenant number with the given prefix (INV-0007 / RCPT-0007). */
 async function nextNumber(userId: string, prefix: 'INV' | 'RCPT', tx: any = prisma): Promise<string> {
   const count =
     prefix === 'INV'
       ? await tx.invoice.count({ where: { userId } })
-      : await tx.receipt.count({ where: { payment: { invoice: { userId } } } });
+      : await tx.receipt.count({ where: { userId } });
   return `${prefix}-${String(count + 1).padStart(4, '0')}`;
 }
 
@@ -92,19 +134,21 @@ router.post('/', async (req: Request, res: Response) => {
     }
   }
 
-  const invoice = await tenantDb(userId).invoice.create({
-    data: {
-      userId,
-      clientId: client.id,
-      projectId: parsed.data.projectId ?? null,
-      number: await nextNumber(userId, 'INV'),
-      amountCents: parsed.data.amountCents,
-      currency: parsed.data.currency,
-      dueAt: parsed.data.dueAt ?? null,
-      lineItemsJson: parsed.data.lineItems ?? undefined,
-      notes: parsed.data.notes ?? null,
-    },
-  });
+  const invoice = await withUniqueRetry(async () =>
+    tenantDb(userId).invoice.create({
+      data: {
+        userId,
+        clientId: client.id,
+        projectId: parsed.data.projectId ?? null,
+        number: await nextNumber(userId, 'INV'),
+        amountCents: parsed.data.amountCents,
+        currency: parsed.data.currency,
+        dueAt: parsed.data.dueAt ?? null,
+        lineItemsJson: parsed.data.lineItems ?? undefined,
+        notes: parsed.data.notes ?? null,
+      },
+    })
+  );
   logger.info({ userId, invoiceId: invoice.id }, 'Invoice created');
   res.status(201).json({ invoice });
 });
@@ -192,37 +236,39 @@ router.post('/:id/mark-paid', async (req: Request, res: Response) => {
     return;
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    const updated = await tx.invoice.updateMany({
-      where: {
-        id: existing.id,
-        userId,
-        status: { in: ['DRAFT', 'SENT', 'VIEWED', 'OVERDUE'] },
-      },
-      data: { status: 'PAID', paidAt: new Date() },
-    });
+  const result = await withUniqueRetry(() =>
+    prisma.$transaction(async (tx) => {
+      const updated = await tx.invoice.updateMany({
+        where: {
+          id: existing.id,
+          userId,
+          status: { in: ['DRAFT', 'SENT', 'VIEWED', 'OVERDUE'] },
+        },
+        data: { status: 'PAID', paidAt: new Date() },
+      });
 
-    if (updated.count === 0) {
-      return null;
-    }
+      if (updated.count === 0) {
+        return null;
+      }
 
-    const rcptNumber = await nextNumber(userId, 'RCPT', tx);
+      const rcptNumber = await nextNumber(userId, 'RCPT', tx);
 
-    const payment = await tx.payment.create({
-      data: {
-        invoiceId: existing.id,
-        method: 'BANK_TRANSFER',
-        amountCents: parsed.data.amountCents ?? existing.amountCents,
-        reference: parsed.data.reference ?? null,
-        markedPaidByAdmin: true,
-        receipt: { create: { number: rcptNumber } },
-      },
-      include: { receipt: true },
-    });
+      const payment = await tx.payment.create({
+        data: {
+          invoiceId: existing.id,
+          method: 'BANK_TRANSFER',
+          amountCents: parsed.data.amountCents ?? existing.amountCents,
+          reference: parsed.data.reference ?? null,
+          markedPaidByAdmin: true,
+          receipt: { create: { number: rcptNumber, userId } },
+        },
+        include: { receipt: true },
+      });
 
-    const invoice = await tx.invoice.findUnique({ where: { id: existing.id } });
-    return { invoice, payment };
-  });
+      const invoice = await tx.invoice.findUnique({ where: { id: existing.id } });
+      return { invoice, payment };
+    })
+  );
 
   if (!result || !result.invoice) {
     res.status(409).json({ code: 'CONFLICT', message: 'Invoice is already PAID or CANCELLED' });

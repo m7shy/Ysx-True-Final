@@ -149,6 +149,7 @@ model User {
   clients         Client[]
   projects        Project[]
   invoices        Invoice[]
+  receipts        Receipt[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -859,9 +860,14 @@ model Receipt {
   paymentId String  @unique
   payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   number String // e.g. RCPT-0007
 
   createdAt DateTime @default(now())
+
+  @@unique([userId, number])
 }
 
 // The YouTube cookie rotation pool the Python scraper reads (cookie_manager.py)

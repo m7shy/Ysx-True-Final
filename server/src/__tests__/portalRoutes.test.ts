@@ -9,7 +9,7 @@ import request from 'supertest';
 
 type Row = Record<string, any>;
 
-const { db, prismaMock, sentEmails } = vi.hoisted(() => {
+const { db, prismaMock, sentEmails, control } = vi.hoisted(() => {
 const db: Record<string, Row[]> = {
   user: [
     { id: 'ownerA', email: 'a@agency.com', tokenVersion: 0, status: 'ACTIVE', tier: 'PRO' },
@@ -168,9 +168,21 @@ function makeModel(model: string) {
                 ? { usedAt: null }
                 : {};
       const row: Row = { id: nextId(model), createdAt: new Date(), updatedAt: new Date(), ...defaults, ...data };
+      // Enforce @@unique([userId, number]) for receipts, mirroring what real Prisma does.
+      if (model === 'receipt' && row.userId && row.number) {
+        assertReceiptNumberFree(row.userId as string, row.number as string);
+      }
+      // For a nested payment+receipt create, validate the receipt BEFORE pushing
+      // the payment. Real Prisma applies the nested write in one transaction, so
+      // a receipt collision must not leave an orphan payment row behind — which
+      // would then accumulate on every retry attempt.
+      const nestedReceipt = model === 'payment' && receipt?.create ? (receipt.create as Row) : null;
+      if (nestedReceipt?.userId && nestedReceipt?.number) {
+        assertReceiptNumberFree(nestedReceipt.userId as string, nestedReceipt.number as string);
+      }
       db[model].push(row);
-      if (model === 'payment' && receipt?.create) {
-        db.receipt.push({ id: nextId('receipt'), paymentId: row.id, createdAt: new Date(), ...receipt.create });
+      if (nestedReceipt) {
+        db.receipt.push({ id: nextId('receipt'), paymentId: row.id, createdAt: new Date(), ...nestedReceipt });
       }
       return expand(model, { ...row }, args.include);
     },
@@ -200,14 +212,44 @@ function makeModel(model: string) {
   };
 }
 
+// Test control surface. `failNextReceiptCreate` makes exactly the next receipt
+// insert raise P2002, which is the only way to deterministically exercise the
+// unique-collision retry: a naturally-occurring collision needs two concurrent
+// transactions, which a single-threaded in-memory fake cannot produce.
+const control = { failNextReceiptCreate: false };
+
+// Mirrors the real @@unique([userId, number]) on Receipt.
+function assertReceiptNumberFree(userId: string, number: string): void {
+  if (control.failNextReceiptCreate) {
+    control.failNextReceiptCreate = false; // one-shot
+    throw Object.assign(new Error('Unique constraint failed on the fields: (`userId`,`number`)'), { code: 'P2002' });
+  }
+  if (db.receipt.some((r) => r.userId === userId && r.number === number)) {
+    throw Object.assign(new Error('Unique constraint failed on the fields: (`userId`,`number`)'), { code: 'P2002' });
+  }
+}
+
 const prismaMock: Row = { $extends: undefined };
 for (const m of Object.keys(db)) prismaMock[m] = makeModel(m);
-// Interactive transactions: hand the callback this same in-memory client.
-// No rollback — these tests assert the committed outcome and the ordering the
-// real transaction enforces (claim the invoice status first, only then create
-// the Payment), not atomicity itself, which belongs to Postgres.
-prismaMock.$transaction = async (arg: any) =>
-  typeof arg === 'function' ? arg(prismaMock) : Promise.all(arg);
+// Interactive transactions: hand the callback this same in-memory client, and
+// roll the whole store back if the callback throws.
+//
+// Rollback is modelled (unlike the rest of this fake, which leaves atomicity to
+// Postgres) because the mark-paid unique-retry depends on it for correctness:
+// the retry sits OUTSIDE $transaction, so a failed attempt must un-claim the
+// invoice's PAID status. Without rollback here the retry would observe its own
+// earlier status write, match 0 rows, and return a bogus 409 — so a fake that
+// skipped rollback would report a passing test for broken behaviour.
+prismaMock.$transaction = async (arg: any) => {
+  if (typeof arg !== 'function') return Promise.all(arg);
+  const snapshot = Object.fromEntries(Object.entries(db).map(([k, rows]) => [k, rows.map((r) => ({ ...r }))]));
+  try {
+    return await arg(prismaMock);
+  } catch (err) {
+    for (const k of Object.keys(db)) db[k] = snapshot[k];
+    throw err;
+  }
+};
 // tenantDb calls prisma.$extends — return a proxy that injects userId scoping
 // by wrapping each model's args (good-enough stand-in for the real extension).
 prismaMock.$extends = (ext: any) => {
@@ -232,7 +274,7 @@ prismaMock.$extends = (ext: any) => {
 
 const sentEmails: any[] = [];
 
-return { db, prismaMock, sentEmails };
+return { db, prismaMock, sentEmails, control };
 });
 
 vi.mock('../db/prisma.js', () => ({ prisma: prismaMock }));
@@ -750,5 +792,111 @@ describe('archived client loses portal access', () => {
         }),
       });
     expect(refresh.status).toBe(200);
+  });
+});
+
+describe('receipt unique-number retry', () => {
+  async function freshSentInvoice(amountCents: number): Promise<string> {
+    const created = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', amountCents });
+    expect(created.status).toBe(201);
+    const invId = created.body.invoice.id;
+    await request(app).post(`/api/invoices/${invId}/send`).set('Authorization', adminA);
+    return invId;
+  }
+
+  it('retries on P2002 and still issues exactly one receipt, with the next number', async () => {
+    const invId = await freshSentInvoice(5000);
+
+    // Counts are derived, not hardcoded: earlier tests in this file already
+    // created receipts for ownerA, so a literal expected number would silently
+    // depend on test execution order.
+    const receiptsBefore = db.receipt.filter((r) => r.userId === 'ownerA').length;
+    const expectedNumber = `RCPT-${String(receiptsBefore + 1).padStart(4, '0')}`;
+
+    // Force the first insert to collide the way a concurrent mark-paid on a
+    // different invoice of the same tenant would.
+    control.failNextReceiptCreate = true;
+
+    const paid = await request(app)
+      .post(`/api/invoices/${invId}/mark-paid`)
+      .set('Authorization', adminA)
+      .send({ reference: 'RETRY-TEST' });
+
+    expect(paid.status).toBe(200);
+    // The one-shot flag must have been consumed — otherwise no P2002 ever
+    // occurred and this test would pass without exercising the retry at all.
+    expect(control.failNextReceiptCreate).toBe(false);
+    expect(paid.body.payment.receipt.number).toBe(expectedNumber);
+    // Exactly one receipt added: the rolled-back attempt must leave nothing.
+    expect(db.receipt.filter((r) => r.userId === 'ownerA').length).toBe(receiptsBefore + 1);
+    // And no orphaned Payment row from the failed attempt.
+    expect(db.payment.filter((p) => p.invoiceId === invId).length).toBe(1);
+  });
+
+  it('rolls the invoice status back on a failed attempt so the retry can re-claim it', async () => {
+    // This is the property that makes the retry correct: it lives OUTSIDE
+    // $transaction, so a failed attempt must un-claim PAID. If it did not, the
+    // retry would match 0 rows and return 409 instead of succeeding.
+    const invId = await freshSentInvoice(6000);
+    control.failNextReceiptCreate = true;
+
+    const paid = await request(app)
+      .post(`/api/invoices/${invId}/mark-paid`)
+      .set('Authorization', adminA)
+      .send({ reference: 'ROLLBACK-TEST' });
+
+    expect(paid.status).toBe(200);
+    expect(paid.body.invoice.status).toBe('PAID');
+  });
+
+  it('gives up after the attempt cap rather than retrying forever', async () => {
+    const invId = await freshSentInvoice(6500);
+    const realCreate = prismaMock.payment.create;
+    let attempts = 0;
+    prismaMock.payment.create = async () => {
+      attempts++;
+      throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+    };
+    try {
+      const paid = await request(app)
+        .post(`/api/invoices/${invId}/mark-paid`)
+        .set('Authorization', adminA)
+        .send({ reference: 'CAP-TEST' });
+      expect(paid.status).toBe(500);
+      expect(attempts).toBe(3); // maxAttempts, not unbounded
+    } finally {
+      prismaMock.payment.create = realCreate;
+    }
+  });
+
+  it('does NOT retry a non-P2002 error and lets it propagate as 500', async () => {
+    // Make the payment create throw a generic (non-P2002) error.
+    const originalCreate = prismaMock.payment.create;
+    let calls = 0;
+    prismaMock.payment.create = async (_args: any) => {
+      calls++;
+      throw Object.assign(new Error('DB connection lost'), { code: 'P1001' });
+    };
+
+    const created = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', amountCents: 7500 });
+    expect(created.status).toBe(201);
+    const invId = created.body.invoice.id;
+    await request(app).post(`/api/invoices/${invId}/send`).set('Authorization', adminA);
+
+    const paid = await request(app)
+      .post(`/api/invoices/${invId}/mark-paid`)
+      .set('Authorization', adminA);
+    expect(paid.status).toBe(500);
+    // Must have been called exactly once — no retry.
+    expect(calls).toBe(1);
+
+    // Restore the original create.
+    prismaMock.payment.create = originalCreate;
   });
 });
