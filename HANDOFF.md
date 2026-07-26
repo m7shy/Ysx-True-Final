@@ -153,18 +153,43 @@ third is the only one that needs design.
   verified: `LastTaskResult 0`, next run confirmed. Produces `ysx-<date>.json.gz` (30 KB) and
   `ysx-scraper-<date>.tar.gz` (2.3 MB, 62 files, all 9 `tracking.db` present) in `C:\backups\ysx`.
 
-**Blocker 2 — offline `.env` copy: helper written, needs one command from the user.**
+**Blocker 2 — offline `.env` copy: DONE.**
+`.env.enc` (4128 bytes) is in the private Drive folder as `env.enc`, permissions verified
+owner-only. Round-trip was proven twice: the script decrypted its own output byte-for-byte before
+declaring success, and the copy downloaded back from Drive matches local on size and on both
+boundaries. **The passphrase is 8 characters** — the user was warned twice and chose it
+deliberately; it is now the weakest link protecting the whole keyring, so that folder must never
+be shared and the passphrase should be lengthened if it is ever rotated.
+
+Helper detail:
 `server/scripts/backup-env.sh` encrypts `.env` with AES-256-CBC + PBKDF2 (600k iterations) and
 then **decrypts its own output and byte-compares it against the original** before declaring
 success — an unverified backup is not a backup. `.env` must never go to cloud storage in
 plaintext: it holds `MAILBOX_ENCRYPTION_KEY` (unrecoverable), `JWT_SECRET`, the live database
 URL, three mail passwords and the Gemini key, and cloud copies persist after deletion.
 
-**Blocker 1 — alerting: helper written, needs a Gmail app password from the user.**
-Everything else is already configured (`HOST`/`PORT`/`USER`/`FROM`/`ALERT_EMAIL`); only
-`PORTAL_SMTP_PASS` is empty. `server/scripts/set-smtp-pass.ps1` writes it from a hidden prompt so
-the credential never reaches the screen, shell history, or a chat transcript, strips Google's
-display spaces, backs up `.env` first, and reports only the length written.
+**Blocker 1 — alerting: DONE, and it needed no new credential at all.**
+The user pointed out they use Outlook, not Gmail — correctly. `PORTAL_SMTP_*` is a generic
+host/port/user/pass transport that was only aimed at Gmail by an earlier session's choice. Tested
+both with an auth-only `nodemailer.verify()` (no mail sent):
+
+| Transport | Result |
+|---|---|
+| `smtp.office365.com:587` as `YoussefAhmed@outreach.ysxvisuals.com` | **AUTH OK** |
+| `smtp.gmail.com:587` | `534-5.7.9` — revoked, as recorded 2026-07-25 |
+
+Prod `.env` repointed at Outlook reusing the already-present `MICROSOFT_APP_PASSWORD`. **Verified
+live after the user's restart — every check green for the first time:**
+`db ok / campaignWorker ok / followupScheduler ok / mailboxes ok / disk ok / alerting ok`,
+overall `ok`. The watchdog can finally reach someone.
+
+⚠️ **Caveat:** the watchdog deliberately uses this SMTP fallback rather than the OAuth mailbox,
+because "the mailbox being broken is a thing we alert about". Pointing it at the same M365 tenant
+weakens that — a tenant-wide Microsoft auth failure would silence both the mailbox and the alert
+about it. It still covers the likeliest failure (OAuth token expiry/revocation, a separate
+mechanism from SMTP AUTH). A third-party relay would restore full independence.
+
+`server/scripts/set-smtp-pass.ps1` remains for rotation:
 
 **Google Drive backup folder created:** `YSX-Prod-Backups`
 (`https://drive.google.com/drive/folders/1XGySXiZ4iLobhP_H4xZ-zT2BPYdeyUrE`), permissions
