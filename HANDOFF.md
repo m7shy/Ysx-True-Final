@@ -102,15 +102,23 @@ depends entirely on a failed attempt un-claiming `PAID`.
 
 ### USER TO-DO (in priority order)
 
-1. **Restart the backend so `HEALTH_TOKEN` takes effect** — elevated
-   `Restart-Service -Name ysx-backend -Force`. Then create the UptimeRobot monitor:
-   URL `https://crm.ysxvisuals.com/api/health/deep`, HTTP(s) type, custom header
-   `X-Health-Token: <value in prod server/.env>`, 5-minute interval, alert on non-200.
-   Prefer the header over `?token=` — query strings land in access logs. Confirm it returns 200
-   before trusting it; it currently returns 401 (`requireAuth` fallback).
-2. **Update the `outreach.ysxvisuals.com` SPF TXT record in GoDaddy** to the single merged record
-   in `docs/RECOVERY.md` §8, **before** wiring `PORTAL_SMTP_*`. Replace the existing record —
-   do not add a second one.
+1. ~~Restart the backend so `HEALTH_TOKEN` takes effect.~~ **DONE and verified live 2026-07-26
+   09:53Z.** `X-Health-Token` → 200 with the full payload; no token → 401; wrong token → 401.
+   Live checks: `db ok`, `campaignWorker ok` (34s), `followupScheduler ok` (4s), `mailboxes ok`
+   (1 active), `disk ok` (31 GB free), `alerting degraded`.
+   **Remaining: create the UptimeRobot monitor** — URL
+   `https://crm.ysxvisuals.com/api/health/deep`, HTTP(s) type, custom header
+   `X-Health-Token: <value in prod server/.env>`, 5-min interval, alert on non-200. Prefer the
+   header over `?token=`; query strings land in access logs.
+   Note the endpoint returns **200 while `degraded`** — 503 is reserved for critical (DB down) —
+   so a status-code monitor is green now and pages only on a real outage, which is the intent.
+   If keyword monitoring is added later, key it on `"critical"`, **not** `"degraded"`: the latter
+   fires continuously until `PORTAL_SMTP_PASS` is set.
+2. ~~Update the `outreach.ysxvisuals.com` SPF TXT record.~~ **DONE and verified 2026-07-26** on
+   both Google (8.8.8.8) and Cloudflare (1.1.1.1) resolvers, and confirmed to be **exactly one**
+   SPF record: `v=spf1 include:spf.protection.outlook.com include:mxsspf.sendpulse.com -all`.
+   SPF is no longer the blocker for wiring `PORTAL_SMTP_*` — that is now waiting only on the
+   SendPulse moderation review (or a Gmail app password, `docs/RECOVERY.md` §8).
 3. **Reserve a static IP for the VM** (GCP Console → VPC network → IP addresses → reserve the
    ephemeral external IP as static, then confirm it stays attached to the instance). Note a
    reserved IP is only free while attached to a *running* instance — a stopped instance holding a
