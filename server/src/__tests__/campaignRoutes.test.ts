@@ -116,6 +116,20 @@ vi.mock('../db/prisma.js', () => ({
   }),
 }));
 
+// Record follow-up cancellations so the pause-vs-delete distinction can be
+// asserted. Partial mock: everything else keeps its real implementation.
+const { cancelCampaignCalls } = vi.hoisted(() => ({ cancelCampaignCalls: [] as any[] }));
+vi.mock('../scheduler/followupScheduler.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../scheduler/followupScheduler.js')>();
+  return {
+    ...actual,
+    cancelScheduledFollowupsForCampaign: vi.fn(async (campaignId: string, reason?: string) => {
+      cancelCampaignCalls.push({ campaignId, reason });
+      return 0;
+    }),
+  };
+});
+
 import { app } from '../index.js';
 import { signAccessToken } from '../auth/jwt.js';
 
@@ -285,5 +299,37 @@ describe('GET /api/campaigns/:id/recipients', () => {
       .get(`/api/campaigns/${campaignId}/recipients`)
       .set('Authorization', `Bearer ${otherToken}`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('pausing suspends follow-ups instead of destroying them', () => {
+  // Pausing used to call cancelScheduledFollowupsForCampaign(), which stopped
+  // the sends but was irreversible: resume could not bring the sequence back,
+  // so pausing a campaign for an hour silently lost every queued follow-up.
+  // The send path now declines while a campaign is not ACTIVE, so nothing
+  // sends while paused AND nothing is thrown away.
+  it('does NOT cancel scheduled follow-ups when a campaign is paused', async () => {
+    const createRes = await authed('post', '/api/campaigns').send({ name: '[TEST] pause' });
+    const campaignId = createRes.body.campaign.id;
+    cancelCampaignCalls.length = 0;
+
+    const res = await authed('patch', `/api/campaigns/${campaignId}`).send({ status: 'PAUSED' });
+    expect(res.status).toBe(200);
+
+    expect(cancelCampaignCalls).toHaveLength(0);
+  });
+
+  // Deleting is different: the campaign really is gone, so its queued
+  // follow-ups must not survive it.
+  it('DOES cancel scheduled follow-ups when a campaign is deleted', async () => {
+    const createRes = await authed('post', '/api/campaigns').send({ name: '[TEST] delete' });
+    const campaignId = createRes.body.campaign.id;
+    cancelCampaignCalls.length = 0;
+
+    const res = await authed('delete', `/api/campaigns/${campaignId}`);
+    expect(res.status).toBe(200);
+
+    expect(cancelCampaignCalls).toHaveLength(1);
+    expect(cancelCampaignCalls[0]).toMatchObject({ campaignId, reason: 'campaign_deleted' });
   });
 });

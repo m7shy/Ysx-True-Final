@@ -36,7 +36,7 @@ import projectsRouter from './projects/routes.js';
 import invoicesRouter from './invoices/routes.js';
 import { unsubscribeHeaders, unsubscribeUrlForRecipient } from './campaigns/trackedHtml.js';
 
-import { LeadStatus } from '@prisma/client';
+import { LeadStatus, CampaignStatus, FollowupJobStatus } from '@prisma/client';
 import { prisma } from './db/prisma.js';
 import { startFollowupScheduler, cancelFollowup, cancelRemainingFollowupsForRecipient, cancelScheduledFollowupsForUserRecipient } from './scheduler/followupScheduler.js';
 import { sendSmtpMail, parseProvider } from './mail/smtpGateway.js';
@@ -46,6 +46,11 @@ import { startReplyPoller } from './unibox/replyPoller.js';
 import { startAutoScraperScheduler } from './scraper/autoScheduler.js';
 import { runDeepChecks, startWatchdog } from './health/monitor.js';
 import { configReport } from './config.js';
+
+// How long a follow-up waits before re-checking a non-ACTIVE campaign. Long
+// enough that a paused campaign is not re-claimed on every scheduler tick,
+// short enough that resuming a campaign feels immediate.
+const PAUSED_RECHECK_MS = 5 * 60_000;
 
 export const app = express();
 
@@ -321,6 +326,43 @@ async function sendFollowupJob(job: any) {
       await cancelFollowup(String(job.id), 'dnc');
       await cancelScheduledFollowupsForUserRecipient(userId, dncRecipient, 'dnc');
       logger.info({ id: job.id }, 'Skipping follow-up send: lead is marked DNC');
+      return;
+    }
+  }
+
+  // Campaign paused → SUSPEND this job, do not send and do not cancel.
+  //
+  // Pausing used to call cancelScheduledFollowupsForCampaign(), which is
+  // irreversible: resuming could not bring the sequence back, so a user who
+  // paused a campaign for an hour silently lost every queued follow-up. That
+  // was an unintended consequence of correctly plugging the "follow-ups keep
+  // sending for days after a pause" leak.
+  //
+  // Deferring here fixes both: nothing sends while paused (the leak stays
+  // closed, and this is the ONLY follow-up send path), and resuming needs no
+  // restore bookkeeping because the jobs were never destroyed. Pushing
+  // scheduledAt forward stops the scheduler re-claiming this row every tick;
+  // returning it to SCHEDULED means the tick's "finalize as SENT" updateMany
+  // no longer matches it (it only touches rows still in SENDING).
+  if (job.campaignId) {
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: String(job.campaignId) },
+      select: { status: true },
+    });
+    if (!campaign) {
+      // Campaign deleted out from under a claimed job — nothing to send to.
+      await cancelFollowup(String(job.id), 'campaign_deleted');
+      return;
+    }
+    if (campaign.status !== CampaignStatus.ACTIVE) {
+      await prisma.followupJob.updateMany({
+        where: { id: String(job.id), status: FollowupJobStatus.SENDING },
+        data: {
+          status: FollowupJobStatus.SCHEDULED,
+          scheduledAt: new Date(Date.now() + PAUSED_RECHECK_MS),
+        },
+      });
+      logger.info({ id: job.id, campaignId: job.campaignId, status: campaign.status }, 'Follow-up deferred: campaign is not active');
       return;
     }
   }

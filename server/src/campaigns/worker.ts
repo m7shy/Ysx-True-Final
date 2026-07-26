@@ -6,7 +6,7 @@ import { logger } from '../logger.js';
 import { maskEmail } from '../util/redact.js';
 import { sendFromMailbox } from '../mail/smtpGateway.js';
 import { recordMailboxSend } from '../creds/mailboxStore.js';
-import { scheduleFollowup, cancelScheduledFollowupsForCampaign } from '../scheduler/followupScheduler.js';
+import { scheduleFollowup } from '../scheduler/followupScheduler.js';
 import { resolveSpintax } from './spintax.js';
 import { renderTemplate } from './variables.js';
 import { buildTrackedEmail, unsubscribeHeaders } from './trackedHtml.js';
@@ -252,7 +252,12 @@ async function handleHardBounce(campaign: Campaign, recipient: CampaignRecipient
       where: { id: campaign.id },
       data: { status: CampaignStatus.PAUSED, pausedReason: 'BOUNCE_RATE' },
     });
-    await cancelScheduledFollowupsForCampaign(campaign.id, 'bounce_rate_threshold');
+    // Flipping to PAUSED is sufficient to stop follow-ups: the send path
+    // declines while a campaign is not ACTIVE (sendFollowupJob in index.ts).
+    // The explicit cancel that used to be here also stopped them, but
+    // destructively — if the operator cleaned the list and resumed, the queued
+    // sequence was already gone. Suspension keeps the safety valve and the
+    // recovery path.
     logger.warn(
       { campaignId: campaign.id, bouncedCount: updated.bouncedCount, sentCount: updated.sentCount },
       'Campaign auto-paused: bounce rate threshold reached',

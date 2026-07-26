@@ -301,9 +301,13 @@ router.patch('/:id', async (req: Request, res: Response) => {
       },
     });
 
-    if (parsed.status === CampaignStatus.PAUSED || parsed.status === 'PAUSED') {
-      await cancelScheduledFollowupsForCampaign(existing.id, 'campaign_paused');
-    }
+    // NOTE: pausing deliberately does NOT cancel scheduled follow-ups any more.
+    // It used to, which stopped the sends but made pause irreversible — resume
+    // could not bring the sequence back, so pausing for an hour silently
+    // destroyed every queued follow-up. The send path now declines to send
+    // while a campaign is not ACTIVE and re-checks later (see sendFollowupJob
+    // in index.ts), so nothing sends while paused AND nothing is lost.
+    // Deletion still cancels, below — there the campaign really is gone.
 
     if (parsed.recipients?.length) {
       const leadIds = await upsertRecipientsAsLeads(db, userId, parsed.recipients);
