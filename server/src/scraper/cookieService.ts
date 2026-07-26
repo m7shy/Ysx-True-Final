@@ -106,20 +106,13 @@ export async function saveCookieFile(userId: string, originalName: string, buffe
   const name = sanitizeCookieName(originalName);
   const content = encryptSecret(buffer.toString('utf8'));
 
-  // `name` is a global-unique column (legacy, pre-tenant-scoping schema): if
-  // another tenant already owns this filename, don't silently steal/overwrite
-  // it — that would be the same cross-tenant hole this scoping is fixing.
-  const existing = await prisma.cookieFile.findUnique({ where: { name }, select: { userId: true } });
-  if (existing && existing.userId && existing.userId !== userId) {
-    throw Object.assign(new Error('A cookie file with this name already exists for another account'), {
-      status: 409,
-      code: 'CONFLICT',
-    });
-  }
-
+  // Filenames are now scoped per tenant (@@unique([userId, name])), so each
+  // tenant has its own namespace and the cross-tenant conflict check that used
+  // to live here is gone: one tenant uploading "cookies.txt" no longer blocks
+  // that name for everyone else, which is what the old global @unique did.
   const row = await prisma.cookieFile.upsert({
-    where: { name },
-    update: { content, sizeBytes: buffer.length, userId },
+    where: { userId_name: { userId, name } },
+    update: { content, sizeBytes: buffer.length },
     create: { name, content, sizeBytes: buffer.length, userId },
   });
   return { name: row.name, sizeBytes: row.sizeBytes, uploadedAt: row.updatedAt.toISOString() };

@@ -36,9 +36,26 @@ vi.mock('../db/prisma.js', () => {
       },
       clientUser: {
         findUnique: async ({ where }: any) => {
+          // Compound unique (userId, email) — emails are scoped per agency now,
+          // so a bare-email lookup is no longer a unique key.
+          if (where.userId_email) {
+            return (
+              [...clientUsers.values()].find(
+                (u) => u.userId === where.userId_email.userId && u.email === where.userId_email.email,
+              ) ?? null
+            );
+          }
           if (where.email) return [...clientUsers.values()].find((u) => u.email === where.email) ?? null;
           if (where.id) return clientUsers.get(where.id) ?? null;
           return null;
+        },
+        // Portal login and magic-link resolve an address that may exist at more
+        // than one agency, so they use findMany and disambiguate themselves.
+        findMany: async ({ where }: any = {}) => {
+          let rows = [...clientUsers.values()];
+          if (where?.email) rows = rows.filter((u) => u.email === where.email);
+          if (where?.userId) rows = rows.filter((u) => u.userId === where.userId);
+          return rows;
         },
         update: async ({ where, data }: any) => {
           const u = clientUsers.get(where.id);

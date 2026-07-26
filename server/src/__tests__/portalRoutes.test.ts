@@ -54,6 +54,14 @@ function matches(row: Row, where: Row | undefined): boolean {
       if ('in' in v) return (v.in as unknown[]).includes(row[k]);
       if ('gt' in v) return row[k] > v.gt;
       if ('equals' in v) return String(row[k]).toLowerCase() === String(v.equals).toLowerCase();
+      // Prisma compound unique key, e.g. { userId_email: { userId, email } }.
+      // The key name is the underscore-joined field list, and every component
+      // must match. Without this the whole clause fell through to `return true`
+      // below and matched the FIRST row in the table — which for a tenant-scoped
+      // lookup is precisely the cross-tenant bug these constraints exist to stop.
+      if (k.includes('_') && Object.keys(v).length > 0 && k.split('_').every((part) => part in v)) {
+        return Object.entries(v as Row).every(([ck, cv]) => row[ck] === cv);
+      }
       // Nested relation filter — not supported; treat as pass (test data is single-tenant per case).
       return true;
     }
@@ -624,11 +632,37 @@ describe('invite → set-password → password login flow', () => {
     expect(res.status).toBe(400);
   });
 
-  it('re-homing an email attached to another client is a 409 EMAIL_TAKEN', async () => {
+  // Portal emails are unique PER AGENCY, not globally. An address already used
+  // by a DIFFERENT agency must not block this one — the old global @unique
+  // rejected it, permanently locking the second agency out of inviting a
+  // shared ops@ inbox or a freelancer who works with several agencies.
+  it('allows inviting an email that already has portal access at another agency', async () => {
     const res = await request(app)
       .post('/api/clients/cA/invite')
       .set('Authorization', adminA)
-      .send({ email: 'clientb@x.com' });
+      .send({ email: 'clientb@x.com' }); // belongs to ownerB's client cB
+
+    expect(res.body.code).not.toBe('EMAIL_TAKEN');
+    // And it really created a separate ClientUser scoped to this agency,
+    // rather than re-homing ownerB's row.
+    const rows = db.clientUser.filter((r) => r.email === 'clientb@x.com');
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.userId).sort()).toEqual(['ownerA', 'ownerB']);
+  });
+
+  // ...but a collision INSIDE one agency is still a conflict, since re-homing
+  // would silently move a contact between that agency's own clients.
+  it('re-homing an email attached to another client of the SAME agency is a 409 EMAIL_TAKEN', async () => {
+    db.client.push({
+      id: 'cA2', userId: 'ownerA', name: 'Client A2', companyName: null,
+      status: 'ACTIVE', createdAt: new Date(), updatedAt: new Date(),
+    });
+
+    const res = await request(app)
+      .post('/api/clients/cA2/invite')
+      .set('Authorization', adminA)
+      .send({ email: 'clienta@x.com' }); // already attached to ownerA's client cA
+
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('EMAIL_TAKEN');
   });

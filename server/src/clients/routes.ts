@@ -110,11 +110,16 @@ router.post('/:id/invite', async (req: Request, res: Response) => {
   }
 
   const { email } = parsed.data;
-  const existing = await prisma.clientUser.findUnique({ where: { email } });
+  // Portal emails are unique PER AGENCY, not globally: the same address may
+  // legitimately have portal access at another agency (a shared ops@ inbox, a
+  // freelancer working with several). Only a collision inside THIS tenant is a
+  // conflict — previously the global constraint rejected the cross-tenant case
+  // too, permanently locking the second agency out of inviting that address.
+  const existing = await prisma.clientUser.findUnique({ where: { userId_email: { userId, email } } });
   if (existing && existing.clientId !== client.id) {
-    // Portal emails are globally unique; a user attached to another client
-    // (possibly another tenant) can't be re-homed via invite.
-    res.status(409).json({ code: 'EMAIL_TAKEN', message: 'This email already has portal access elsewhere' });
+    // Already attached to a DIFFERENT client of this same agency — re-homing
+    // via invite would silently move them between the agency's own clients.
+    res.status(409).json({ code: 'EMAIL_TAKEN', message: 'This email already has portal access for another of your clients' });
     return;
   }
 

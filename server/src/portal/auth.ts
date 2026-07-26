@@ -90,13 +90,33 @@ router.post('/login', async (req: Request, res: Response) => {
   if (!parsed.success) return badRequest(res, parsed.error);
 
   const { email, password } = parsed.data;
-  const cu = await prisma.clientUser.findUnique({ where: { email } });
-  const ok = cu?.passwordHash ? await verifyPassword(password, cu.passwordHash) : false;
-  if (!cu || !ok) {
+
+  // Portal emails are unique per AGENCY, not globally, so one address can hold
+  // portal access at more than one agency. The portal is served from a single
+  // origin and the request carries no tenant context, so the account is
+  // resolved by which one the password actually verifies against.
+  const candidates = await prisma.clientUser.findMany({ where: { email } });
+  const matches = [];
+  for (const candidate of candidates) {
+    if (candidate.passwordHash && (await verifyPassword(password, candidate.passwordHash))) {
+      matches.push(candidate);
+    }
+  }
+
+  if (matches.length !== 1) {
+    // Zero matches is a normal failed login. More than one means the same
+    // address AND password exist at two agencies — genuinely ambiguous, and
+    // guessing a tenant would be logging someone into the wrong company's
+    // data. Both return the same generic error so neither case is
+    // distinguishable from outside.
+    if (matches.length > 1) {
+      logger.warn({ email }, 'Ambiguous portal login: same credentials at multiple agencies; refusing to guess');
+    }
     res.status(401).json({ code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' });
     return;
   }
 
+  const cu = matches[0];
   logger.info({ clientUserId: cu.id }, 'Client logged in (password)');
   await issueSession(cu, res);
 });
@@ -120,34 +140,41 @@ router.post('/magic-link', async (req: Request, res: Response) => {
   if (!parsed.success) return badRequest(res, parsed.error);
 
   // Single indexed lookup — same cost for existing and nonexistent addresses.
-  const cu = await prisma.clientUser.findUnique({ where: { email: parsed.data.email } });
+  // findMany, not findUnique: portal emails are unique per agency, so this
+  // address may hold access at more than one. Each gets its own link; the
+  // recipient picks the right agency by clicking the one they expect.
+  const accounts = await prisma.clientUser.findMany({ where: { email: parsed.data.email } });
 
   // Respond immediately so all callers see the same latency regardless of
   // whether the address has portal access. The mint+send work below is
   // deliberately fire-and-forget.
   res.json({ ok: true, message: 'If that email has portal access, a sign-in link is on its way.' });
 
-  if (!cu) return;
+  if (accounts.length === 0) return;
 
   // Detached: must never rethrow (process backstop is a last resort, not a
   // substitute for an explicit catch here).
   void (async () => {
-    try {
-      // If the client already has an unexpired magic-link token (e.g. they
-      // clicked "send again" immediately), don't burn another email quota slot
-      // or land a second identical link in their inbox.
-      const alreadyPending = await hasUnexpiredMagicLink(cu.id);
-      if (alreadyPending) return;
+    for (const cu of accounts) {
+      try {
+        // If the client already has an unexpired magic-link token (e.g. they
+        // clicked "send again" immediately), don't burn another email quota
+        // slot or land a second identical link in their inbox. Per-account, so
+        // one agency's pending token does not suppress another's link.
+        const alreadyPending = await hasUnexpiredMagicLink(cu.id);
+        if (alreadyPending) continue;
 
-      const raw = await createLoginToken(cu.id, 'MAGIC_LINK');
-      const link = `${portalBaseUrl()}/login?token=${raw}`;
-      await sendPortalEmail(cu.userId, {
-        to: cu.email,
-        subject: 'Your YSX Visuals sign-in link',
-        text: `Click to sign in to your client portal (valid for 15 minutes):\n\n${link}\n\nIf you didn't request this, you can ignore this email.`,
-      });
-    } catch (err) {
-      logger.error({ err, clientUserId: cu.id }, 'Failed to send magic link');
+        const raw = await createLoginToken(cu.id, 'MAGIC_LINK');
+        const link = `${portalBaseUrl()}/login?token=${raw}`;
+        await sendPortalEmail(cu.userId, {
+          to: cu.email,
+          subject: 'Your YSX Visuals sign-in link',
+          text: `Click to sign in to your client portal (valid for 15 minutes):\n\n${link}\n\nIf you didn't request this, you can ignore this email.`,
+        });
+      } catch (err) {
+        // One agency's send failing must not suppress the others.
+        logger.error({ err, clientUserId: cu.id }, 'Failed to send magic link');
+      }
     }
   })();
 });

@@ -71,13 +71,21 @@ describe('saveCookieFile / listCookieFiles / deleteCookieFile', () => {
     expect(call.create.userId).toBe('u1');
   });
 
-  it('rejects overwriting a filename owned by a different tenant', async () => {
-    prismaMock.cookieFile.findUnique.mockResolvedValue({ userId: 'u2' });
-    await expect(saveCookieFile('u1', 'shared.txt', Buffer.from('x'))).rejects.toMatchObject({
-      status: 409,
-      code: 'CONFLICT',
-    });
-    expect(prismaMock.cookieFile.upsert).not.toHaveBeenCalled();
+  // Filenames used to be globally unique, so this used to 409 when another
+  // tenant already held the name — which meant the first tenant to upload
+  // "cookies.txt" permanently claimed it for everyone. Names are now scoped
+  // per tenant (@@unique([userId, name])), so each tenant has its own
+  // namespace and the same filename in two tenants is simply two rows.
+  it('lets a tenant use a filename another tenant already uses, scoped to itself', async () => {
+    await saveCookieFile('u1', 'shared.txt', Buffer.from('x'));
+
+    const call = prismaMock.cookieFile.upsert.mock.calls[0][0];
+    // The upsert must be keyed on the COMPOUND unique, not the bare name —
+    // keying on name alone would overwrite the other tenant's row.
+    expect(call.where).toEqual({ userId_name: { userId: 'u1', name: 'shared.txt' } });
+    expect(call.create.userId).toBe('u1');
+    // And it must not try to reassign ownership on the update path.
+    expect(call.update.userId).toBeUndefined();
   });
 
   it('lists a tenant\'s own files plus legacy unowned rows, mapping updatedAt to uploadedAt', async () => {

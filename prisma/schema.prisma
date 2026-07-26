@@ -665,7 +665,12 @@ model ClientUser {
   // Agency owner, denormalized for fast auth-scope checks without a join.
   userId   String
 
-  email        String  @unique
+  // Scoped per agency, NOT globally unique: two different agencies can each
+  // have a client contact at the same address (a shared ops@ inbox, a
+  // freelancer working with several agencies). A bare @unique here meant the
+  // second agency to invite that address failed permanently on an opaque
+  // constraint error. See @@unique([userId, email]) below.
+  email        String
   passwordHash String? // null until first set via INVITE token (magic-link-only until then)
   tokenVersion Int     @default(0)
   lastLoginAt  DateTime?
@@ -675,7 +680,11 @@ model ClientUser {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([userId, email])
   @@index([clientId])
+  // userId is the scope for every portal auth lookup and for the management
+  // routes; without this index those are sequential scans.
+  @@index([userId])
 }
 
 // Single-use short-lived tokens for both invite/set-password and magic-link
@@ -881,8 +890,17 @@ model Receipt {
 // design); every new upload is scoped to its uploading tenant so one tenant
 // can no longer list/overwrite/delete another tenant's cookie files.
 model CookieFile {
-  id     String  @id @default(cuid())
-  name   String  @unique
+  id String @id @default(cuid())
+  // Scoped per tenant, NOT globally unique. A bare @unique meant the first
+  // tenant to upload "cookies.txt" permanently blocked that filename for every
+  // other tenant — a cross-tenant conflict, and a trivial griefing vector,
+  // in a model that was already tenant-scoped everywhere else.
+  //
+  // NOTE the scope column is nullable for legacy pre-tenant rows, and Postgres
+  // treats NULLs as distinct in a unique index, so several legacy rows may
+  // share a name. That is the pre-existing behaviour for those rows and is
+  // acceptable: prod currently has zero of them (all 4 rows carry a userId).
+  name   String
   userId String?
 
   // Netscape cookie jar contents, encrypted at rest (AES-256-GCM, see
@@ -894,5 +912,6 @@ model CookieFile {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([userId, name])
   @@index([userId])
 }
