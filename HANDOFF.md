@@ -1,5 +1,84 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-26 (final) — DEPLOYED. All review fixes live, all three operational blockers closed.
+
+**Prod is now on `0e316d7`** (was `91564a0`). Everything from the two-round review below is live.
+`tsc` clean (server + root), **vitest 192/192**.
+
+### Deploy — every step verified, not assumed
+
+| Step | Result |
+|---|---|
+| Checkout divergence sweep | Fast-forward safe; prod had no unique commits |
+| Pre-migration backup | DB 30 KB + scraper state 1.9 MB, both written |
+| Prisma client sync | 17 files; engine DLL correctly skipped (locked by the running service, version unchanged) |
+| `migrate deploy` | `20260726160000_scope_unique_constraints_per_tenant` applied |
+| Migration verified in DB | `ClientUser_email_key` and `CookieFile_name_key` **gone**; `ClientUser_userId_email_key`, `ClientUser_userId_idx`, `CookieFile_userId_name_key`, `Receipt_userId_number_key` present; data intact (2 client users, 4 cookie files, 7 users) |
+| Server build | `tsc` exit 0 |
+| CRM + portal frontend builds | Both exit 0; portal bundle confirmed to contain the new logout call |
+| Service restart | Done by user (needs elevation) |
+| **Live health after restart** | **`overall: ok`** — db, campaignWorker, followupScheduler, mailboxes, disk, alerting all `ok` |
+| **New routes live** | `POST /api/auth/logout` and `POST /api/portal/auth/logout` both 200 and clear their cookie — proof the new build is actually running, not just deployed |
+
+### 🟠 Defect found by checking the live response after deploy
+
+The deployed `Set-Cookie` read:
+```
+Set-Cookie: ysxflow_rt=; Max-Age=2592000; Expires=<30 days ahead>
+```
+`res.clearCookie()` applies whatever options it is handed, and it was being handed the same
+object used to *set* the cookie — so it re-issued an empty cookie with a 30-day expiry instead of
+deleting it. **Impact cosmetic, not a security hole:** the token value is emptied, so the session
+genuinely ends and the empty cookie cannot authenticate. But the cookie lingered.
+
+The test is the more instructive part. It asserted `/ysxflow_rt=;|Expires=Thu, 01 Jan 1970/` —
+satisfied by the empty-value branch alone, so it **passed against the broken behaviour**. Now
+asserts the value is emptied AND that no long `Max-Age` is re-issued, and was verified to fail
+when the old options are restored. Fixed at all three clear sites (CRM refresh, portal refresh,
+OAuth state). **Committed but NOT deployed** — not worth a restart on its own.
+
+### Operational blockers — all three closed
+
+1. **Alerting: live.** Needed no new credential. The user pointed out they use Outlook, not
+   Gmail — correct, and `PORTAL_SMTP_*` is a generic transport that had only been aimed at Gmail
+   by an earlier session. Auth-only test: `smtp.office365.com` **AUTH OK**, Gmail `534-5.7.9`
+   (revoked). Repointed at Outlook reusing the already-present `MICROSOFT_APP_PASSWORD`.
+   ⚠️ The fallback now shares the M365 tenant with the primary mailbox, so a tenant-wide Microsoft
+   failure would silence both the fault and the alert about it. Still covers the likeliest case
+   (OAuth token expiry — a separate mechanism). A third-party relay would restore independence.
+2. **Offline `.env`: done.** Encrypted copy in the private Drive folder `YSX-Prod-Backups`
+   (owner-only, verified). Round-trip proven locally and against the copy downloaded back.
+   ⚠️ **The passphrase is 8 characters** — chosen after two warnings. It is now the weakest link
+   protecting the entire keyring; never share that folder, and lengthen it on any rotation.
+3. **Automated backup: done.** Task `YSX DB Backup`, daily 03:00, `LastTaskResult 0`. Now archives
+   `SCRAPER_DIR/profiles` alongside the Neon dump — **this also closed the scraper migration gap**
+   (~10.4k processed-channel + ~9.6k blacklist rows that existed only on this VM).
+
+### Migration readiness — updated
+
+The core was already migration-ready (all state in Neon; a new VM resumes on its own). The
+scraper gap is now closed by the backup change. **What remains is not code:**
+- Backups still live **on the VM** (`C:\backups\ysx`). Drive for Desktop mirroring that folder into
+  `YSX-Prod-Backups` is the durable fix and is **not installed**. The Drive MCP cannot substitute:
+  it takes content inline as base64 and Bash output truncates at 30k chars, so only files ≲20 KB
+  (e.g. `.env.enc`) can go through it — the 1.9 MB scraper archive cannot.
+- **No static IP** — still only mitigated by the 30-min DNS TTL.
+
+### Next session
+
+1. **Deploy the `clearCookie` fix** with whatever else lands next.
+2. **Install Google Drive for Desktop** mirroring `C:\backups\ysx` — 5 minutes, and it is the last
+   thing standing between "backups exist" and "backups survive losing the VM".
+3. **Static IP reservation** (GCP console; the VM's service account lacks the scopes, so it cannot
+   be done from the CLI here — verified by attempting it).
+4. **~7 unverified round-2 findings** remain in `.plans/round2-agy-raw/` — LOW/MEDIUM robustness
+   items. **Do not act on them without checking source first**: four of agy's HIGH-confidence
+   findings this session were wrong.
+5. **`portal`, `mail`, `frontend_views` still have no independent second review** — agy exhausted
+   its quota three times. Worth a pass when quota allows.
+
+---
+
 ## 2026-07-26 (later still) — Two-round deep review of the whole codebase, 23 findings fixed. Pushed, NOT deployed.
 
 **Context:** After the next-steps work below, the user asked for a full deep review in **two
