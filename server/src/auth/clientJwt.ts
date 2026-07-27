@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -29,6 +31,8 @@ export interface ClientRefreshTokenClaims {
   ver: number; // ClientUser.tokenVersion snapshot
   aud: typeof CLIENT_AUD;
   typ: 'refresh';
+  /** Per-issue uniqueness — see RefreshTokenClaims.jti in jwt.ts. */
+  jti: string;
 }
 
 const DEV_FALLBACK_SECRET = 'dev-insecure-jwt-secret-do-not-use-in-production';
@@ -79,6 +83,7 @@ export function signClientRefreshToken(input: ClientTokenInput): string {
     ver: input.tokenVersion,
     aud: CLIENT_AUD,
     typ: 'refresh',
+    jti: randomUUID(),
   };
   return jwt.sign(claims, getSecret(), signOptions(config.JWT_REFRESH_TTL));
 }

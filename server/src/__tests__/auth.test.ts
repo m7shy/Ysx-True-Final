@@ -42,8 +42,47 @@ vi.mock('../db/prisma.js', () => {
         findMany: async () => [],
         findFirst: async () => null,
       },
+      refreshToken: makeRefreshTokenFake(),
     },
   };
+
+  /**
+   * In-memory stand-in for the RefreshToken table.
+   *
+   * Faithful on the two behaviours the rotation logic actually depends on:
+   * `updateMany` must apply its WHERE (including `usedAt: null`) so the
+   * conditional claim really is conditional, and `tokenHash` must behave as a
+   * unique key. A fake that ignored the WHERE would let every test pass while
+   * the reuse detection did nothing.
+   */
+  function makeRefreshTokenFake() {
+    const rows = new Map<string, any>();
+    const matches = (row: any, where: any): boolean =>
+      Object.entries(where ?? {}).every(([k, v]) => {
+        if (v && typeof v === 'object' && 'gt' in (v as any)) return row[k] > (v as any).gt;
+        if (v && typeof v === 'object' && 'lt' in (v as any)) return row[k] < (v as any).lt;
+        return row[k] === v;
+      });
+
+    return {
+      create: async ({ data }: any) => {
+        const row = { id: `rt${seq++}`, usedAt: null, revokedAt: null, createdAt: now(), userId: null, clientUserId: null, ...data };
+        rows.set(row.tokenHash, row);
+        return row;
+      },
+      findUnique: async ({ where }: any) => rows.get(where.tokenHash) ?? null,
+      updateMany: async ({ where, data }: any) => {
+        const hit = [...rows.values()].filter((r) => matches(r, where));
+        hit.forEach((r) => Object.assign(r, data));
+        return { count: hit.length };
+      },
+      deleteMany: async ({ where }: any) => {
+        const hit = [...rows.values()].filter((r) => matches(r, where));
+        hit.forEach((r) => rows.delete(r.tokenHash));
+        return { count: hit.length };
+      },
+    };
+  }
 });
 
 import { app } from '../index.js';
@@ -293,5 +332,91 @@ describe('logout clears the refresh cookie', () => {
   it('does not require authentication', async () => {
     const res = await request(app).post('/api/auth/logout');
     expect(res.status).toBe(200);
+  });
+});
+
+// ── Refresh-token rotation + reuse detection ─────────────────────────────────
+
+describe('refresh-token rotation', () => {
+  async function freshLogin(email: string) {
+    await request(app).post('/api/auth/signup').send({ email, password: 'password123' });
+    const login = await request(app).post('/api/auth/login').send({ email, password: 'password123' });
+    return refreshTokenFrom(login)!;
+  }
+
+  const refreshWith = (token: string) =>
+    request(app).post('/api/auth/refresh').set('Cookie', [`ysxflow_rt=${token}`]);
+
+  it('issues a NEW refresh token and retires the one that was used', async () => {
+    const first = await freshLogin('rot1@example.com');
+
+    const res = await refreshWith(first);
+    expect(res.status).toBe(200);
+
+    const second = refreshTokenFrom(res);
+    expect(second).toBeTruthy();
+    // Rotation means a genuinely different token, not the same one re-sent.
+    expect(second).not.toBe(first);
+
+    // The successor works.
+    expect((await refreshWith(second!)).status).toBe(200);
+  });
+
+  it('detects reuse of a consumed token and kills the whole session family', async () => {
+    const first = await freshLogin('rot2@example.com');
+
+    const rotated = await refreshWith(first);
+    const second = refreshTokenFrom(rotated)!;
+
+    // Replay the ORIGINAL token after the grace window. Two parties holding
+    // one token is the signal we cannot distinguish from theft, so the entire
+    // chain is revoked rather than just this request being refused.
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(60_000);
+      const replay = await refreshWith(first);
+      expect(replay.status).toBe(401);
+
+      // The crucial part: the token the LEGITIMATE client is holding is now
+      // dead too. A rotation scheme that only rejected the replayed token
+      // would leave the thief and the victim both working.
+      const victim = await refreshWith(second);
+      expect(victim.status).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('tolerates a concurrent double-refresh inside the grace window', async () => {
+    // Two browser tabs booting at once both present the same cookie. That is
+    // not a theft, and logging the user out for opening a second tab would
+    // make rotation unshippable.
+    const first = await freshLogin('rot3@example.com');
+
+    const a = await refreshWith(first);
+    const b = await refreshWith(first);
+
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+
+    // And the family survives: the newest token still works.
+    expect((await refreshWith(refreshTokenFrom(b)!)).status).toBe(200);
+  });
+
+  it('refuses a validly-signed token that has no server-side record', async () => {
+    // Every pre-rotation session looks like this, which is why the deploy
+    // introducing rotation logs everyone out exactly once.
+    const orphan = signRefreshToken({ userId: 'u999', email: 'ghost@example.com', tokenVersion: 0 });
+    expect((await refreshWith(orphan)).status).toBe(401);
+  });
+
+  it('logout revokes the family, not just this browser cookie', async () => {
+    const token = await freshLogin('rot4@example.com');
+
+    await request(app).post('/api/auth/logout').set('Cookie', [`ysxflow_rt=${token}`]);
+
+    // Clearing the cookie only stops THIS browser presenting it. Anyone who
+    // had already copied the value could otherwise keep refreshing with it.
+    expect((await refreshWith(token)).status).toBe(401);
   });
 });

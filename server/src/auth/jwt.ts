@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -24,6 +26,17 @@ export interface RefreshTokenClaims {
   email: string;
   ver: number; // User.tokenVersion snapshot
   typ: 'refresh';
+  /**
+   * Per-issue uniqueness.
+   *
+   * Without it, two refresh tokens minted for the same user in the same SECOND
+   * are byte-identical (the payload is just sub/email/ver/typ plus iat/exp at
+   * one-second resolution). Rotation then "issues" the token it just retired:
+   * the server-side record collides on its unique tokenHash, and the retired
+   * token starts working again. Caught by asserting the rotated token actually
+   * differs, not merely that the response was 200.
+   */
+  jti: string;
 }
 
 /**
@@ -101,6 +114,7 @@ export function signRefreshToken(input: {
     email: input.email,
     ver: input.tokenVersion,
     typ: 'refresh',
+    jti: randomUUID(),
   };
   return jwt.sign(claims, getSecret(), signOptions(config.JWT_REFRESH_TTL));
 }

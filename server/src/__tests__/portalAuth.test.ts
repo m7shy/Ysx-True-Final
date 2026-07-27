@@ -21,9 +21,38 @@ vi.mock('../db/prisma.js', () => {
     lastLoginAt: null,
   });
 
+  // In-memory RefreshToken table. `updateMany` must honour its WHERE
+  // (including `usedAt: null`) or the conditional rotation claim silently
+  // becomes unconditional and reuse detection tests would pass vacuously.
+  const refreshRows = new Map<string, any>();
+  const rtMatches = (row: any, where: any): boolean =>
+    Object.entries(where ?? {}).every(([k, v]) => {
+      if (v && typeof v === 'object' && 'gt' in (v as any)) return row[k] > (v as any).gt;
+      if (v && typeof v === 'object' && 'lt' in (v as any)) return row[k] < (v as any).lt;
+      return row[k] === v;
+    });
+
   return {
     prisma: {
       user: { findUnique: async () => null },
+      refreshToken: {
+        create: async ({ data }: any) => {
+          const row = { id: `rt${refreshRows.size + 1}`, usedAt: null, revokedAt: null, createdAt: new Date(), userId: null, clientUserId: null, ...data };
+          refreshRows.set(row.tokenHash, row);
+          return row;
+        },
+        findUnique: async ({ where }: any) => refreshRows.get(where.tokenHash) ?? null,
+        updateMany: async ({ where, data }: any) => {
+          const hit = [...refreshRows.values()].filter((r) => rtMatches(r, where));
+          hit.forEach((r) => Object.assign(r, data));
+          return { count: hit.length };
+        },
+        deleteMany: async ({ where }: any) => {
+          const hit = [...refreshRows.values()].filter((r) => rtMatches(r, where));
+          hit.forEach((r) => refreshRows.delete(r.tokenHash));
+          return { count: hit.length };
+        },
+      },
       mailbox: {
         findMany: async () => [],
         findFirst: async ({ where }: any) =>
@@ -124,6 +153,7 @@ import {
   signClientRefreshToken,
   verifyClientAccessToken,
 } from '../auth/clientJwt.js';
+import { recordRefreshToken } from '../auth/refreshStore.js';
 import { signAccessToken, verifyAccessToken, verifyRefreshToken } from '../auth/jwt.js';
 import { createLoginToken, consumeLoginToken } from '../portal/tokens.js';
 import { requireClientAuth } from '../auth/clientMiddleware.js';
@@ -249,18 +279,41 @@ describe('portal auth HTTP flow', () => {
       .send({ email: 'client@example.com', password: 'whatever123' });
     expect(early.status).toBe(401);
 
-    // Refresh with a valid client refresh token.
+    // Refresh with a valid client refresh token. It must also be RECORDED —
+    // a validly-signed token with no server-side row is exactly what rotation
+    // rejects, and is how pre-rotation sessions get logged out on deploy.
+    const validRefresh = signClientRefreshToken(cu);
+    await recordRefreshToken({ clientUserId: cu.clientUserId }, validRefresh);
     const refresh = await request(app)
       .post('/api/portal/auth/refresh')
-      .send({ refreshToken: signClientRefreshToken(cu) });
+      .set('Cookie', `ysxportal_rt=${validRefresh}`);
     expect(refresh.status).toBe(200);
     expect(refresh.body.accessToken).toBeTruthy();
 
     // Stale tokenVersion is revoked.
     const stale = await request(app)
       .post('/api/portal/auth/refresh')
-      .send({ refreshToken: signClientRefreshToken({ ...cu, tokenVersion: 9 }) });
+      .set('Cookie', `ysxportal_rt=${signClientRefreshToken({ ...cu, tokenVersion: 9 })}`);
     expect(stale.status).toBe(401);
+  });
+
+  // The HttpOnly cookie buys nothing while a body fallback also accepts the
+  // token: anything an XSS lifts stays usable by POSTing it as JSON from
+  // anywhere, and CORS does not stop a request being SENT. The CRM removed this
+  // shim; the portal — the client-facing app — kept it far longer.
+  it('does NOT accept a refresh token supplied in the request body', async () => {
+    const token = signClientRefreshToken(cu);
+    await recordRefreshToken({ clientUserId: cu.clientUserId }, token);
+
+    const res = await request(app).post('/api/portal/auth/refresh').send({ refreshToken: token });
+    expect(res.status).toBe(400);
+
+    // And the same token still works via the cookie, proving the 400 above is
+    // the body being ignored rather than the token being bad.
+    const viaCookie = await request(app)
+      .post('/api/portal/auth/refresh')
+      .set('Cookie', `ysxportal_rt=${token}`);
+    expect(viaCookie.status).toBe(200);
   });
 
   it('rejects an expired magic-link token', async () => {
@@ -304,7 +357,7 @@ describe('portal auth HTTP flow', () => {
 
     const refreshed = await request(app)
       .post('/api/portal/auth/refresh')
-      .send({ refreshToken });
+      .set('Cookie', `ysxportal_rt=${refreshToken}`);
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.accessToken).toBeTruthy();
   });

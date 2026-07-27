@@ -167,9 +167,59 @@ model User {
   invoices        Invoice[]
   receipts        Receipt[]
   suppressions    Suppression[]
+  refreshTokens   RefreshToken[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Server-side refresh-token records, for rotation with reuse detection.
+///
+/// Refresh tokens used to be pure stateless JWTs: a stolen one stayed valid for
+/// its full 30-day life, and the only remedy was bumping tokenVersion — which
+/// signs the victim out of every device they own, and tells you nothing about
+/// whether a theft actually happened.
+///
+/// Each login starts a FAMILY. Every refresh consumes one token and issues its
+/// successor in the same family. A token may be consumed once; if a second
+/// attempt arrives for an already-consumed token, that means two parties hold
+/// the same token — the legitimate client and someone else — and the whole
+/// family is revoked at once. The theft converts itself into a single forced
+/// re-login instead of a month of silent access.
+///
+/// Exactly one of userId / clientUserId is set: the CRM and the client portal
+/// share this mechanism but never share a session. Both are cascading FKs, so
+/// deleting an account takes its sessions with it.
+model RefreshToken {
+  id String @id @default(cuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  clientUserId String?
+  clientUser   ClientUser? @relation(fields: [clientUserId], references: [id], onDelete: Cascade)
+
+  /// One per login. Rotation stays inside it; reuse detection revokes it whole.
+  familyId String
+
+  /// sha256 of the token string. The token itself is never stored — a dump of
+  /// this table must not be a set of working credentials.
+  tokenHash String @unique
+
+  /// Mirrors the JWT's own exp, so the two can never disagree.
+  expiresAt DateTime
+  /// Set the moment the token is consumed. A second consumption is the signal.
+  usedAt    DateTime?
+  /// Set by logout, logout-everywhere, password change, or reuse detection.
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([clientUserId])
+  @@index([familyId])
+  // Pruning expired rows scans on this.
+  @@index([expiresAt])
 }
 
 /// Per-tenant permanent do-not-contact list.
@@ -726,7 +776,8 @@ model ClientUser {
   tokenVersion Int     @default(0)
   lastLoginAt  DateTime?
 
-  loginTokens ClientLoginToken[]
+  loginTokens   ClientLoginToken[]
+  refreshTokens RefreshToken[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

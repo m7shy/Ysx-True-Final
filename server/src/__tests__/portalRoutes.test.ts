@@ -36,6 +36,7 @@ const db: Record<string, Row[]> = {
   invoice: [],
   payment: [],
   receipt: [],
+  refreshToken: [],
 };
 
 let seq = 1;
@@ -174,7 +175,13 @@ function makeModel(model: string) {
               ? { version: 1, type: 'FILE_LINK' }
               : model === 'clientLoginToken'
                 ? { usedAt: null }
-                : {};
+                // Explicit nulls, not absent keys: the rotation claim filters
+                // on `usedAt: null`, and `undefined === null` is false — a row
+                // created without them could never be consumed, so every
+                // refresh would read as invalid.
+                : model === 'refreshToken'
+                  ? { usedAt: null, revokedAt: null, userId: null, clientUserId: null }
+                  : {};
       const row: Row = { id: nextId(model), createdAt: new Date(), updatedAt: new Date(), ...defaults, ...data };
       // Enforce @@unique([userId, number]) for receipts, mirroring what real Prisma does.
       if (model === 'receipt' && row.userId && row.number) {
@@ -300,6 +307,7 @@ vi.mock('../mail/smtpGateway.js', async (importOriginal) => {
 import { app } from '../index.js';
 import { signAccessToken } from '../auth/jwt.js';
 import { signClientAccessToken, signClientRefreshToken } from '../auth/clientJwt.js';
+import { recordRefreshToken } from '../auth/refreshStore.js';
 
 const adminA = `Bearer ${signAccessToken({ userId: 'ownerA', email: 'a@agency.com' })}`;
 const adminB = `Bearer ${signAccessToken({ userId: 'ownerB', email: 'b@agency.com' })}`;
@@ -592,7 +600,7 @@ describe('invite → set-password → password login flow', () => {
       email: 'newuser@x.com',
       tokenVersion: 0, // pre-set-password snapshot; the row is now at 1
     });
-    const res = await request(app).post('/api/portal/auth/refresh').send({ refreshToken: staleRefresh });
+    const res = await request(app).post('/api/portal/auth/refresh').set('Cookie', `ysxportal_rt=${staleRefresh}`);
     expect(res.status).toBe(401);
   });
 
@@ -605,8 +613,9 @@ describe('invite → set-password → password login flow', () => {
       email: 'newuser@x.com',
       tokenVersion: cu.tokenVersion,
     });
+    await recordRefreshToken({ clientUserId: cu.id }, currentRefresh);
     // Sanity: this refresh token is valid before revocation.
-    const before = await request(app).post('/api/portal/auth/refresh').send({ refreshToken: currentRefresh });
+    const before = await request(app).post('/api/portal/auth/refresh').set('Cookie', `ysxportal_rt=${currentRefresh}`);
     expect(before.status).toBe(200);
 
     // Tenant B cannot revoke tenant A's client user (client resolved via tenantDb).
@@ -621,7 +630,7 @@ describe('invite → set-password → password login flow', () => {
     expect(revoke.status).toBe(200);
     expect(revoke.body.ok).toBe(true);
 
-    const after = await request(app).post('/api/portal/auth/refresh').send({ refreshToken: currentRefresh });
+    const after = await request(app).post('/api/portal/auth/refresh').set('Cookie', `ysxportal_rt=${currentRefresh}`);
     expect(after.status).toBe(401);
   });
 
@@ -814,17 +823,17 @@ describe('archived client loses portal access', () => {
 
     // The portal auth routes (mounted separately, without requireClientAuth)
     // must keep working for an archived client's user rather than erroring.
+    const archivedRefresh = signClientRefreshToken({
+      clientUserId: 'cuA',
+      clientId: 'cA',
+      userId: 'ownerA',
+      email: 'clienta@x.com',
+      tokenVersion: 0,
+    });
+    await recordRefreshToken({ clientUserId: 'cuA' }, archivedRefresh);
     const refresh = await request(app)
       .post('/api/portal/auth/refresh')
-      .send({
-        refreshToken: signClientRefreshToken({
-          clientUserId: 'cuA',
-          clientId: 'cA',
-          userId: 'ownerA',
-          email: 'clienta@x.com',
-          tokenVersion: 0,
-        }),
-      });
+      .set('Cookie', `ysxportal_rt=${archivedRefresh}`);
     expect(refresh.status).toBe(200);
   });
 });

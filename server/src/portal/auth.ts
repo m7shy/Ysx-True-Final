@@ -13,6 +13,12 @@ import {
 import { createLoginToken, consumeLoginToken, hasUnexpiredMagicLink } from './tokens.js';
 import { sendPortalEmail, portalBaseUrl } from './mailer.js';
 import { setPortalRefreshCookie, clearPortalRefreshCookie, PORTAL_REFRESH_COOKIE } from '../auth/cookies.js';
+import {
+  recordRefreshToken,
+  consumeRefreshToken,
+  revokeAllForSubject,
+  revokeFamilyForToken,
+} from '../auth/refreshStore.js';
 
 /**
  * Client-portal auth: password login, passwordless magic link, invite/set-
@@ -67,15 +73,23 @@ function tokenInput(cu: ClientUserRow): ClientTokenInput {
   };
 }
 
-async function issueSession(cu: ClientUserRow, res: Response, status = 200): Promise<void> {
+async function issueSession(
+  cu: ClientUserRow,
+  res: Response,
+  status = 200,
+  familyId?: string,
+): Promise<void> {
   await prisma.clientUser.update({ where: { id: cu.id }, data: { lastLoginAt: new Date() } });
   const client = await prisma.client.findUnique({
     where: { id: cu.clientId },
     select: { id: true, name: true, companyName: true },
   });
   // Set the refresh token as an HttpOnly cookie — it never appears in the
-  // response body again so script cannot exfiltrate it.
+  // response body again so script cannot exfiltrate it — and record it
+  // server-side so it rotates and can be revoked. `familyId` continues an
+  // existing chain (a refresh); omitting it opens a new one (a login).
   const refreshToken = signClientRefreshToken(tokenInput(cu));
+  await recordRefreshToken({ clientUserId: cu.id }, refreshToken, familyId);
   setPortalRefreshCookie(res, refreshToken);
   res.status(status).json({
     accessToken: signClientAccessToken(tokenInput(cu)),
@@ -217,6 +231,10 @@ router.post('/set-password', async (req: Request, res: Response) => {
     data: { passwordHash, tokenVersion: { increment: 1 } },
   });
 
+  // Evict every stored session as well as bumping tokenVersion, so a session
+  // an attacker already holds cannot outlive the password that replaced it.
+  await revokeAllForSubject({ clientUserId: cu.id });
+
   logger.info({ clientUserId: cu.id }, 'Client set password via invite');
   // Issue from the UPDATED row, not the pre-update one: the bump above means a
   // session minted from the stale tokenVersion would carry ver=N while the DB
@@ -245,16 +263,26 @@ router.post('/set-password', async (req: Request, res: Response) => {
  * privileged) and it does NOT bump tokenVersion, which would end this client's
  * sessions everywhere rather than just here.
  */
-router.post('/logout', (_req: Request, res: Response) => {
+router.post('/logout', async (req: Request, res: Response) => {
+  // Revoke server-side too: clearing the cookie only stops THIS browser from
+  // presenting the token.
+  const rawToken: string | undefined = req.cookies?.[PORTAL_REFRESH_COOKIE];
+  if (rawToken) await revokeFamilyForToken(rawToken);
   clearPortalRefreshCookie(res);
   res.json({ ok: true });
 });
 
 router.post('/refresh', async (req: Request, res: Response) => {
-  // Prefer the cookie; fall back to the body for one release so users with a
-  // stale cached bundle are not hard-locked out.
-  const rawToken: string | undefined =
-    req.cookies?.[PORTAL_REFRESH_COOKIE] || req.body?.refreshToken;
+  // Cookie ONLY.
+  //
+  // This accepted `req.body.refreshToken` as a "one release" transitional
+  // fallback long after that release shipped — the same shim the CRM removed,
+  // for the same reason: while it stands, the HttpOnly cookie buys nothing. A
+  // token lifted by any XSS stays fully usable by POSTing it as JSON from
+  // anywhere, and CORS does not help (it governs who may READ a cross-origin
+  // response, not who may send the request). This is the CLIENT-facing app, so
+  // it carried the weaker version of the rule for longer.
+  const rawToken: string | undefined = req.cookies?.[PORTAL_REFRESH_COOKIE];
 
   if (!rawToken) {
     res.status(400).json({ code: 'VALIDATION', message: 'refreshToken is required' });
@@ -275,7 +303,26 @@ router.post('/refresh', async (req: Request, res: Response) => {
     return;
   }
 
+  const rotation = await consumeRefreshToken(rawToken);
+
+  if (rotation.status === 'reused') {
+    clearPortalRefreshCookie(res);
+    logger.warn({ clientUserId: cu.id }, 'Portal refresh reuse detected; session family revoked');
+    res.status(401).json({
+      code: 'AUTH',
+      message: 'This session was ended for security reasons. Please sign in again.',
+    });
+    return;
+  }
+
+  if (rotation.status === 'invalid') {
+    clearPortalRefreshCookie(res);
+    res.status(401).json({ code: 'AUTH', message: 'Refresh token has been revoked' });
+    return;
+  }
+
   const refreshToken = signClientRefreshToken(tokenInput(cu));
+  await recordRefreshToken({ clientUserId: cu.id }, refreshToken, rotation.familyId);
   setPortalRefreshCookie(res, refreshToken);
   res.json({
     accessToken: signClientAccessToken(tokenInput(cu)),

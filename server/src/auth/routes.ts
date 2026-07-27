@@ -7,6 +7,12 @@ import { hashPassword, verifyPassword } from './password.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from './jwt.js';
 import { requireAuth, requireUserId } from './middleware.js';
 import { setCrmRefreshCookie, clearCrmRefreshCookie, CRM_REFRESH_COOKIE } from './cookies.js';
+import {
+  recordRefreshToken,
+  consumeRefreshToken,
+  revokeAllForSubject,
+  revokeFamilyForToken,
+} from './refreshStore.js';
 
 const router = express.Router();
 
@@ -38,12 +44,19 @@ function issueTokens(user: { id: string; email: string; tokenVersion: number }) 
  * Set the refresh token as an HttpOnly cookie and return only the access
  * token (plus any extra fields) in the JSON body. The refresh token never
  * appears in a response body again — script cannot read it from a cookie.
+ *
+ * Also records the token server-side. `familyId` continues an existing session
+ * chain (a rotation); omitting it opens a new one (a login). Without the
+ * record, /refresh will not accept the token at all — that is what makes a
+ * stolen token expire on first reuse instead of in thirty days.
  */
-function issueTokensWithCookie(
+async function issueTokensWithCookie(
   res: Response,
   user: { id: string; email: string; tokenVersion: number },
-): { accessToken: string } {
+  familyId?: string,
+): Promise<{ accessToken: string }> {
   const { accessToken, refreshToken } = issueTokens(user);
+  await recordRefreshToken({ userId: user.id }, refreshToken, familyId);
   setCrmRefreshCookie(res, refreshToken);
   return { accessToken };
 }
@@ -86,7 +99,7 @@ router.post('/signup', async (req: Request, res: Response) => {
   });
 
   logger.info({ userId: user.id }, 'User signed up');
-  res.status(201).json({ user: publicUser(user), ...issueTokensWithCookie(res, user) });
+  res.status(201).json({ user: publicUser(user), ...(await issueTokensWithCookie(res, user)) });
 });
 
 /**
@@ -113,7 +126,7 @@ router.post('/login', async (req: Request, res: Response) => {
   });
 
   logger.info({ userId: user.id }, 'User logged in');
-  res.json({ user: publicUser(updated), ...issueTokensWithCookie(res, updated) });
+  res.json({ user: publicUser(updated), ...(await issueTokensWithCookie(res, updated)) });
 });
 
 /**
@@ -157,7 +170,34 @@ router.post('/refresh', async (req: Request, res: Response) => {
     return;
   }
 
-  res.json(issueTokensWithCookie(res, user));
+  // Rotation + reuse detection. A valid signature is no longer sufficient: the
+  // token must also be a live, unconsumed server-side record.
+  const rotation = await consumeRefreshToken(rawToken);
+
+  if (rotation.status === 'reused') {
+    // Two parties hold this token. consumeRefreshToken has already revoked the
+    // whole family, so every device on this login chain must sign in again.
+    // The cookie is cleared here so this browser stops replaying a token that
+    // will never work again.
+    clearCrmRefreshCookie(res);
+    logger.warn({ userId: user.id }, 'Refresh reuse detected; session family revoked');
+    res.status(401).json({
+      code: 'AUTH',
+      message: 'This session was ended for security reasons. Please sign in again.',
+    });
+    return;
+  }
+
+  if (rotation.status === 'invalid') {
+    // Unknown, revoked or expired. Also every session that predates rotation —
+    // hence the one-time logout on the deploy that introduces this.
+    clearCrmRefreshCookie(res);
+    res.status(401).json({ code: 'AUTH', message: 'Refresh token has been revoked' });
+    return;
+  }
+
+  // Successor stays in the same family, so the chain remains traceable.
+  res.json(await issueTokensWithCookie(res, user, rotation.familyId));
 });
 
 /**
@@ -185,7 +225,13 @@ router.post('/refresh', async (req: Request, res: Response) => {
  * NOT bump tokenVersion; that is logout-all's job, and doing it here would sign
  * the user out of every other device whenever they closed one tab.
  */
-router.post('/logout', (_req: Request, res: Response) => {
+router.post('/logout', async (req: Request, res: Response) => {
+  // Revoke the session chain server-side as well as clearing the cookie.
+  // Clearing the cookie alone only stops THIS browser from presenting the
+  // token; anyone who had already copied it could keep refreshing with it
+  // until it expired. Revoking the family makes sign-out mean it.
+  const rawToken: string | undefined = req.cookies?.[CRM_REFRESH_COOKIE];
+  if (rawToken) await revokeFamilyForToken(rawToken);
   clearCrmRefreshCookie(res);
   res.json({ ok: true });
 });
@@ -196,6 +242,10 @@ router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
     where: { id: userId },
     data: { tokenVersion: { increment: 1 } },
   });
+  // Belt and braces: the tokenVersion bump already invalidates every issued
+  // JWT, but revoking the stored records too means the refresh table reflects
+  // reality rather than holding rows that look live.
+  await revokeAllForSubject({ userId });
   // Clear the refresh-token cookie so the browser stops sending a now-invalid
   // token on future refresh attempts.
   clearCrmRefreshCookie(res);
@@ -240,9 +290,13 @@ router.post('/change-password', requireAuth, async (req: Request, res: Response)
     where: { id: userId },
     data: { passwordHash, tokenVersion: { increment: 1 } },
   });
+  // Every stored session dies with the password, including this caller's — the
+  // fresh pair issued below opens a NEW family, so the tab that changed the
+  // password stays signed in without inheriting the old chain.
+  await revokeAllForSubject({ userId });
 
   logger.info({ userId }, 'User changed password (all other sessions evicted)');
-  res.json({ user: publicUser(updated), ...issueTokensWithCookie(res, updated) });
+  res.json({ user: publicUser(updated), ...(await issueTokensWithCookie(res, updated)) });
 });
 
 /**
