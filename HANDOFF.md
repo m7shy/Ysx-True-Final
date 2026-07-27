@@ -1,5 +1,58 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-27 — Readiness assessment, then blockers 2/6/7 fixed. Committed, NOT deployed.
+
+Full assessment: `.plans/READINESS-2026-07-27.md`. Plan: `.plans/compliance-capacity-hardening.md`.
+Two commits on `phase5-frontend-wiring`: `b9c1bc7`, `48997b4`. tsc clean (server + root),
+**vitest 229/229** (was 192). Prod is still on `0e316d7`.
+
+### ⚠️ READ BEFORE DEPLOYING — this batch blocks sending by design
+
+`assertSenderIdentity` refuses to dispatch a campaign until the tenant has a business name and
+postal address. **On deploy, every campaign stops until you fill in Settings → Sender identity.**
+That is the intended behaviour (the alternative is continuing to send mail that breaks CAN-SPAM),
+but it will look like an outage if you are not expecting it. Set it first, then resume.
+
+Deploy notes: migration `20260727120000_compliance_sender_identity_and_suppression` (additive:
+3 nullable columns + 1 table, cannot fail on current data); **frontend rebuild required**
+(SettingsModal); the stale-Prisma-client trap applies as always — sync
+`server/node_modules/.prisma/client` before restarting or `Suppression` will not exist at runtime.
+
+### What the assessment found that the handoff had wrong
+
+- **DKIM is NOT enabled.** Selector CNAMEs exist, their targets are NXDOMAIN on three resolvers,
+  and Microsoft's own stamp on a real outbound message reads `dkim=none (message not signed)`.
+- **The scraper backup has never run from the scheduled task.** `tar --force-local` is GNU-only;
+  under Task Scheduler `tar` is Windows' bsdtar, which rejects it, and the error went to a
+  discarded stdout while the task exited 0. Fixed and verified against both tars.
+- **A restore has now actually been rehearsed** into a scratch Neon database: 53/53 rows, counts
+  matching live, zero orphans, timestamps exact, and the restored mailbox's OAuth tokens decrypt
+  with the offline key. `docs/RECOVERY.md` documented `pg_restore` against a `.dump` this VM cannot
+  produce; corrected, and `server/scripts/restore-db.mjs` is the real procedure.
+- **ysxvisuals.com has no MX and its SPF include is NXDOMAIN**, so `hello@` and `dmarc@` both
+  bounce — including the contact address the client portal shows paying clients.
+- The DMARC `rua` on the outreach subdomain is missing its `_report._dmarc` authorization record,
+  so aggregate reports were never generated, let alone read.
+- **I was wrong about one thing**: campaign *auto*-follow-ups were pre-rendered through
+  `buildTrackedEmail` and did carry a visible unsubscribe link. Follow-ups queued via
+  `POST /api/followups/schedule` carried nothing. The footer now happens at send time, which covers
+  both routes and picks up the current address.
+
+### Still open — in rough priority order
+
+1. **Refresh-token rotation with reuse detection** — designed, not built. Forces a one-time logout,
+   so it was deliberately held for its own deploy.
+2. **Per-tenant fairness**: the reply poller still takes the globally oldest 100 CONTACTED leads
+   per tick and the campaign worker still iterates all tenants' campaigns oldest-first.
+3. `MAILBOX_ENCRYPTION_KEY` rotation path; the 8-char passphrase on `.env.enc` is the real risk.
+4. `Revision.roundNumber` race (no unique constraint) — confirmed from the portal review.
+5. ~7 unverified round-2 findings in `.plans/round2-agy-raw/`.
+6. Not code: privacy policy at a real URL, the legitimate-interest assessment, UptimeRobot,
+   Drive for Desktop, `Mailbox.dailyLimit` and the FREE-tier 200/month cap (both data, and both
+   below the target send volume).
+
+---
+
 ## 2026-07-26 (final) — DEPLOYED. All review fixes live, all three operational blockers closed.
 
 **Prod is now on `0e316d7`** (was `91564a0`). Everything from the two-round review below is live.
