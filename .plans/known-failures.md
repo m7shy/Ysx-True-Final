@@ -151,3 +151,35 @@ Six YSXXS checkouts have existed on this VM. **Prod is `C:\Users\banjigum1\Deskt
 
 ## Delegated review output has been wrong before (skill §5.18)
 A prior delegated review in this project produced ~100 findings, two of which were confidently stated and factually wrong (one from misreading loop iteration order, one an overstated claim about API behaviour). Spot-check every HIGH before relaying; never paste a findings list through unverified.
+
+## agy — gemini refuses security-shaped review prompts outright (2026-07-27)
+`gemini-3.1-pro-high` refused a portal review twice with:
+
+> "Sorry, I cannot fulfill your request to perform a security vulnerability analysis or audit on
+> specific codebase files or targets."
+
+The prompt asked for *my own* codebase and said so. The trigger is the framing, not the target: the
+first version led with "AUTHORIZATION holes: a client user of agency A able to read or mutate
+anything belonging to agency B" and "can a client user change an amount" — which reads as attack
+planning. A near-identical prompt for the mail layer, framed around correctness and resource
+handling, went through on the same model minutes earlier.
+
+Rewording to explicit ownership + "routine defensive code review" + "data scoping" instead of
+"authorization holes" did NOT help on gemini — it refused the reworded version too. **Use a Claude
+model for anything authz/token/money-shaped**; gemini is fine for correctness/perf/resource review.
+
+## agy runner — a per-unit stdout file is not enough when a chain tries several models (2026-07-27)
+My §7.2 runner wrote every model's output to `$NAME.stdout`, so the second model in the chain
+**overwrote the first model's work**. Sonnet had actually completed the portal review; gemini's
+one-paragraph refusal then replaced it on disk and the unit was scored as a total failure. Write to
+`$NAME.$model.stdout` — the cost of getting this wrong is silently discarding a completed unit.
+
+## agy worker — does the work, skips BOTH delivery channels, findings survive only in narration (2026-07-27)
+Sonnet on the portal unit: read every file, reasoned through 13 numbered observations in its
+progress narration, then said *"The artifact system won't write outside its directory"* and stopped
+before printing the `===BEGIN REPORT===` block. Exit 0. Neither channel produced a deliverable — but
+the narration itself contained the complete findings, including the two that verified as real.
+
+Consequence: **do not delete a "failed" unit's stdout without reading it.** A unit that fails both
+delivery channels can still be 90% recoverable, and the runner cannot tell the difference between
+that and a genuine no-op.
