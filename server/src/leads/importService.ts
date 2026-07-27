@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { LeadStatus } from '@prisma/client';
 
 import { tenantDb } from '../db/tenantDb.js';
+import { logger } from '../logger.js';
+import { partitionSuppressed } from './suppression.js';
 
 /**
  * Shared lead-ingest core. Both entry points that write *scraped* leads into a
@@ -101,7 +103,26 @@ export async function importLeadRows(
   let skipped = 0;
   const errors: Array<{ email: string; message: string }> = [];
 
+  // Drop suppressed addresses BEFORE anything is written.
+  //
+  // This is the import half of the reason Suppression exists at all: an
+  // opt-out recorded against a Lead row dies with that row, so someone who
+  // unsubscribed in March comes back as a brand-new NEW lead the next time the
+  // scraper finds the same channel. Filtering at write time — not at send time
+  // only — also means we never re-store personal data for someone who asked us
+  // to erase it. One query for the whole batch, not one per row.
+  const { suppressed } = await partitionSuppressed(
+    userId,
+    rows.map((r) => r.email),
+  );
+  const blocked = new Set(suppressed.map((e) => e.trim().toLowerCase()));
+  if (blocked.size > 0) {
+    skipped += blocked.size;
+    logger.info({ userId, count: blocked.size }, 'Import skipped suppressed addresses');
+  }
+
   for (const row of rows) {
+    if (blocked.has(row.email.trim().toLowerCase())) continue;
     try {
       const intelligence = buildIntelligence(row, runNiche);
       const source = row.niche ?? runNiche ?? 'youtube-scraper';

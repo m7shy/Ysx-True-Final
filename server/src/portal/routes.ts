@@ -233,9 +233,20 @@ router.get('/invoices', async (req: Request, res: Response) => {
     },
   });
 
+  // Outstanding = invoice total MINUS what has already been paid against it.
+  //
+  // This used to sum amountCents alone, so any invoice carrying a part-payment
+  // told the client they still owed the whole amount. Latent today only because
+  // mark-paid currently flips an invoice straight to PAID whatever it is paid —
+  // the moment part-payments are recorded properly this becomes a wrong number
+  // on a screen a paying customer reads. `payments` is already fetched above,
+  // so netting it off costs nothing.
   const outstandingCents = invoices
     .filter((i) => i.status === 'SENT' || i.status === 'VIEWED' || i.status === 'OVERDUE')
-    .reduce((sum, i) => sum + i.amountCents, 0);
+    .reduce((sum, i) => {
+      const paid = i.payments.reduce((p, payment) => p + payment.amountCents, 0);
+      return sum + Math.max(0, i.amountCents - paid);
+    }, 0);
 
   res.json({ invoices, outstandingCents });
 });

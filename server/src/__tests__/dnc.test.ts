@@ -14,6 +14,8 @@ const { store } = vi.hoisted(() => ({
     leads: new Map<string, any>(),
     campaignRecipients: new Map<string, any>(),
     followupJobs: new Map<string, any>(),
+    /** "<userId>:<emailHash>" — the permanent opt-out list enforceDnc writes to. */
+    suppressions: new Set<string>(),
     seq: 1,
   },
 }));
@@ -98,6 +100,17 @@ vi.mock('../db/prisma.js', () => ({
         const rows = [...store.followupJobs.values()].filter((j) => matchesWhere(j, where));
         for (const j of rows) Object.assign(j, data);
         return { count: rows.length };
+      },
+    },
+    suppression: {
+      findUnique: async ({ where }: any) => {
+        const { userId, emailHash } = where.userId_emailHash;
+        return store.suppressions.has(`${userId}:${emailHash}`) ? { id: 'sup' } : null;
+      },
+      upsert: async ({ where }: any) => {
+        const { userId, emailHash } = where.userId_emailHash;
+        store.suppressions.add(`${userId}:${emailHash}`);
+        return { id: 'sup' };
       },
     },
   }),

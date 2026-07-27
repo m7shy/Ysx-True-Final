@@ -64,7 +64,20 @@ export async function classifyReplyIntent(text: string): Promise<ReplyIntent> {
     const word = String(data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '')
       .trim()
       .toUpperCase();
-    const match = INTENTS.find((i) => word.includes(i));
+    // Exact match first, then longest-label-first substring.
+    //
+    // A plain `INTENTS.find((i) => word.includes(i))` is wrong and fails in the
+    // worst possible direction: 'INTERESTED' is the first entry, and
+    // 'NOT_INTERESTED'.includes('INTERESTED') is true — so every explicit
+    // opt-out the model classified correctly was read back as INTERESTED, and
+    // the lead was filed as a live prospect instead of LOST. Someone replying
+    // "please stop emailing me" landed in the pipeline as a warm reply.
+    //
+    // Longest-first makes the substring fallback (which exists because models
+    // sometimes wrap the label in punctuation or a sentence) order-independent
+    // rather than dependent on how INTENTS happens to be declared.
+    const byLength = [...INTENTS].sort((a, b) => b.length - a.length);
+    const match = byLength.find((i) => word === i) ?? byLength.find((i) => word.includes(i));
     if (match) return match;
     throw new Error(`Unrecognized intent label: ${word || '(empty)'}`);
   } catch (err) {

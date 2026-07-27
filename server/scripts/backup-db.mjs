@@ -44,17 +44,38 @@ function backupScraperState() {
   } else {
     const scraperOut = path.join(BACKUP_DIR, `ysx-scraper-${stamp}.tar.gz`);
     try {
+      // NO --force-local, and the archive path is passed relative to -C.
+      //
+      // This ran green for a day and produced nothing. `--force-local` is a GNU
+      // tar flag, and GNU tar only exists here inside Git Bash
+      // (C:\Program Files\Git\usr\bin, which is NOT on the machine PATH). Under
+      // the Scheduled Task there is no shell, so `tar` resolves to
+      // C:\Windows\system32\tar.exe — bsdtar — which answers
+      // "Option --force-local is not supported" and exits non-zero. The catch
+      // below swallowed it to a console.error that the task discards, so the
+      // script reported success while the scraper archive was never written.
+      // Verified by the output directory: the 03:00 run produced the DB dump
+      // and no ysx-scraper-*.tar.gz, on every scheduled run.
+      //
+      // --force-local existed to stop GNU tar reading "C:\..." as host:path.
+      // Splitting the path with -C removes the colon from the archive argument
+      // entirely, so the flag is unnecessary for BOTH tars — this works under
+      // bsdtar and GNU tar alike rather than trading one for the other.
       execFileSync(
         'tar',
-        ['--force-local', '--exclude=*.bak-*', '-czf', scraperOut, 'profiles'],
-        { cwd: scraperDir, stdio: 'pipe' },
+        ['--exclude=*.bak-*', '-czf', path.basename(scraperOut), '-C', scraperDir, 'profiles'],
+        { cwd: BACKUP_DIR, stdio: 'pipe' },
       );
       const ssize = fs.statSync(scraperOut).size;
       console.log(`[backup] Scraper state OK: ${scraperOut} (${Math.round(ssize / 1024)} KB)`);
     } catch (err) {
       // Never fail the whole backup because the scraper half failed — the
-      // database dump above is the more critical artifact.
+      // database dump above is the more critical artifact. But make the failure
+      // impossible to miss: stderr goes to the task's log (see RECOVERY.md),
+      // and the `backups` deep-health check independently alerts when today's
+      // scraper archive is absent, so a silent skip cannot recur.
       console.error(`[backup] Scraper state FAILED: ${err.message}`);
+      console.error(`[backup] stderr: ${err.stderr?.toString?.() ?? '(none)'}`);
     }
 
     for (const old of fs

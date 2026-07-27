@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { prisma } from '../db/prisma.js';
+import { TIER_EMAIL_LIMITS } from '../billing/usage.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
 import { lastCampaignTickAt } from '../campaigns/worker.js';
@@ -107,9 +109,208 @@ export async function runDeepChecks(): Promise<DeepHealth> {
     ? { status: 'ok', detail: config.ALERT_EMAIL ? 'SMTP fallback + ALERT_EMAIL configured' : 'SMTP fallback set, ALERT_EMAIL unset' }
     : { status: 'degraded', detail: 'PORTAL_SMTP_* unset — no fallback email or alerts' };
 
+  // ── Send-capacity checks ───────────────────────────────────────────────────
+  //
+  // Everything that stops this system sending fails QUIETLY by design: the tier
+  // cap releases the recipient and breaks the tick, an exhausted mailbox throws
+  // a sentinel the worker treats as "no capacity", a missing postal address
+  // blocks dispatch. All three log a warning nobody reads and leave the UI
+  // showing an ACTIVE campaign that is simply not moving. These checks are the
+  // difference between "we noticed at 09:05" and "we noticed on Thursday".
+  if (config.DATABASE_URL && checks.db.status === 'ok') {
+    checks.emailQuota = await quotaCheck();
+    checks.sendCapacity = await sendCapacityCheck();
+  } else {
+    checks.emailQuota = { status: 'disabled', detail: 'db unavailable' };
+    checks.sendCapacity = { status: 'disabled', detail: 'db unavailable' };
+  }
+
+  checks.backups = backupCheck();
+
   const statuses = Object.values(checks).map((c) => c.status);
   const status = statuses.includes('critical') ? 'critical' : statuses.includes('degraded') ? 'degraded' : 'ok';
   return { status, at: new Date().toISOString(), checks };
+}
+
+/**
+ * Tenant email quota against the tier cap.
+ *
+ * Warns at 80% rather than only at the wall, because the wall is a hard 402 in
+ * the middle of a campaign and there is no self-serve way to raise a tier —
+ * fixing it needs someone to act, so the warning has to arrive before sending
+ * stops, not with it.
+ */
+async function quotaCheck(): Promise<HealthCheck> {
+  try {
+    const periodStart = utcMonthStart();
+    // FREE tenants bucket by calendar month; paid tenants by their Stripe
+    // anchor. Only the calendar-month bucket is checked here: it is the one
+    // every current tenant uses, and a per-tenant sweep would be a query per
+    // tenant per 15 minutes for a number that changes slowly.
+    const worst = await prisma.$queryRaw<Array<{ email: string; tier: string; used: number }>>`
+      SELECT u."email", u."tier"::text AS tier, COALESCE(r."emailsSent", 0)::int AS used
+      FROM "User" u
+      LEFT JOIN "UsageRecord" r
+        ON r."userId" = u."id" AND r."periodStart" = ${periodStart}
+      WHERE u."status" = 'ACTIVE'
+      ORDER BY COALESCE(r."emailsSent", 0) DESC
+      LIMIT 1`;
+
+    if (worst.length === 0) return { status: 'ok', detail: 'no active tenants' };
+
+    const { tier, used } = worst[0];
+    const limit = TIER_EMAIL_LIMITS[tier as keyof typeof TIER_EMAIL_LIMITS] ?? TIER_EMAIL_LIMITS.FREE;
+    const pct = Math.round((used / limit) * 100);
+
+    if (used >= limit) {
+      return { status: 'critical', detail: `tier email cap reached (${used}/${limit} on ${tier}) — sending is blocked` };
+    }
+    if (pct >= 80) {
+      return { status: 'degraded', detail: `${pct}% of the ${tier} email cap used (${used}/${limit})` };
+    }
+    return { status: 'ok', detail: `${used}/${limit} this cycle (${tier})` };
+  } catch (err) {
+    logger.error({ err }, 'Deep health: quota check failed');
+    return { status: 'degraded', detail: 'quota lookup failed' };
+  }
+}
+
+/**
+ * Can we actually send right now?
+ *
+ * Two separate ways to be stuck, both silent:
+ *  - every active mailbox is at its daily warm-up cap (dailyLimit), or is
+ *    unwarmed at dailyLimit 0 — the worker calls this "no capacity this tick"
+ *    and moves on forever;
+ *  - a campaign is ACTIVE but parked on a pausedReason, which today includes
+ *    the new MISSING_SENDER_IDENTITY block and the bounce-rate auto-pause.
+ */
+async function sendCapacityCheck(): Promise<HealthCheck> {
+  try {
+    const today = utcDayStart();
+    const [mailboxes, blocked] = await Promise.all([
+      prisma.mailbox.findMany({
+        where: { isActive: true },
+        select: { dailyLimit: true, sentToday: true, counterDate: true },
+      }),
+      prisma.campaign.findMany({
+        where: { status: 'ACTIVE', pausedReason: { not: null } },
+        select: { name: true, pausedReason: true },
+        take: 5,
+      }),
+    ]);
+
+    if (blocked.length > 0) {
+      const first = blocked[0];
+      return {
+        status: 'degraded',
+        detail: `${blocked.length} active campaign(s) blocked — e.g. "${first.name}": ${first.pausedReason}`,
+      };
+    }
+
+    if (mailboxes.length === 0) return { status: 'degraded', detail: 'no active mailboxes' };
+
+    const withHeadroom = mailboxes.filter((m) => {
+      // A counterDate before today means the counter has rolled and sentToday
+      // is stale — the same rule pickRotationMailbox applies, restated here
+      // rather than imported to keep the health check free of side effects.
+      const sent = m.counterDate.getTime() < today.getTime() ? 0 : m.sentToday;
+      return m.dailyLimit > 0 && sent < m.dailyLimit;
+    });
+
+    if (withHeadroom.length === 0) {
+      const unwarmed = mailboxes.filter((m) => m.dailyLimit <= 0).length;
+      return {
+        status: 'degraded',
+        detail: unwarmed === mailboxes.length
+          ? `all ${mailboxes.length} mailbox(es) have dailyLimit 0 (unwarmed) — nothing can send`
+          : `all ${mailboxes.length} mailbox(es) at their daily send cap`,
+      };
+    }
+
+    const headroom = withHeadroom.reduce(
+      (n, m) => n + (m.dailyLimit - (m.counterDate.getTime() < today.getTime() ? 0 : m.sentToday)),
+      0,
+    );
+    return { status: 'ok', detail: `${headroom} send(s) of headroom across ${withHeadroom.length} mailbox(es)` };
+  } catch (err) {
+    logger.error({ err }, 'Deep health: send-capacity check failed');
+    return { status: 'degraded', detail: 'send-capacity lookup failed' };
+  }
+}
+
+/**
+ * Is the daily backup actually producing files?
+ *
+ * This check exists because the scheduled backup reported success for a full
+ * day while writing no scraper archive at all (a GNU-only tar flag against
+ * Windows' bsdtar, with the error going to a discarded stdout). The task's own
+ * exit code said 0. Nothing but looking at the output directory could have
+ * caught it — so that is what this does.
+ *
+ * 26h, not 24h: the task runs at 03:00, and a check at 02:59 the next day is
+ * not evidence of failure.
+ */
+function backupCheck(): HealthCheck {
+  const dir = process.env.BACKUP_DIR || 'C:\\backups\\ysx';
+  try {
+    if (!fs.existsSync(dir)) return { status: 'degraded', detail: `backup directory ${dir} does not exist` };
+
+    const files = fs.readdirSync(dir);
+    const newest = (re: RegExp): number => {
+      let best = 0;
+      for (const f of files) {
+        if (!re.test(f)) continue;
+        const mtime = fs.statSync(path.join(dir, f)).mtimeMs;
+        if (mtime > best) best = mtime;
+      }
+      return best;
+    };
+
+    const dbAge = newest(/^ysx-\d{4}-\d{2}-\d{2}\.(dump|json\.gz)$/);
+    const scraperAge = newest(/^ysx-scraper-\d{4}-\d{2}-\d{2}\.tar\.gz$/);
+    const MAX_AGE_MS = 26 * 60 * 60_000;
+    const now = Date.now();
+
+    const stale: string[] = [];
+    if (dbAge === 0) stale.push('no database dump found');
+    else if (now - dbAge > MAX_AGE_MS) stale.push(`database dump is ${Math.round((now - dbAge) / 3_600_000)}h old`);
+
+    // Checked SEPARATELY from the database dump, because the exact failure this
+    // guards against is one half succeeding while the other silently does not.
+    if (scraperAge === 0) stale.push('no scraper archive found');
+    else if (now - scraperAge > MAX_AGE_MS) stale.push(`scraper archive is ${Math.round((now - scraperAge) / 3_600_000)}h old`);
+
+    // The sharp signal: both artifacts are written by ONE script run, seconds
+    // apart. So a scraper archive materially older than the database dump does
+    // not mean "a bit stale" — it means the last run wrote one half and not the
+    // other, which is precisely the bug that hid for a day behind exit code 0.
+    //
+    // Checking the two against each other catches it within minutes of the
+    // 03:00 run; the absolute-age rule above would not have complained until
+    // 05:00 the following day.
+    const SKEW_MS = 2 * 60 * 60_000;
+    if (dbAge > 0 && scraperAge > 0 && dbAge - scraperAge > SKEW_MS) {
+      stale.push(
+        `last backup run wrote the database dump but NOT the scraper archive ` +
+          `(archive is ${Math.round((dbAge - scraperAge) / 3_600_000)}h older)`,
+      );
+    }
+
+    if (stale.length > 0) return { status: 'degraded', detail: stale.join('; ') };
+    return { status: 'ok', detail: 'database dump and scraper archive both fresh' };
+  } catch (err) {
+    logger.error({ err }, 'Deep health: backup check failed');
+    return { status: 'degraded', detail: 'backup directory unreadable' };
+  }
+}
+
+function utcDayStart(now = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function utcMonthStart(now = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
 // ── Watchdog ────────────────────────────────────────────────────────────────

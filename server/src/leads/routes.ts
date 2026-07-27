@@ -6,8 +6,10 @@ import { z } from 'zod';
 import { LeadStatus } from '@prisma/client';
 
 import { prisma } from '../db/prisma.js';
+import { logger } from '../logger.js';
 import { requireUserId } from '../auth/middleware.js';
 import { enforceDnc } from './dnc.js';
+import { suppress } from './suppression.js';
 
 /**
  * Leads CRUD (tenant-scoped). Mounted behind requireAuth in index.ts, so
@@ -286,6 +288,46 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
   await prisma.lead.delete({ where: { id: existing.id } });
   res.json({ ok: true });
+});
+
+/**
+ * POST /api/leads/:id/erase — GDPR Art 17 erasure.
+ *
+ * Deliberately NOT the same thing as DELETE above. A plain delete removes the
+ * lead and, with it, every record that this person ever asked not to be
+ * contacted — so the next scraper run re-imports them and the sequence starts
+ * again. That is the opposite of what an erasure request means.
+ *
+ * Erasure therefore does two things in one step:
+ *   1. records the opt-out as a HASH on the suppression list, which is the
+ *      only thing that survives, and holds no personal data;
+ *   2. deletes the Lead, which cascades its TrackingEvents and
+ *      CampaignRecipient rows.
+ *
+ * Order matters: suppression is written FIRST. If the delete fails we have
+ * over-suppressed, which harms nobody; if the delete succeeded and the
+ * suppression write then failed, we would have destroyed the evidence of the
+ * request while leaving the address free to be re-imported.
+ */
+router.post('/:id/erase', async (req: Request, res: Response) => {
+  const userId = requireUserId(req);
+  const existing = await prisma.lead.findFirst({ where: { id: req.params.id, userId } });
+  if (!existing) {
+    res.status(404).json({ code: 'NOT_FOUND', message: 'Lead not found' });
+    return;
+  }
+
+  await suppress(userId, existing.email, 'ERASURE');
+  await prisma.lead.delete({ where: { id: existing.id } });
+
+  logger.info({ userId, leadId: existing.id }, 'Lead erased on request; address suppressed by hash');
+  res.json({
+    ok: true,
+    erased: true,
+    // Reported so an operator answering the request can say what happened
+    // without going to the database. Deliberately does not echo the address.
+    note: 'Lead and its tracking history deleted. A one-way hash of the address is retained so it can never be re-imported or contacted.',
+  });
 });
 
 export default router;

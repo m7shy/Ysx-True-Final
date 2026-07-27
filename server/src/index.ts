@@ -23,6 +23,7 @@ import followupsRouter from './followups/routes.js';
 import geminiRouter from './gemini/routes.js';
 import campaignsRouter from './campaigns/routes.js';
 import leadsRouter from './leads/routes.js';
+import settingsRouter from './settings/routes.js';
 import leadsImportRouter from './leads/importRoutes.js';
 import uniboxRouter from './unibox/routes.js';
 import scraperRouter from './scraper/routes.js';
@@ -34,7 +35,9 @@ import { requireClientAuth } from './auth/clientMiddleware.js';
 import clientsRouter from './clients/routes.js';
 import projectsRouter from './projects/routes.js';
 import invoicesRouter from './invoices/routes.js';
-import { unsubscribeHeaders, unsubscribeUrlForRecipient } from './campaigns/trackedHtml.js';
+import { unsubscribeHeaders, unsubscribeUrlForRecipient, complianceFooter } from './campaigns/trackedHtml.js';
+import { assertSenderIdentity } from './campaigns/senderIdentity.js';
+import { isSuppressed } from './leads/suppression.js';
 
 import { LeadStatus, CampaignStatus, FollowupJobStatus } from '@prisma/client';
 import { prisma } from './db/prisma.js';
@@ -273,6 +276,7 @@ app.use('/api/unibox', requireAuth, requireActiveTenant, uniboxRouter);
 // leads land in their own tenant (see scraper/service.ts).
 app.use('/api/scraper', requireAuth, requireActiveTenant, scraperRouter);
 app.use('/api/analytics', requireAuth, requireActiveTenant, analyticsRouter);
+app.use('/api/settings', requireAuth, requireActiveTenant, settingsRouter);
 
 // Client-portal admin management (clients / projects / invoices) — CRM-side,
 // tenant-scoped like every other router above.
@@ -357,6 +361,16 @@ async function sendFollowupJob(job: any) {
       await cancelFollowup(String(job.id), 'dnc');
       await cancelScheduledFollowupsForUserRecipient(userId, dncRecipient, 'dnc');
       logger.info({ id: job.id }, 'Skipping follow-up send: lead is marked DNC');
+      return;
+    }
+    // Checked independently of the Lead row above, and by address rather than
+    // by id: the suppression list is the record that survives the lead being
+    // deleted, so a queued follow-up for an address that opted out must die
+    // here even when there is no longer a Lead to read a status from.
+    if (await isSuppressed(userId, dncRecipient)) {
+      await cancelFollowup(String(job.id), 'suppressed');
+      await cancelScheduledFollowupsForUserRecipient(userId, dncRecipient, 'suppressed');
+      logger.info({ id: job.id }, 'Skipping follow-up send: address is on the suppression list');
       return;
     }
   }
@@ -483,27 +497,55 @@ async function sendFollowupJob(job: any) {
   // Threading: if we have original message id, set as reply headers
   const originalMessageId = job.originalMessageId ? String(job.originalMessageId) : undefined;
 
-  // Campaign follow-ups carry the one-click unsubscribe headers, same as the
-  // initial send. The job stores campaignId/leadId, not the recipient row, so
-  // rebuild the URL from the (campaignId, leadId)-unique recipient.
+  // Campaign follow-ups carry the one-click unsubscribe headers AND the same
+  // legal footer as the initial send. The job stores campaignId/leadId, not the
+  // recipient row, so rebuild the URL from the (campaignId, leadId)-unique
+  // recipient.
+  //
+  // Follow-ups used to send `job.body` verbatim: they had the RFC 8058 header
+  // and nothing a human could see — no visible unsubscribe link, no postal
+  // address. Most of a sequence is follow-ups, so exempting them exempted most
+  // of the mail. They now go through the same complianceFooter() the initial
+  // send uses, which is the point of that function existing.
+  //
+  // Fail-closed: if this is a campaign follow-up and the footer cannot be
+  // built, the message is NOT sent. The old code logged and sent anyway, which
+  // is the worse half of both options — the recipient gets a commercial email
+  // with no way out, and nothing surfaces that it happened.
   let headers: Record<string, string> | undefined;
+  let bodyText = text;
+  let bodyHtml = html;
+
   if (job.campaignId && job.leadId) {
-    try {
-      const recipient = await prisma.campaignRecipient.findUnique({
-        where: { campaignId_leadId: { campaignId: String(job.campaignId), leadId: String(job.leadId) } },
-        select: { id: true },
-      });
-      if (recipient) headers = unsubscribeHeaders(unsubscribeUrlForRecipient(recipient.id));
-    } catch (err) {
-      logger.error({ err, id: job.id }, 'Failed to resolve unsubscribe headers for follow-up');
+    const recipient = await prisma.campaignRecipient.findUnique({
+      where: { campaignId_leadId: { campaignId: String(job.campaignId), leadId: String(job.leadId) } },
+      select: { id: true },
+    });
+    if (!recipient) {
+      await cancelFollowup(String(job.id), 'recipient_missing');
+      logger.warn({ id: job.id, campaignId: job.campaignId }, 'Follow-up cancelled: no recipient row to build a compliant footer from');
+      return;
     }
+
+    // Throws MissingSenderIdentityError; caught by the scheduler's per-job
+    // handler and retried, so the sequence resumes once an address is saved.
+    const identity = await assertSenderIdentity(userId);
+    const unsubscribeUrl = unsubscribeUrlForRecipient(recipient.id);
+    const footer = complianceFooter(identity, unsubscribeUrl);
+
+    headers = unsubscribeHeaders(unsubscribeUrl);
+    bodyText = `${bodyText ?? ''}${footer.text}`;
+    // Only append the HTML footer to an HTML part that actually exists —
+    // synthesising one would turn a deliberately plain-text follow-up into a
+    // multipart message and change how it lands.
+    if (bodyHtml) bodyHtml = `${bodyHtml}${footer.html}`;
   }
 
   const messageId = await sendSmtpMail(userId, provider, {
     to,
     subject,
-    text,
-    html,
+    text: bodyText,
+    html: bodyHtml,
     // If frontend includes "from", smtpGateway treats it as replyTo only.
     replyTo: job.replyTo ? String(job.replyTo) : job.from ? String(job.from) : undefined,
     inReplyTo: originalMessageId,

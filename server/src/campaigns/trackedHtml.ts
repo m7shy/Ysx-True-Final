@@ -38,6 +38,70 @@ function rewriteLinks(text: string, recipientId: string): string {
   return text.replace(URL_RE, (url) => clickUrl(recipientId, url));
 }
 
+/**
+ * The tenant's legal sender identity, resolved from User at send time.
+ *
+ * Not optional-by-omission anywhere it matters: `assertSenderIdentity` (see
+ * senderIdentity.ts) refuses to dispatch a campaign without one, so the footer
+ * builder can assume it is present rather than silently degrading to a
+ * non-compliant email — a footer that quietly drops the address is exactly the
+ * failure mode that produced this work.
+ */
+export interface SenderIdentity {
+  businessName: string;
+  businessAddress: string;
+  /** Art 14 sourcing disclosure; null → DEFAULT_PROVENANCE. */
+  senderProvenance?: string | null;
+}
+
+/**
+ * Default GDPR Art 14 disclosure.
+ *
+ * Art 14 applies because these addresses were NOT collected from the data
+ * subject — they were scraped from public YouTube channels — which obliges us
+ * to say so, and to say it in the first communication. A tenant can override
+ * the wording, but never opt out of having one.
+ */
+export const DEFAULT_PROVENANCE =
+  "You're receiving this because your channel's contact address is listed publicly on YouTube. " +
+  'Reply "STOP" and we will delete your details.';
+
+/**
+ * Render the legal footer shared by every commercial send.
+ *
+ * ONE builder, called by both the initial send and the follow-up sender. They
+ * used to differ — follow-ups carried the RFC 8058 header but no visible
+ * unsubscribe link and no postal address at all — and two copies of one rule
+ * drifting apart is a trap this repo has already been caught by twice. Anything
+ * that must appear in every commercial message belongs here and nowhere else.
+ */
+export function complianceFooter(
+  identity: SenderIdentity,
+  unsubscribeUrl: string,
+): { text: string; html: string } {
+  const provenance = identity.senderProvenance?.trim() || DEFAULT_PROVENANCE;
+  const address = identity.businessAddress.trim();
+
+  const text =
+    `\n\n—\n${provenance}\n` +
+    `Don't want these emails? Unsubscribe: ${unsubscribeUrl}\n\n` +
+    `${identity.businessName.trim()}\n${address}`;
+
+  const html =
+    `\n<hr style="border:none;border-top:1px solid rgba(255,255,255,0.12);margin:24px 0">\n` +
+    `<p style="margin:0 0 8px;font-size:12px;color:#8b95a5">${escapeHtml(provenance)}</p>\n` +
+    `<p style="margin:0 0 8px;font-size:12px;color:#8b95a5">` +
+    `Don't want these emails? <a href="${unsubscribeUrl}" style="color:#8b95a5">Unsubscribe</a></p>\n` +
+    `<p style="margin:0;font-size:12px;color:#8b95a5">` +
+    `${escapeHtml(identity.businessName.trim())}<br>\n` +
+    // The postal address must survive as separate lines in HTML, or a
+    // multi-line address renders as one run-on line and stops reading as an
+    // address at all.
+    `${escapeHtml(address).replace(/\r?\n/g, '<br>\n')}</p>`;
+
+  return { text, html };
+}
+
 export interface TrackedEmailInput {
   recipientId: string;
   subject: string;
@@ -45,6 +109,20 @@ export interface TrackedEmailInput {
   plainTextMode: boolean;
   openTracking: boolean;
   linkTracking: boolean;
+  identity: SenderIdentity;
+  /**
+   * Append the legal footer here. Default true.
+   *
+   * Set false ONLY by the auto-follow-up scheduler, which pre-renders a body
+   * at schedule time but has it stamped with the footer at SEND time instead
+   * (see sendFollowupJob). Two reasons the footer moved: a queued follow-up
+   * would otherwise freeze the tenant's postal address as it was days earlier,
+   * and follow-ups queued through POST /api/followups/schedule never passed
+   * through this function at all, so a schedule-time footer could never be
+   * unconditional. Appending once at the send path is the only place that
+   * covers every way a follow-up can get queued.
+   */
+  includeFooter?: boolean;
 }
 
 export interface TrackedEmail {
@@ -60,11 +138,15 @@ export function buildTrackedEmail(input: TrackedEmailInput): TrackedEmail {
   const trackingToken = signTrackingToken(input.recipientId);
   const unsubscribeUrl = `${publicBaseUrl()}/t/u/${trackingToken}`;
 
-  // The unsubscribe footer is appended AFTER link rewriting so the opt-out
-  // link never routes through click tracking (a click there must not count
-  // as engagement, and must keep working if tracking is off).
+  // The compliance footer is appended AFTER link rewriting so the opt-out link
+  // never routes through click tracking (a click there must not count as
+  // engagement, and must keep working if tracking is off) — and so the postal
+  // address is never mangled into a tracked link either.
+  const withFooter = input.includeFooter !== false;
+  const footer = complianceFooter(input.identity, unsubscribeUrl);
+
   let text = input.linkTracking ? rewriteLinks(input.body, input.recipientId) : input.body;
-  text += `\n\n—\nDon't want these emails? Unsubscribe: ${unsubscribeUrl}`;
+  if (withFooter) text += footer.text;
 
   if (input.plainTextMode) {
     return { text, unsubscribeUrl };
@@ -74,8 +156,7 @@ export function buildTrackedEmail(input: TrackedEmailInput): TrackedEmail {
   if (input.linkTracking) {
     html = html.replace(URL_RE, (url) => `<a href="${clickUrl(input.recipientId, url)}">${url}</a>`);
   }
-  html += `\n<p style="margin-top:24px;font-size:12px;color:#8b95a5">` +
-    `Don't want these emails? <a href="${unsubscribeUrl}" style="color:#8b95a5">Unsubscribe</a></p>`;
+  if (withFooter) html += footer.html;
   if (input.openTracking) {
     const pixelUrl = `${publicBaseUrl()}/t/o/${trackingToken}`;
     html += `\n<img src="${pixelUrl}" width="1" height="1" alt="" style="display:none" />`;

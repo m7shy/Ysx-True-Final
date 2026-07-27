@@ -1,8 +1,22 @@
-import React, { useState } from 'react';
-import { X, Save, Globe, Shield, User, Sliders, AlertTriangle, PlugZap, CheckCircle2, Hammer, Square, Mail, Server } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Save, Globe, Shield, User, Sliders, AlertTriangle, PlugZap, CheckCircle2, Hammer, Square, Mail, Server, Scale } from 'lucide-react';
 import { UserSettings, FollowUpTone } from '../types';
 import { ConfirmModal } from './ConfirmModal';
 import { Button, Select, Textarea } from '../src/design/ui';
+import { apiGet, apiRequest } from '../services/apiClient';
+
+interface SenderIdentityForm {
+  businessName: string;
+  businessAddress: string;
+  senderProvenance: string;
+}
+
+interface SenderIdentityResponse extends SenderIdentityForm {
+  defaultProvenance: string;
+  configured: boolean;
+}
+
+const EMPTY_IDENTITY: SenderIdentityForm = { businessName: '', businessAddress: '', senderProvenance: '' };
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -12,7 +26,7 @@ interface SettingsModalProps {
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings, onSave }) => {
-  const [activeTab, setActiveTab] = useState<'INTEGRATION' | 'AI' | 'SYNC' | 'DEPLOYMENT'>('INTEGRATION');
+  const [activeTab, setActiveTab] = useState<'INTEGRATION' | 'AI' | 'SYNC' | 'SENDER' | 'DEPLOYMENT'>('INTEGRATION');
   const [localSettings, setLocalSettings] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -20,6 +34,59 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
   // New UI States
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
+
+  // ── Sender identity (server-side, not part of local UserSettings) ──────────
+  // Campaign dispatch is fail-closed without a business name and postal
+  // address, so this tab is the only way to unblock sending from inside the
+  // app. It is loaded from and saved to the server directly rather than
+  // riding along with the local settings blob.
+  const [identity, setIdentity] = useState<SenderIdentityForm>(EMPTY_IDENTITY);
+  const [identityLoaded, setIdentityLoaded] = useState(false);
+  const [identityConfigured, setIdentityConfigured] = useState<boolean | null>(null);
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityMsg, setIdentityMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || identityLoaded) return;
+    let cancelled = false;
+    apiGet<SenderIdentityResponse>('/api/settings/sender-identity')
+      .then((data) => {
+        if (cancelled) return;
+        setIdentity({
+          businessName: data.businessName ?? '',
+          businessAddress: data.businessAddress ?? '',
+          senderProvenance: data.senderProvenance ?? '',
+        });
+        setIdentityConfigured(Boolean(data.configured));
+        setDefaultProvenance(data.defaultProvenance ?? '');
+        setIdentityLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setIdentityMsg({ kind: 'err', text: 'Could not load your sender identity.' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, identityLoaded]);
+
+  const [defaultProvenance, setDefaultProvenance] = useState('');
+
+  const saveIdentity = async () => {
+    setIdentityBusy(true);
+    setIdentityMsg(null);
+    try {
+      const saved = await apiRequest<SenderIdentityResponse>('/api/settings/sender-identity', {
+        method: 'PUT',
+        body: identity,
+      });
+      setIdentityConfigured(Boolean(saved.configured));
+      setIdentityMsg({ kind: 'ok', text: 'Saved. Campaigns can send.' });
+    } catch (err: any) {
+      setIdentityMsg({ kind: 'err', text: err?.message ?? 'Could not save.' });
+    } finally {
+      setIdentityBusy(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -139,6 +206,20 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
             >
               <Sliders className="w-4 h-4 mr-2" />
               Sync & Data
+            </button>
+            <button
+              onClick={() => setActiveTab('SENDER')}
+              aria-current={activeTab === 'SENDER' ? 'page' : undefined}
+              className={`w-full flex items-center px-3 py-2.5 text-sm font-medium rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text ${activeTab === 'SENDER' ? 'bg-white/[0.08] text-volt-text' : 'text-neutral-400 hover:bg-white/[0.05]'}`}
+            >
+              <Scale className="w-4 h-4 mr-2" />
+              Sender identity
+              {identityConfigured === false && (
+                <span
+                  className="ml-auto w-2 h-2 rounded-full bg-amber-400"
+                  aria-label="Required before campaigns can send"
+                />
+              )}
             </button>
             <button
               onClick={() => setActiveTab('DEPLOYMENT')}
@@ -323,6 +404,94 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                     placeholder="e.g.&#10;John Doe&#10;Sales Director&#10;Acme Inc."
                   />
                   <p className="text-xs text-neutral-500 mt-1">The AI will use this signature to sign off drafts.</p>
+                </div>
+              </div>
+            )}
+
+            {/* SENDER IDENTITY TAB */}
+            {activeTab === 'SENDER' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+                <div className="p-4 border border-white/10 rounded-2xl bg-white/[0.02]">
+                  <h4 className="text-sm font-medium text-white mb-1">Why this is required</h4>
+                  <p className="text-xs text-neutral-400 leading-relaxed">
+                    Commercial email must carry a real physical postal address (CAN-SPAM), and
+                    because these contacts did not hand you their details directly, the first
+                    message has to say where you found them (GDPR Art&nbsp;14). Both are added
+                    automatically to the footer of every campaign email and follow-up.
+                    <strong className="text-neutral-300"> Campaigns will not send until this is filled in.</strong>
+                  </p>
+                </div>
+
+                {identityConfigured === false && (
+                  <div className="flex items-start p-3 rounded-xl border border-amber-400/30 bg-amber-400/10">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 mr-2 mt-0.5 shrink-0" />
+                    <p className="text-xs text-amber-200">
+                      Not configured yet — campaign sending is currently blocked.
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-neutral-500 uppercase mb-1" htmlFor="biz-name">
+                    Business name
+                  </label>
+                  <input
+                    id="biz-name"
+                    type="text"
+                    value={identity.businessName}
+                    onChange={(e) => setIdentity({ ...identity, businessName: e.target.value })}
+                    placeholder="YSX Visuals"
+                    className="w-full px-3 py-2 text-sm rounded-xl bg-white/[0.03] border border-white/10 text-white placeholder:text-neutral-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-neutral-500 uppercase mb-1" htmlFor="biz-address">
+                    Postal address
+                  </label>
+                  <Textarea
+                    id="biz-address"
+                    value={identity.businessAddress}
+                    onChange={(e) => setIdentity({ ...identity, businessAddress: e.target.value })}
+                    className="resize-y min-h-[90px]"
+                    placeholder={'12 Example Street\nCairo 11835\nEgypt'}
+                  />
+                  <p className="text-xs text-neutral-500 mt-1">
+                    A full address including country. A PO box or registered-agent address is fine;
+                    it has to be somewhere mail actually reaches you.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-neutral-500 uppercase mb-1" htmlFor="biz-provenance">
+                    How you found them (optional)
+                  </label>
+                  <Textarea
+                    id="biz-provenance"
+                    value={identity.senderProvenance}
+                    onChange={(e) => setIdentity({ ...identity, senderProvenance: e.target.value })}
+                    className="resize-y min-h-[70px]"
+                    placeholder={defaultProvenance}
+                  />
+                  <p className="text-xs text-neutral-500 mt-1">
+                    Leave blank to use the default wording shown above. You can reword it; it cannot
+                    be removed.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <Button onClick={saveIdentity} disabled={identityBusy}>
+                    <Save className="w-4 h-4 mr-2" />
+                    {identityBusy ? 'Saving…' : 'Save sender identity'}
+                  </Button>
+                  {identityMsg && (
+                    <span
+                      role="status"
+                      className={`text-xs ${identityMsg.kind === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}
+                    >
+                      {identityMsg.text}
+                    </span>
+                  )}
                 </div>
               </div>
             )}

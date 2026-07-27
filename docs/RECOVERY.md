@@ -87,7 +87,40 @@ schtasks /Create /TN "YSX DB Backup" /SC DAILY /ST 03:00 /RU SYSTEM `
 ```
 
 - **Occasionally copy the newest dump off the VM** (Drive/local PC) — a backup on the dying VM is not a backup.
-- **Restore** (into an empty Neon DB or branch): `pg_restore --no-owner --dbname "<direct-url>" C:\backups\ysx\ysx-YYYY-MM-DD.dump`, then `npx prisma migrate status` should report up to date.
+- The task also writes `ysx-scraper-YYYY-MM-DD.tar.gz` (the scraper's SQLite tracking state).
+  **Check that BOTH files appear** after a run — for one day the scheduled task produced the
+  database dump and no scraper archive while still exiting 0 (a GNU-only `tar` flag against
+  Windows' bsdtar). The `backups` deep-health check now alerts on exactly that gap.
+
+### Restore
+
+**This VM has no `pg_dump`/`pg_restore`**, so `backup-db.mjs` always takes its JSON fallback and
+produces `ysx-YYYY-MM-DD.json.gz`, *not* a `.dump`. The `pg_restore` command this section used to
+document could never have worked against the files that actually exist here.
+
+Rehearsed end-to-end on 2026-07-27 (53/53 rows, all table counts matching live, zero orphaned
+foreign keys, timestamps byte-identical, and the restored mailbox's encrypted OAuth tokens
+decrypting with the offline `MAILBOX_ENCRYPTION_KEY`):
+
+```bash
+# 1. Create an empty target (a Neon branch, or a scratch database on the same project)
+#    psql/console:  CREATE DATABASE ysx_restore;
+
+# 2. Rebuild the SCHEMA first — the backup holds data only.
+DATABASE_URL="<target-url>" DIRECT_URL="<target-url>" npx prisma migrate deploy --schema=prisma/schema.prisma
+
+# 3. Replay the data (FK-topological order is derived from the target's own constraints).
+RESTORE_URL="<target-url>" node server/scripts/restore-db.mjs C:\backups\ysx\ysx-YYYY-MM-DD.json.gz
+```
+
+Notes that cost time if you rediscover them mid-incident:
+- `_prisma_migrations` is deliberately skipped by the restore script — `migrate deploy` in step 2
+  writes its own rows, and replaying the dump's copy collides with them.
+- If `pg_dump` IS installed on the replacement host, the script produces a real `.dump` instead and
+  `pg_restore --no-owner --dbname "<direct-url>" <file>` is the correct restore. Check which
+  artifact you actually have before choosing.
+- **RPO is 24h** — one snapshot at 03:00, nothing in between.
+
 - Neon free tier also has short point-in-time restore history (console → Branches → restore) for oops-deletes; the dumps are for everything bigger.
 
 ## 6. Config rules (learned the hard way)

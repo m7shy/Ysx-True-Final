@@ -1,9 +1,17 @@
 import type { Mailbox } from '@prisma/client';
 
 import { MailError } from '../httpErrors.js';
+import { logger } from '../logger.js';
+import { prisma } from '../db/prisma.js';
 import { sendMail } from './smtpClient.js';
 import { recordEmailSent, assertUnderEmailLimit } from '../billing/usage.js';
-import { getMailboxConnection, connectionForMailbox, type MailboxConnection, type WireProvider } from '../creds/mailboxStore.js';
+import {
+  getMailboxConnection,
+  connectionForMailbox,
+  recordMailboxSend,
+  type MailboxConnection,
+  type WireProvider,
+} from '../creds/mailboxStore.js';
 
 export function parseProvider(raw: unknown, fallback: WireProvider = 'gmail'): WireProvider {
   if (typeof raw !== 'string' || raw.trim().length === 0) return fallback;
@@ -63,6 +71,29 @@ export async function sendSmtpMail(userId: string, provider: WireProvider, input
   const conn = await getMailboxConnection(userId, provider);
   const messageId = await sendViaConnection(conn, input);
   await recordEmailSent(userId); // metered billing usage; never throws
+
+  // Count the send against the MAILBOX's daily warm-up cap, not just the
+  // tenant's billing meter. These are two different limits and only the
+  // billing one was being maintained here.
+  //
+  // This is the path the follow-up scheduler uses, and follow-ups are the
+  // majority of a sequence's volume — so the mailbox's `dailyLimit` (the
+  // number that exists to stop the provider throttling a warming domain) was
+  // being silently overshot by every follow-up ever sent. The campaign worker
+  // and the unibox reply route both call recordMailboxSend themselves after
+  // sendFromMailbox; this path had no equivalent, which is exactly the kind of
+  // "same rule implemented in some places and not others" drift that makes a
+  // counter quietly stop meaning anything.
+  //
+  // Swallowed on failure: the message has already gone out, and turning a
+  // counter error into a failed send would invite a retry that sends twice.
+  try {
+    const mailbox = await prisma.mailbox.findUnique({ where: { id: conn.mailboxId } });
+    if (mailbox) await recordMailboxSend(mailbox);
+  } catch (err) {
+    logger.error({ err, mailboxId: conn.mailboxId }, 'Send succeeded but mailbox send-count update failed');
+  }
+
   return messageId;
 }
 

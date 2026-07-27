@@ -20,6 +20,9 @@ const { db, mocks } = vi.hoisted(() => {
     recipients: new Map<string, any>(),
     leads: new Map<string, any>(),
     followupJobs: new Map<string, any>(),
+    users: new Map<string, any>(),
+    /** "<userId>:<emailHash>" for every suppressed address. */
+    suppressions: new Set<string>(),
     seq: 1,
   };
 
@@ -116,6 +119,20 @@ vi.mock('../db/prisma.js', () => ({
     trackingEvent: {
       create: async ({ data }: any) => ({ id: String(db.seq++), ...data }),
     },
+    user: {
+      findUnique: async ({ where }: any) => db.users.get(where.id) ?? null,
+    },
+    suppression: {
+      findUnique: async ({ where }: any) => {
+        const { userId, emailHash } = where.userId_emailHash;
+        return db.suppressions.has(`${userId}:${emailHash}`) ? { id: 'sup' } : null;
+      },
+      upsert: async ({ where }: any) => {
+        const { userId, emailHash } = where.userId_emailHash;
+        db.suppressions.add(`${userId}:${emailHash}`);
+        return { id: 'sup' };
+      },
+    },
   },
 }));
 
@@ -144,10 +161,13 @@ vi.mock('../scheduler/followupScheduler.js', () => ({
 
 vi.mock('../campaigns/spintax.js', () => ({ resolveSpintax: (s: string) => s }));
 vi.mock('../campaigns/variables.js', () => ({ renderTemplate: (s: string) => s }));
-vi.mock('../campaigns/trackedHtml.js', () => ({
-  buildTrackedEmail: () => ({ text: 'body', html: '<p>body</p>', unsubscribeUrl: 'http://x/t/u/tok' }),
-  unsubscribeHeaders: () => ({}),
-}));
+// NOT mocked. This module used to be stubbed out to a fixed
+// `{ text: 'body' }`, which meant no test in this file could ever observe what
+// is actually in a sent message — and that is precisely how every campaign
+// email went out for months with no postal address in it. It is pure
+// string-building with no DB or network, so the real one runs here and the
+// assertions below are about real rendered bytes.
+import { emailHash } from '../leads/suppression.js';
 
 import { campaignTickOnce } from '../campaigns/worker.js';
 
@@ -220,6 +240,17 @@ beforeEach(() => {
   db.recipients.clear();
   db.leads.clear();
   db.followupJobs.clear();
+  db.users.clear();
+  db.suppressions.clear();
+  // Every tenant in these tests has a configured sender identity, because
+  // dispatch is fail-closed without one (assertSenderIdentity). Tests that
+  // exercise the missing-identity path clear it explicitly.
+  db.users.set('u1', {
+    id: 'u1',
+    businessName: 'Test Agency Ltd',
+    businessAddress: '1 Test Street, Testville, TE5 7ER, United Kingdom',
+    senderProvenance: null,
+  });
   db.seq = 1;
   vi.clearAllMocks();
   mocks.sendFromMailbox.mockResolvedValue('msg-id-1');
@@ -366,5 +397,82 @@ describe('a delivered message is never re-sent', () => {
     // The decisive assertion: a second tick must not send again.
     await campaignTickOnce();
     expect(mocks.sendFromMailbox).toHaveBeenCalledOnce();
+  });
+});
+
+// ── Compliance gating ────────────────────────────────────────────────────────
+
+describe('commercial sends are fail-closed without a sender identity', () => {
+  it('does not send at all when the tenant has no business name / postal address', async () => {
+    // CAN-SPAM requires a physical postal address in every commercial message.
+    // The alternative to blocking here is sending without one, which is what
+    // this system did for its entire life — silently, per message.
+    db.users.set('u1', { id: 'u1', businessName: null, businessAddress: null, senderProvenance: null });
+    const lead = makeLead();
+    const campaign = makeCampaign();
+    const recipient = makeRecipient(campaign.id, lead.id);
+
+    await campaignTickOnce();
+
+    expect(mocks.sendFromMailbox).not.toHaveBeenCalled();
+    // The recipient must be RELEASED, not failed: this is an operator problem,
+    // so no attempt is burned and the audience survives intact for when the
+    // address is filled in.
+    const updated = db.recipients.get(recipient.id);
+    expect(updated.status).toBe(RecipientStatus.PENDING);
+    expect(updated.attemptCount ?? 0).toBe(0);
+    expect(db.campaigns.get(campaign.id).pausedReason).toBe('MISSING_SENDER_IDENTITY');
+  });
+
+  it('treats a whitespace-only address as missing rather than sending a blank footer', async () => {
+    db.users.set('u1', { id: 'u1', businessName: '  ', businessAddress: '   ', senderProvenance: null });
+    makeRecipient(makeCampaign().id, makeLead().id);
+
+    await campaignTickOnce();
+
+    expect(mocks.sendFromMailbox).not.toHaveBeenCalled();
+  });
+
+  it('sends the postal address in the actual message body', async () => {
+    makeRecipient(makeCampaign().id, makeLead().id);
+
+    await campaignTickOnce();
+
+    expect(mocks.sendFromMailbox).toHaveBeenCalledOnce();
+    const [, payload] = mocks.sendFromMailbox.mock.calls[0];
+    expect(payload.text).toContain('1 Test Street, Testville, TE5 7ER, United Kingdom');
+    expect(payload.headers['List-Unsubscribe']).toMatch(/^<https?:\/\/.+\/t\/u\/.+>$/);
+  });
+});
+
+describe('suppression outlives the lead row', () => {
+  it('skips a recipient whose address is suppressed even though the lead looks fresh', async () => {
+    // The exact re-import scenario: someone unsubscribed, the lead was later
+    // deleted, and the scraper found the same channel again — so the Lead row
+    // is brand new, status NEW, with no memory of the opt-out. Only the
+    // suppression list stands between that and mailing them again.
+    const lead = makeLead({ status: LeadStatus.NEW });
+    const campaign = makeCampaign();
+    const recipient = makeRecipient(campaign.id, lead.id);
+    db.suppressions.add(`u1:${emailHash(lead.email)}`);
+
+    await campaignTickOnce();
+
+    expect(mocks.sendFromMailbox).not.toHaveBeenCalled();
+    expect(db.recipients.get(recipient.id).status).toBe(RecipientStatus.SKIPPED);
+  });
+
+  it('records a hard bounce on the suppression list, not just on the lead', async () => {
+    const lead = makeLead();
+    makeRecipient(makeCampaign().id, lead.id);
+    const hardBounce: any = new Error('550 5.1.1 No such user');
+    hardBounce.responseCode = 550;
+    mocks.sendFromMailbox.mockRejectedValueOnce(hardBounce);
+
+    await campaignTickOnce();
+
+    // isBounced dies with the row; the hash does not.
+    expect(db.leads.get(lead.id).isBounced).toBe(true);
+    expect(db.suppressions.has(`u1:${emailHash(lead.email)}`)).toBe(true);
   });
 });

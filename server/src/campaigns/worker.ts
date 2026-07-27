@@ -10,6 +10,8 @@ import { scheduleFollowup } from '../scheduler/followupScheduler.js';
 import { resolveSpintax } from './spintax.js';
 import { renderTemplate } from './variables.js';
 import { buildTrackedEmail, unsubscribeHeaders } from './trackedHtml.js';
+import { assertSenderIdentity, isMissingSenderIdentityError } from './senderIdentity.js';
+import { isSuppressed, suppress } from '../leads/suppression.js';
 import {
   isWithinSendWindow,
   pickMailbox,
@@ -118,6 +120,12 @@ async function dispatchRecipient(
   const body = renderTemplate(resolveSpintax(campaign.body ?? ''), lead);
   const sentAt = new Date();
 
+  // Throws MissingSenderIdentityError, which processCampaign treats like the
+  // other capacity conditions (release the claim, stop this campaign for the
+  // tick). Resolved here rather than passed in so there is exactly one place a
+  // commercial send can originate without a postal address: none.
+  const identity = await assertSenderIdentity(campaign.userId);
+
   const tracked = buildTrackedEmail({
     recipientId: recipient.id,
     subject,
@@ -125,6 +133,7 @@ async function dispatchRecipient(
     plainTextMode: campaign.plainTextMode,
     openTracking: campaign.openTracking,
     linkTracking: campaign.linkTracking,
+    identity,
   });
 
   const messageId = await sendFromMailbox(mailbox, {
@@ -166,6 +175,11 @@ async function dispatchRecipient(
       plainTextMode: campaign.plainTextMode,
       openTracking: campaign.openTracking,
       linkTracking: campaign.linkTracking,
+      identity,
+      // Footer is stamped at SEND time instead — see TrackedEmailInput. These
+      // bodies are rendered now but sent days later, so a footer baked in here
+      // would carry whatever address was configured today.
+      includeFooter: false,
     });
     await scheduleFollowup({
       userId: campaign.userId,
@@ -232,6 +246,18 @@ async function handleHardBounce(campaign: Campaign, recipient: CampaignRecipient
     where: { id: lead.id },
     data: { isBounced: true, bounceCount: { increment: 1 }, lastBounceAt: new Date() },
   });
+
+  // Suppress on the hash too, not just the Lead row. `isBounced` is the flag
+  // the send path reads, but it dies with the row: delete this lead, re-import
+  // the same list, and a known-dead address goes straight back into rotation —
+  // which is precisely how a sender reputation gets spent twice on the same
+  // mistake. Never fail the bounce handling if this write fails; the Lead flag
+  // above is still in force for as long as the row exists.
+  try {
+    await suppress(campaign.userId, lead.email, 'HARD_BOUNCE');
+  } catch {
+    // already logged in suppress()
+  }
 
   await prisma.campaignRecipient.update({
     where: { id: recipient.id },
@@ -394,6 +420,18 @@ async function processCampaign(campaign: Campaign): Promise<void> {
       });
       continue;
     }
+    // The suppression list is checked SEPARATELY from Lead.status, and after
+    // it: the status lives on this row, the suppression outlives it. A lead
+    // deleted and re-imported comes back as NEW with no memory of having
+    // opted out, and this is the only thing standing between that and an
+    // email to someone who unsubscribed.
+    if (await isSuppressed(campaign.userId, lead.email)) {
+      await prisma.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: { status: RecipientStatus.SKIPPED, lastError: 'Address is on the suppression list' },
+      });
+      continue;
+    }
     if (lead.status === LeadStatus.LOST) {
       await prisma.campaignRecipient.update({
         where: { id: recipient.id },
@@ -472,6 +510,26 @@ async function processCampaign(campaign: Campaign): Promise<void> {
       }
 
       const message = err instanceof Error ? err.message : String(err);
+
+      if (isMissingSenderIdentityError(err)) {
+        // Operator misconfiguration, not a recipient problem. Release the
+        // claim untouched — no attempt burned, no backoff, no bounce — and
+        // stop this campaign for the tick. It will resume by itself the
+        // moment an address is saved, with the audience intact.
+        await prisma.campaignRecipient.updateMany({
+          where: { id: recipient.id, status: RecipientStatus.SENDING },
+          data: { status: RecipientStatus.PENDING },
+        });
+        await prisma.campaign.updateMany({
+          where: { id: campaign.id },
+          data: { pausedReason: 'MISSING_SENDER_IDENTITY' },
+        });
+        logger.warn(
+          { campaignId: campaign.id, userId: campaign.userId },
+          'Campaign dispatch blocked: no business name / postal address configured',
+        );
+        break;
+      }
 
       if (isLimitExceededError(err)) {
         // Tier email cap reached — not the recipient's fault; pause this

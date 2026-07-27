@@ -5,6 +5,7 @@ import { RecipientStatus, type Lead } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { logger } from '../logger.js';
 import { cancelScheduledFollowupsForUserRecipient } from '../scheduler/followupScheduler.js';
+import { suppress } from './suppression.js';
 
 /**
  * Enforce a lead's DNC (do-not-contact) status across every automated send
@@ -21,6 +22,14 @@ import { cancelScheduledFollowupsForUserRecipient } from '../scheduler/followupS
  * unibox lead-status route). Idempotent.
  */
 export async function enforceDnc(userId: string, lead: Pick<Lead, 'id' | 'email'>): Promise<void> {
+  // FIRST, before anything that could fail: record the opt-out on the
+  // suppression list, which outlives this Lead row. Everything below only
+  // blocks sends while the row exists — delete the lead (or honour an erasure
+  // request) and the DNC status goes with it, so a re-import would contact
+  // someone who explicitly asked not to be. This write is what makes the
+  // opt-out permanent, so it goes first and it is allowed to throw.
+  await suppress(userId, lead.email, 'DNC');
+
   const cancelledCampaigns = await cancelScheduledFollowupsForUserRecipient(userId, lead.email, 'dnc');
 
   const skipped = await prisma.campaignRecipient.updateMany({

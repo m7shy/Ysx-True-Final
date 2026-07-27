@@ -282,6 +282,27 @@ export async function fetchSentMessage(
       };
     } finally {
       lock.release();
+      // Release the CONNECTION, not just the mailbox lock.
+      //
+      // Only the catch below closed the client, so every SUCCESSFUL fetch left
+      // an authenticated IMAP socket open until the server timed it out —
+      // unlike fetchSent() and streamAttachment(), which both close on the way
+      // out. Opening a message in the UI is the common case, so the leak was
+      // on the hot path: enough views in one window and the provider starts
+      // refusing new connections, which surfaces as mail "randomly" breaking.
+      //
+      // logout() is the polite close (sends LOGOUT and waits); if the socket is
+      // already unusable that throws, so fall back to a hard close. Neither may
+      // mask the real error being propagated, hence the swallow.
+      try {
+        await client.logout();
+      } catch {
+        try {
+          client.close();
+        } catch {
+          // connection is already gone — nothing left to release
+        }
+      }
     }
   } catch (err: any) {
     client.close();

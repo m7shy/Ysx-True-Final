@@ -42,9 +42,24 @@ async function findReplySource(client: ImapFlow, lead: Lead): Promise<string | n
   if (!Array.isArray(uids) || uids.length === 0) return null;
 
   const latest = uids[uids.length - 1];
-  const msg = await client.fetchOne(String(latest), { source: true }, { uid: true });
+  const msg = await client.fetchOne(String(latest), { source: true, internalDate: true, envelope: true }, { uid: true });
+
+  // IMAP `since` is accurate only to the day, so a message this contact sent
+  // BEFORE our outreach went out that same day would otherwise be handled as a
+  // reply — cancelling the sequence and bumping repliedCount off an email that
+  // was never a response to anything.
+  const received = (msg as any)?.internalDate ?? (msg as any)?.envelope?.date;
+  if (lead.lastContacted && received && new Date(received).getTime() < new Date(lead.lastContacted).getTime()) {
+    return null;
+  }
+
   const source = (msg as any)?.source?.toString?.('utf8');
-  return typeof source === 'string' && source.length > 0 ? source : '';
+  // Return null, NOT ''. The caller's guard is `if (source === null) continue`,
+  // so an empty string fell through and was treated as a real reply: the body
+  // classified as NEUTRAL, the lead was marked REPLIED and its follow-ups were
+  // cancelled — all because a fetch came back empty. A message we could not
+  // read is not evidence that someone replied.
+  return typeof source === 'string' && source.length > 0 ? source : null;
 }
 
 async function handleReply(lead: Lead, intent: ReplyIntent): Promise<void> {

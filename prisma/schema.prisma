@@ -138,6 +138,22 @@ model User {
   signatures Json? // e.g. [{ name, html, isDefault }]
   settings   Json? // e.g. { defaultTone, syncLookbackDays, autoSync, ... }
 
+  // ── Sender identity (legal footer) ────────────────────────────────────────
+  // CAN-SPAM §7704(a)(5) requires a valid physical postal address in every
+  // commercial message, and GDPR Art 14 requires telling a prospect where their
+  // data came from when it was not collected from them. Both are per-TENANT
+  // facts, not app-wide constants — a second agency sending through this system
+  // must send its own address, never the operator's. Scalar columns rather than
+  // a corner of `settings` because the send path blocks on them
+  // (assertSenderIdentity) and a JSON blob cannot be relied on to have a shape.
+  //
+  // senderProvenance is nullable on purpose: null means "use the built-in
+  // default disclosure", so a tenant gets a compliant line without configuring
+  // one, and can override the wording when their sourcing differs.
+  businessName     String?
+  businessAddress  String?
+  senderProvenance String?
+
   mailboxes       Mailbox[]
   leads           Lead[]
   campaigns       Campaign[]
@@ -150,9 +166,44 @@ model User {
   projects        Project[]
   invoices        Invoice[]
   receipts        Receipt[]
+  suppressions    Suppression[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Per-tenant permanent do-not-contact list.
+///
+/// Distinct from `Lead.status = DNC`, and deliberately so: a Lead row can be
+/// deleted (by the tenant, or by an erasure request), and deleting it used to
+/// take the opt-out with it — re-import the same CSV and the person who
+/// unsubscribed gets mailed again. Suppression is the record that must OUTLIVE
+/// the data it protects, so it lives in its own table with its own lifetime.
+///
+/// Only a SHA-256 of the lowercased address is stored, never the address. That
+/// is what makes "erase my data" and "never contact me again" compatible
+/// instead of contradictory: after an erasure we hold no personal data, but a
+/// future import of the same address still hashes to the same key and is
+/// dropped. The hash is not a secret — it is a lookup key over a value the
+/// tenant already supplied — but it means a leaked suppression table is not a
+/// leaked mailing list.
+model Suppression {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// sha256(lower(trim(email))), hex.
+  emailHash String
+  /// UNSUBSCRIBE | DNC | ERASURE | HARD_BOUNCE — kept as a string, not an enum,
+  /// so adding a source needs no migration.
+  reason String
+
+  createdAt DateTime @default(now())
+
+  // Scoped per tenant: agency A suppressing an address must not silently
+  // suppress it for agency B, whose relationship with that person is its own.
+  @@unique([userId, emailHash])
+  @@index([userId])
 }
 
 model TrackingEvent {
