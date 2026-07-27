@@ -38,11 +38,20 @@ Deploy notes: migration `20260727120000_compliance_sender_identity_and_suppressi
   `POST /api/followups/schedule` carried nothing. The footer now happens at send time, which covers
   both routes and picks up the current address.
 
+### Refresh-token rotation — now BUILT (`2efd62b`)
+
+Sessions are server-side records in families; a reused token revokes its whole family. Applied to
+the CRM and the portal. Two things fell out of building it: a rotated token was byte-identical to
+the one it replaced (same claims within one second → same JWT string; would have 500'd on every
+fast refresh and revived the retired token — fixed with a per-issue `jti`), and the portal's
+`/refresh` still accepted the token from `req.body`, the same shim the CRM removed as a hole.
+
+⚠️ **This forces a one-time logout of everyone on deploy** — pre-rotation sessions have no
+server-side record, which is precisely what is no longer trusted.
+
 ### Still open — in rough priority order
 
-1. **Refresh-token rotation with reuse detection** — designed, not built. Forces a one-time logout,
-   so it was deliberately held for its own deploy.
-2. **Per-tenant fairness**: the reply poller still takes the globally oldest 100 CONTACTED leads
+1. **Per-tenant fairness**: the reply poller still takes the globally oldest 100 CONTACTED leads
    per tick and the campaign worker still iterates all tenants' campaigns oldest-first.
 3. `MAILBOX_ENCRYPTION_KEY` rotation path; the 8-char passphrase on `.env.enc` is the real risk.
 4. `Revision.roundNumber` race (no unique constraint) — confirmed from the portal review.
