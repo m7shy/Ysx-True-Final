@@ -222,6 +222,44 @@ you are not expecting them.
    this deploy: `server`'s build script IS `tsc`, so swapping compilers changes what ships.
 7. Everything in the to-do list below, none of which is code.
 
+### 🔴 DEPLOY BLOCKER — the pulse fix silently disabled the watchdog
+
+Found by the scraper reviewer, **independently re-verified here by simulation.** This is a
+regression in the *previous* session's pulse fix — the change committed to prevent a repeat of the
+outage — and what it breaks is the alerting that **detected** the outage.
+
+`IDLE_POLL_MS` is 1,800,000 ms and `BURST_MS` is 90,000 ms (`server/src/scheduler/pulse.ts:52,54`).
+The watchdog ticks every 900,000 ms (`server/src/health/monitor.ts:404`) and is gated on
+`mayPoll('watchdog')` (`:412`). **1800 is exactly 2 × 900**, so the watchdog lands on exactly two
+fixed points per burst cycle, and those points are fixed at boot. There is no drift to eventually
+bring them into alignment: the burst is re-anchored to `now + IDLE_POLL_MS` by whichever poller
+opens it, and the 10-second follow-up scheduler always opens it, so the phase is stable forever.
+
+If neither of those two points falls inside the 90-second window, the watchdog **never runs again
+while the system is idle**. The window is 90s of every 1800s, so roughly a **90% chance of total
+starvation** depending on boot phase.
+
+Simulated 14 idle days across seven boot offsets, all five real pollers:
+
+| watchdog boot offset | watchdog runs | followup | autoScraper |
+|---|---|---|---|
+| 0s | 672 | 6048 | 672 |
+| 100s / 300s / 450s / 600s / 750s / 880s | **0** | 6048 | 672 |
+
+The gate only engages when the system is idle — which is precisely when a silent database failure
+would go unnoticed. The 2026-07-28 entry below celebrates the watchdog's first real alert delivery.
+That capability is currently switched off in the tree and **would ship with this deploy.**
+
+**Not fixed** — the fix trades against the compute budget that caused the outage in the first place,
+so it is the user's call. The shape that looks right: tick the watchdog on a short interval (60s)
+and have it track its own 15-minute elapsed time internally, running when
+`mayPoll() && now - lastRun >= 900_000`. A 60s ticker cannot miss a 90s window, and the watchdog
+still performs at most one check per 15 minutes, so the added compute is ~2 extra wake
+participations per hour rather than a return to keeping the database alive.
+
+**The auto-scraper gate added this session is NOT affected** — 672 grants in the same simulation,
+i.e. it participates in every burst. Verified, not assumed.
+
 ### 🔍 An adversarial review is queued — `.plans/REVIEW-PROMPT-2026-07-28.md`
 
 Everything in this entry is written by the person who wrote the code, which is the weakest possible
