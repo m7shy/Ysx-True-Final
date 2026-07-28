@@ -42,3 +42,10 @@ yielded anything because its narration happened to contain the findings.
 
 Everything else (schema, migrations, auth, send-path guards) was done inline per
 skill §5.1 — high blast radius, verification costs more than the work.
+
+## 2026-07-28 — Neon outage + idle-gate session
+
+No delegation. Per skill 5.1 every item was high blast radius with a SILENT failure mode:
+a backup script that reports success while writing nothing, and a poll gate whose failure
+in one direction is "nothing ever sleeps" and in the other is "the workers quietly stop
+working". Verification would have cost more than the work. Done inline, mutation-checked.

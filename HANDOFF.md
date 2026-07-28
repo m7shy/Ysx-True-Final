@@ -1,5 +1,106 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-28 — 🔴 PROD IS DOWN (Neon free-tier compute quota). Fixes committed, NOT deployed.
+
+### Read this first
+
+**Production is hard down** since ~01:01 UTC 2026-07-28. Every database query returns:
+
+```
+ERROR: Your account or project has exceeded the compute time quota.
+Upgrade your plan to increase limits.
+```
+
+Diagnosed, not guessed: DNS resolves, TCP 5432 is open, Neon itself is refusing. The service is
+still RUNNING and `/api/health` returns 200 — only `/api/health/deep` shows `db: critical`.
+
+**Cause, and it was structural.** Neon bills *compute time* and suspends after ~5 min idle. Four
+timers queried it forever (follow-ups 10s, campaign worker 60s, reply poller 5 min, watchdog
+15 min), so it never suspended: ~730 compute-hours/month against a free allowance near 190. It was
+~4x over budget from the day the workers were written, and ran out three days before the monthly
+reset. **Correction to READINESS-2026-07-27 §6:** that section assessed Neon on storage and PITR
+and never named compute-hours. That is what broke first.
+
+**Decision taken:** wait for the monthly reset (no upgrade). Fix the cause so it cannot recur.
+
+### The watchdog worked
+
+First real end-to-end alert delivery in this project's life — `[YSX watchdog] db critical`,
+`campaignWorker degraded`, `followupScheduler degraded`, at 01:07 and again 6h later per the
+throttle. Alerting is no longer unproven.
+
+### Committed this session (`d573af5..b96328a`) — tsc clean, vitest 244/244
+
+- **`server/src/scheduler/pulse.ts`** — one shared idle gate. Pollers ask `mayPoll()` and call
+  `reportWork()`; after 10 min idle, queries happen only in a ~90s burst every 30 min. The burst
+  alignment is the point: staggered wakes each pay the suspend delay separately. ≈120
+  compute-hours/month. Tunable via `PULSE_IDLE_POLL_MS` / `PULSE_ACTIVE_GRACE_MS` / `PULSE_BURST_MS`.
+  HTTP traffic calls `reportActivity()` so a live user never waits on a poll window; health probes
+  are excluded so an uptime monitor cannot pin it awake.
+- **Health is pulse-aware** — a stale tick while idle is reported ok-with-reason, not degraded.
+  Without this, the fix would have generated permanent 6-hourly false alerts. `/api/health/deep`
+  gained a `pulse` line so "asleep on purpose" and "wedged" are distinguishable.
+- **Backup decoupling** — a dead database no longer kills the scraper archive (it reads local
+  SQLite and needs no DB). Verified against the *real* outage: produced a 2.0 MB archive while the
+  dump correctly failed, exit 1.
+- **Yesterday's tar fix is confirmed working** — the scheduled task wrote
+  `ysx-scraper-2026-07-27.tar.gz` (2.0 MB), the first it has ever produced.
+
+### State of the two checkouts — IMPORTANT
+
+| | Commit | What is actually running |
+|---|---|---|
+| Working (`Documents\YSXXS\YSXXS`) | `b96328a` | n/a |
+| **Prod** (`Desktop\YT-Scraper\YSXXS`) | `d573af5` (source only) | **old `dist/` from 2026-07-26** |
+
+Prod source was fast-forwarded yesterday to pick up the backup script (Task Scheduler runs it from
+source, so that fix went live with no restart). **The service still runs the OLD compiled `dist/`** —
+no rebuild, no migration, no restart. None of the last two days' server changes are live.
+
+⚠️ **Do not rebuild prod until you deploy properly** — the tree contains code that needs two
+migrations. A rebuild without them breaks the service.
+
+### Deploy sequence (blocked until Neon is back)
+
+1. Wait for the Neon quota reset; confirm with `/api/health/deep`.
+2. `git pull` in prod (currently `d573af5`; pull again for `b96328a`).
+3. Fresh backup: `cd server && node scripts/backup-db.mjs`.
+4. `npx prisma migrate deploy` — two migrations:
+   `20260727120000_compliance_sender_identity_and_suppression`,
+   `20260727170000_refresh_token_rotation`. Both additive, both rehearsed on a scratch database.
+5. **Sync the Prisma client** into `server/node_modules/.prisma/client` (the standing trap — see
+   `.plans/known-failures.md`), copying everything except `*.node` while the service holds the DLL.
+6. `npx tsc -p .` in server; `npm run build` and `npm run build:portal` at root.
+7. Restart the service (needs elevation).
+8. **Immediately set Settings → Sender identity** — campaigns are fail-closed without a postal
+   address, by design.
+9. Verify: `/api/health/deep` green including the new `pulse` / `emailQuota` / `sendCapacity` /
+   `backups`; log in; send one test campaign to yourself and read the footer in the received mail.
+
+⚠️ **Two forced-logout-shaped effects, and they stack:** everyone is logged out once (refresh
+rotation — pre-rotation sessions have no server-side record), and every campaign is blocked until
+step 8. Both intended.
+
+### Worth doing on the Neon side
+
+Lower the endpoint's **suspend timeout** (Neon console → compute settings; default 300s). At 60s
+each wake costs a fifth as much, multiplying the pulse saving.
+
+### Still open
+
+1. **Per-tenant fairness** — the reply poller takes the globally oldest 100 CONTACTED leads per
+   tick; the campaign worker iterates all tenants oldest-first. One busy tenant starves the rest.
+2. `MAILBOX_ENCRYPTION_KEY` rotation path; the 8-char passphrase on `.env.enc` is the real risk.
+3. `Revision.roundNumber` race (no unique constraint) — confirmed from the portal review.
+4. ~7 unverified round-2 findings in `.plans/round2-agy-raw/`.
+5. **Portal backend still has no completed independent review** — gemini refused twice on
+   content-policy grounds; sonnet never delivered a file (findings recovered from its narration).
+6. Not code: DKIM enable, privacy policy URL, the legitimate-interest assessment, UptimeRobot,
+   Drive for Desktop, `PORTAL_BANK_*` (clients literally cannot pay without it), `Mailbox.dailyLimit`
+   and the FREE-tier 200/month cap — both below the target send volume.
+
+---
+
 ## 2026-07-27 — Readiness assessment, then blockers 2/6/7 fixed. Committed, NOT deployed.
 
 Full assessment: `.plans/READINESS-2026-07-27.md`. Plan: `.plans/compliance-capacity-hardening.md`.

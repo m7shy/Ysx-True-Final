@@ -37,3 +37,14 @@
 ## 2026-07-25 — Review split into 6 units rather than one pass
 - 28.5k lines does not fit one useful context. Split by subsystem boundary so each worker gets a coherent, self-contained slice, with the two "new code" units (portal backend, portal SPA) weighted heaviest.
 - §5.17 (25KB prompt chunking) did not apply — the Agent tool workers read files themselves rather than having source pasted into the prompt.
+
+## 2026-07-28
+- **Wait for the Neon monthly reset rather than upgrading.** User's call; prod stays down ~4 days.
+  Recorded because it is why a fix exists while production is still dark.
+- **Gate the watchdog behind the same pulse as the workers.** It queries the database itself, so
+  leaving it ungated at 15 min would keep the compute alive and undo the whole mechanism. Accepted
+  cost: detection latency for a real failure becomes one idle interval (~30 min).
+- **Health reports an idle stale tick as ok, not degraded.** Otherwise the cost fix generates a
+  permanent 6-hourly alert — a fix whose own success looks like a fault.
+- **Did NOT gate HTTP handling.** A live user must never wait on a poll window, and their traffic
+  keeps the compute warm anyway; health probes excluded so a monitor cannot pin it awake.
