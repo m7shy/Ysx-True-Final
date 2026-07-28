@@ -153,6 +153,41 @@ describe('reply poller — cross-tenant fairness', () => {
   });
 });
 
+describe('reply poller — more tenants than the budget can serve', () => {
+  it('rotates the starting tenant so every tenant is eventually scanned', async () => {
+    // The regression this guards: `tenantRotation` could be deleted outright and
+    // all the other fairness tests still passed, because none of them creates
+    // more tenants than SCAN_LIMIT. That is exactly when rotation is the only
+    // thing standing between "waits a tick" and "never scanned at all" — with a
+    // fixed start, the tenants past the budget are starved permanently.
+    //
+    // 25 tenants, budget 10: at one lead each, a single tick can only reach 10.
+    for (let i = 0; i < 25; i++) {
+      seedLeads(`tenant-${String(i).padStart(2, '0')}`, 1, 1);
+    }
+
+    const { prisma } = await import('../db/prisma.js');
+    const scanned = new Set<string>();
+    const original = prisma.lead.findMany;
+    (prisma.lead as any).findMany = async (args: any) => {
+      const rows = await original(args);
+      if (args.where?.userId && rows.length > 0) scanned.add(args.where.userId);
+      return rows;
+    };
+    try {
+      // Three ticks serve at most 30 tenant-slots; with rotation that covers all
+      // 25. Without it, the same 10 are re-scanned every tick, forever.
+      await replyPollTickOnce();
+      await replyPollTickOnce();
+      await replyPollTickOnce();
+    } finally {
+      (prisma.lead as any).findMany = original;
+    }
+
+    expect(scanned.size).toBe(25);
+  });
+});
+
 describe('reply poller — intra-tenant fairness', () => {
   it('advances through a single tenant\'s queue instead of rescanning the same oldest leads', async () => {
     // One tenant, 25 contacted leads, budget 10. Ticks 1-3 must between them

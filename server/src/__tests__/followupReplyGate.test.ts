@@ -136,6 +136,24 @@ describe('follow-up reply gate', () => {
     expect(mocks.sendSmtpMail).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the thread subject through, so the fallback can scope itself', async () => {
+    // Closes a real gap: removing `threadSubject` from the call in index.ts
+    // passed the entire suite. That is the dead-argument pattern for the third
+    // time in this subsystem — isNotAHumanReply's contentType was never passed
+    // either, and was dead code for its whole life as a result.
+    //
+    // Without it the last-resort subject fallback declines instead of matching,
+    // so it fails safe rather than over-matching — a silently degraded feature
+    // rather than a wrong one, which is precisely why nothing caught it.
+    mocks.checkRecipientReply.mockResolvedValue('no-reply');
+
+    await sendFollowupJob(makeJob({ subject: 'Re: Tighter intro' }));
+
+    expect(mocks.checkRecipientReply).toHaveBeenCalledWith(
+      expect.objectContaining({ threadSubject: 'Re: Tighter intro' }),
+    );
+  });
+
   it('cancels the remaining sequence when the recipient replied', async () => {
     mocks.checkRecipientReply.mockResolvedValue('replied');
 

@@ -213,10 +213,10 @@ async function selectLeadsForTick(): Promise<Lead[]> {
   // it is the whole difference between "waits a tick" and "never scanned".
   const start = tenantRotation % sorted.length;
   const ordered = [...sorted.slice(start), ...sorted.slice(0, start)];
-  tenantRotation = (tenantRotation + 1) % sorted.length;
 
   const share = Math.max(1, Math.floor(SCAN_LIMIT / ordered.length));
   const picked: Lead[] = [];
+  let servedTenants = 0;
 
   for (const group of ordered) {
     const remaining = SCAN_LIMIT - picked.length;
@@ -224,6 +224,7 @@ async function selectLeadsForTick(): Promise<Lead[]> {
 
     const total = group._count._all;
     if (total === 0) continue;
+    servedTenants++;
     const take = Math.min(share, remaining);
     const cursor = (scanCursors.get(group.userId) ?? 0) % total;
 
@@ -249,6 +250,18 @@ async function selectLeadsForTick(): Promise<Lead[]> {
     scanCursors.set(group.userId, (cursor + leads.length) % total);
     picked.push(...leads);
   }
+
+  // Resume from the first tenant this tick did NOT reach, rather than simply
+  // the next one along.
+  //
+  // Advancing by 1 was a real defect: a tick serves up to SCAN_LIMIT tenants but
+  // the cursor moved a single place, so with 25 tenants and a budget of 10, three
+  // ticks covered 12 distinct tenants instead of all 25 — the same tenants
+  // re-scanned over and over while the tail waited far longer than necessary.
+  // Full coverage took as many ticks as there are tenants, not
+  // ceil(tenants / budget). Found by the test that finally exercised more
+  // tenants than the budget.
+  tenantRotation = (start + Math.max(1, servedTenants)) % sorted.length;
 
   return picked;
 }
