@@ -222,6 +222,44 @@ you are not expecting them.
    this deploy: `server`'s build script IS `tsc`, so swapping compilers changes what ships.
 7. Everything in the to-do list below, none of which is code.
 
+### 🔍 An adversarial review is queued — `.plans/REVIEW-PROMPT-2026-07-28.md`
+
+Everything in this entry is written by the person who wrote the code, which is the weakest possible
+position to audit it from. A ready-to-paste prompt for a fresh session lives at
+`.plans/REVIEW-PROMPT-2026-07-28.md`. It names the eight specific claims most likely to be wrong and
+requires the reviewer to mutation-check every new test rather than trust the results quoted here.
+Its report lands at `.plans/REVIEW-2026-07-28-adversarial.md`. **If that file exists, read it before
+trusting anything below.**
+
+The areas I am least confident about, stated plainly so the reviewer starts there:
+1. **The reply-poller cursor arithmetic.** On the wrap-around path the cursor advances by
+   `leads.length`, which includes rows taken from the front of the queue. I believe it still
+   converges — every tick moves and the top-up dedupes — but the advance is not obviously the right
+   number, and `total` shifts between ticks as leads change status. Most likely place for a real bug.
+2. **The migration SQL, which has never been executed anywhere.** Low practical risk (the table is
+   empty) but the window functions and `UPDATE ... FROM ... JOIN` are unverified by anything except
+   reading.
+3. **`normalizeSubject`'s bare `r` prefix alternative.** `RE:MAX ...` normalizes to `max ...`.
+   Probably harmless since both sides normalize identically, but it is the kind of thing that is
+   fine until it is not.
+4. **`followupReplyGate.test.ts` mocks heavily.** It is the only test covering the fail-closed
+   behaviour end to end, and a test that mocks that much can be shaped into agreeing with itself.
+
+### Verified late, after the fixes were already committed
+
+Recorded because in each case the check was cheap and available the whole time, and doing it earlier
+would have changed how the work was described:
+
+- **ImapFlow's `bodyStructure` shape** — read `node_modules/imapflow/lib/tools.js`
+  (`parseBodystructure`). It sets `type` as a lowercased `type/subtype` string and `childNodes` as
+  an array, exactly what `collectContentTypes` walks. The DSN fix is real, not merely test-passing.
+  This should have been checked *before* writing a fix whose whole premise is that a guard was
+  never actually wired to reality.
+- **`prisma generate` needs no env vars** — confirmed with `env -u DATABASE_URL -u DIRECT_URL`.
+  This was the riskiest step in the new CI workflow (`prisma validate` *does* fail without them),
+  and it is fine.
+- **The `Revision`/`Project` tables are empty** — from the local backup, see below.
+
 ### Things I could NOT determine this session — do not assume either way
 
 - ~~Whether prod holds duplicate `Revision.roundNumber` rows.~~ **ANSWERED — inspected the local
@@ -244,6 +282,11 @@ you are not expecting them.
   week of the new period.
 - **Whether an Exchange NDR carries `In-Reply-To`.** Still open from the readiness report, still
   needs one live IMAP header fetch. Lower priority now that the content-type guard works.
+- **Whether the new CI workflow actually runs green.** `.github/workflows/verify.yml` was pushed but
+  has never been observed executing — `gh` is not installed on this VM and there is no other way to
+  read Actions results from here. Its riskiest step (`prisma generate` without env vars) was proven
+  to work locally; the workflow as a whole is unproven. Check it on GitHub before relying on it as
+  a gate.
 
 ---
 
