@@ -6,7 +6,7 @@ import { prisma } from '../db/prisma.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { startAutoJob, activeJobFor } from './service.js';
-import { mayPoll, reportWork } from '../scheduler/pulse.js';
+import { reportWork, startGatedPoller } from '../scheduler/pulse.js';
 
 /**
  * Automatic per-tenant scraper scheduler, backed by the `ScraperSchedule`
@@ -198,18 +198,22 @@ export function startAutoScraperScheduler(options?: { tickMs?: number }): void {
   started = true;
   const intervalMs = options?.tickMs && options.tickMs > 0 ? options.tickMs : 300_000;
 
-  void tickOnce().catch((err) => logger.error({ err }, 'Initial auto-scraper tick failed'));
-
-  setInterval(() => {
-    // Idle gate — the fifth timer, and it was missed when the other four were
-    // gated. It queries the database every 5 minutes, and Neon suspends after
-    // 5 minutes idle, so on its own it kept the compute alive permanently and
-    // defeated the entire pulse fix. Free-plan allowance is 100 CU-hours per
-    // month; the outage of 2026-07-28 was 110.24 against that.
-    //
-    // Delaying a due scrape by up to one idle-poll window is harmless here:
-    // schedules run 3-5x/day, so they are not sensitive to half an hour.
-    if (!mayPoll('autoScraper')) return;
-    void tickOnce().catch((err) => logger.error({ err }, 'Auto-scraper scheduler tick failed'));
-  }, intervalMs);
+  // Idle-gated — this was the fifth DB-touching timer and was missed when the
+  // other four were gated. It queries every 5 minutes, and Neon suspends after
+  // 5 minutes idle, so ungated it kept the compute alive permanently and
+  // defeated the whole back-off. Free-plan allowance is 100 CU-hours/month; the
+  // 2026-07-28 outage was 110.24 against that.
+  //
+  // Routed through startGatedPoller rather than gating inside a 5-minute
+  // setInterval: the first version of this gate did the latter, and because a
+  // 5-minute tick almost never lands inside the 90-second burst window, it did
+  // not merely delay scrapes by one window as its comment claimed — it stopped
+  // them outright at roughly 70% of boot phases. Delay is genuinely harmless
+  // here (schedules run 3-5x/day); silent permanent starvation is not.
+  startGatedPoller({
+    name: 'autoScraper',
+    intervalMs,
+    runImmediately: true,
+    run: tickOnce,
+  });
 }

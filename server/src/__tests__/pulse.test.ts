@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { mayPoll, reportWork, pulseState, resetPulseForTests } from '../scheduler/pulse.js';
+import { mayPoll, reportWork, pulseState, resetPulseForTests, startGatedPoller } from '../scheduler/pulse.js';
 
 /**
  * The idle gate that lets a serverless database scale to zero.
@@ -133,5 +133,113 @@ describe('pulse — waking up', () => {
       expect(mayPoll('campaignWorker')).toBe(true);
       expect(pulseState().mode).toBe('active');
     }
+  });
+});
+
+/**
+ * Regression: pollers slower than the burst window starved permanently.
+ *
+ * The original shape was `setInterval(() => { if (!mayPoll(name)) return; ... },
+ * LONG_INTERVAL)`. A poller only gets its turn if one of its ticks lands INSIDE
+ * the 90s window, and because the burst is re-anchored on a grid that divides
+ * IDLE_POLL_MS exactly, that phase is fixed at boot and never drifts. Measured
+ * over 14 simulated idle days before the fix: the 5-minute pollers (reply
+ * detection, auto-scraper) got 2 turns at ~70% of boot phases and the 15-minute
+ * watchdog got 1 turn at EVERY phase tried.
+ *
+ * Nothing errored. Reply detection, scraping and alerting simply stopped
+ * whenever the system went quiet — which is exactly when an unnoticed failure
+ * matters most. This file's own header warns about that failure mode; it just
+ * had no test for it.
+ */
+describe('pulse — startGatedPoller does not starve slow pollers', () => {
+  /**
+   * Runs a poller for `spanMs` of idle time and reports how often it actually ran.
+   *
+   * The 10-second anchor below is NOT scenery — it is the mechanism. In
+   * production the follow-up scheduler ticks every 10s and is therefore always
+   * the poller that OPENS each burst, which pins the burst grid to its cadence;
+   * every slower poller then has to land inside a window somebody else opened.
+   * A probe running alone opens the burst itself and is served every time, so it
+   * cannot reproduce the bug — verified the hard way: without this anchor these
+   * tests passed against the starving implementation.
+   */
+  async function countIdleRuns(opts: {
+    intervalMs: number;
+    bootPhaseMs: number;
+    spanMs: number;
+  }): Promise<number> {
+    resetPulseForTests();
+    const anchor = setInterval(() => {
+      mayPoll('anchor-followup');
+    }, 10_000);
+
+    // Let the grace period lapse with nothing reporting work, so we are idle.
+    await vi.advanceTimersByTimeAsync(ACTIVE_GRACE_MS + 1_000);
+    // Shift the poller's tick grid relative to the burst grid. This is the
+    // variable that decided starvation before, so it is the variable to sweep.
+    await vi.advanceTimersByTimeAsync(opts.bootPhaseMs);
+
+    let runs = 0;
+    const timer = startGatedPoller({
+      name: `probe-${opts.intervalMs}-${opts.bootPhaseMs}`,
+      intervalMs: opts.intervalMs,
+      run: async () => {
+        runs++;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(opts.spanMs);
+    clearInterval(timer);
+    clearInterval(anchor);
+    return runs;
+  }
+
+  const SIX_HOURS = 6 * 60 * 60_000; // 12 idle windows
+  const PHASES = [0, 30_000, 90_000, 200_000, 437_000];
+
+  it.each(PHASES)(
+    'serves the 15-minute watchdog cadence at boot phase %ims (was 0 at every phase)',
+    async (bootPhaseMs) => {
+      const runs = await countIdleRuns({ intervalMs: 15 * 60_000, bootPhaseMs, spanMs: SIX_HOURS });
+      // One turn per idle window is the design; 12 windows in six hours.
+      expect(runs).toBeGreaterThanOrEqual(10);
+    },
+  );
+
+  it.each(PHASES)(
+    'serves the 5-minute poller cadence at boot phase %ims (was 2 in 14 days at most phases)',
+    async (bootPhaseMs) => {
+      const runs = await countIdleRuns({ intervalMs: 5 * 60_000, bootPhaseMs, spanMs: SIX_HOURS });
+      expect(runs).toBeGreaterThanOrEqual(10);
+    },
+  );
+
+  it('still lets a poller faster than the burst window through', async () => {
+    const runs = await countIdleRuns({ intervalMs: 60_000, bootPhaseMs: 0, spanMs: SIX_HOURS });
+    expect(runs).toBeGreaterThanOrEqual(10);
+  });
+
+  it('does not exceed one run per idle window, however fast it ticks', async () => {
+    // The saving depends on this: a fast ticker must not turn into a fast poller.
+    const runs = await countIdleRuns({ intervalMs: 60_000, bootPhaseMs: 0, spanMs: SIX_HOURS });
+    expect(runs).toBeLessThanOrEqual(13);
+  });
+
+  it('honours the logical interval while active, rather than the tick rate', async () => {
+    // Active mode must not inherit the 30s ticker as its cadence.
+    resetPulseForTests();
+    let runs = 0;
+    const timer = startGatedPoller({
+      name: 'probe-active',
+      intervalMs: 5 * 60_000,
+      run: async () => {
+        runs++;
+        reportWork(); // keep the system active for the whole span
+      },
+    });
+    await vi.advanceTimersByTimeAsync(30 * 60_000); // 30 min at a 5 min cadence
+    clearInterval(timer);
+    expect(runs).toBeGreaterThanOrEqual(5);
+    expect(runs).toBeLessThanOrEqual(7);
   });
 });

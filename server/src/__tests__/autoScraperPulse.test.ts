@@ -1,29 +1,29 @@
 // FILE: server/src/__tests__/autoScraperPulse.test.ts
 //
-// The auto-scraper scheduler must respect the shared idle gate.
+// The auto-scraper scheduler must respect the shared idle gate — AND still
+// actually run while idle.
 //
-// Background, because this is the bug that took production down twice over:
-// Neon's free plan bills COMPUTE TIME and suspends the database after 5 minutes
-// idle. Any timer that queries it more often than that keeps it awake forever.
-// A previous session found four such timers (follow-ups, campaign worker, reply
-// poller, watchdog) and put them behind mayPoll() — and missed this one, which
-// queries every 5 minutes, exactly at the suspend threshold. On its own that is
-// enough to defeat the entire fix.
+// Background, because this bug had two halves and the second was caused by the
+// fix for the first. Neon bills COMPUTE TIME and suspends after 5 minutes idle,
+// so any timer querying more often keeps it awake forever. A previous session
+// gated four pollers and missed this one, which queries every 5 minutes —
+// exactly at the suspend threshold. Measured 2026-07-28: 110.24 CU-hours against
+// a 100-hour allowance, and production was suspended for it.
 //
-// Measured on 2026-07-28: 110.24 CU-hours used against a 100 CU-hour monthly
-// allowance, and production was suspended for it.
+// Gating it inside its own 5-minute setInterval fixed the cost and broke the
+// function: a 5-minute tick almost never lands inside the 90-second burst
+// window, and the burst grid is pinned by the 10-second follow-up scheduler, so
+// the phase is fixed at boot and never drifts. Scraping stopped outright at
+// roughly 70% of boot phases. Hence startGatedPoller, and hence the anchor in
+// these tests.
+//
+// The real pulse module is used deliberately. Mocking mayPoll would test the
+// mock's idea of the gate, and it is the gate's real timing that was wrong.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { state, spies } = vi.hoisted(() => ({
-  state: { mayPoll: true },
+const { spies } = vi.hoisted(() => ({
   spies: { findMany: vi.fn(async () => []), updateMany: vi.fn(async () => ({ count: 0 })) },
-}));
-
-vi.mock('../scheduler/pulse.js', () => ({
-  mayPoll: () => state.mayPoll,
-  reportWork: () => {},
-  reportActivity: () => {},
 }));
 
 vi.mock('../db/prisma.js', () => ({
@@ -51,57 +51,90 @@ vi.mock('../scraper/service.js', () => ({
 }));
 
 const TICK_MS = 300_000; // the production default: every 5 minutes
+const ACTIVE_GRACE_MS = 10 * 60_000;
+const SIX_HOURS = 6 * 60 * 60_000; // 12 idle windows
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   vi.resetModules();
-  state.mayPoll = true;
 });
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Fresh module each time — startAutoScraperScheduler has a module-level `started` latch. */
-async function startScheduler() {
+/**
+ * Boot the scheduler against the REAL pulse module and run it through `spanMs`
+ * of idle time, returning how many times it reached the database.
+ *
+ * `bootPhaseMs` shifts the scheduler's tick grid relative to the burst grid —
+ * the variable that decided starvation. The 10s anchor stands in for the
+ * follow-up scheduler, which in production always opens the burst and therefore
+ * pins its phase; without a competing poller the scheduler would open every
+ * burst itself and could never starve.
+ */
+async function runIdle(bootPhaseMs: number, spanMs = SIX_HOURS): Promise<number> {
+  // Same fresh module registry for both, so they share pulse state.
+  const pulse = await import('../scheduler/pulse.js');
   const mod = await import('../scraper/autoScheduler.js');
+
+  const anchor = setInterval(() => {
+    pulse.mayPoll('anchor-followup');
+  }, 10_000);
+
+  // Order matters, and getting it wrong makes this test vacuous. Phase is
+  // RELATIVE: starting the scheduler alongside the anchor and then advancing
+  // time moves both grids together, so no offset is ever created and the
+  // starving implementation passes. The anchor must be running and the system
+  // already idle BEFORE the scheduler starts, so its tick grid lands at
+  // `bootPhaseMs` relative to the burst grid the anchor pins.
+  await vi.advanceTimersByTimeAsync(ACTIVE_GRACE_MS + 1_000);
+  await vi.advanceTimersByTimeAsync(bootPhaseMs);
+
   mod.startAutoScraperScheduler({ tickMs: TICK_MS });
-  // Let the immediate boot tick settle so later assertions measure only the
-  // interval-driven ticks.
-  await vi.advanceTimersByTimeAsync(0);
   spies.findMany.mockClear();
+
+  await vi.advanceTimersByTimeAsync(spanMs);
+  clearInterval(anchor);
+  return spies.findMany.mock.calls.length;
 }
 
-describe('auto-scraper scheduler idle gate', () => {
-  it('does NOT touch the database while the pulse says the system is idle', async () => {
-    state.mayPoll = false;
-    await startScheduler();
+describe('auto-scraper scheduler under the idle gate', () => {
+  // The regression. Before startGatedPoller these phases returned 0.
+  it.each([0, 90_000, 200_000, 437_000])(
+    'still reaches the database while idle at boot phase %ims',
+    async (bootPhaseMs) => {
+      const calls = await runIdle(bootPhaseMs);
+      expect(calls).toBeGreaterThan(0);
+    },
+  );
 
-    // Half an hour of ticks — six at the production interval.
-    await vi.advanceTimersByTimeAsync(TICK_MS * 6);
-
-    expect(spies.findMany).not.toHaveBeenCalled();
+  it('polls about once per idle window, not once per tick', async () => {
+    // The whole saving depends on this upper bound: six hours at a 5-minute
+    // cadence would be 72 ungated polls; 12 idle windows allow ~12.
+    // recoverStaleRuns + the due query make two findMany calls per pass.
+    const calls = await runIdle(0);
+    expect(calls).toBeGreaterThanOrEqual(10);
+    expect(calls).toBeLessThanOrEqual(30);
   });
 
-  it('queries normally while the pulse says the system is active', async () => {
-    state.mayPoll = true;
-    await startScheduler();
+  it('does not poll at all between bursts', async () => {
+    const pulse = await import('../scheduler/pulse.js');
+    const mod = await import('../scraper/autoScheduler.js');
 
-    await vi.advanceTimersByTimeAsync(TICK_MS);
+    mod.startAutoScraperScheduler({ tickMs: TICK_MS });
+    await vi.advanceTimersByTimeAsync(ACTIVE_GRACE_MS + 1_000);
 
-    expect(spies.findMany).toHaveBeenCalled();
-  });
+    // Consume this window's turn, then sit in the dead zone between bursts.
+    pulse.mayPoll('anchor-followup');
+    await vi.advanceTimersByTimeAsync(BURST_TAIL_MS);
+    spies.findMany.mockClear();
+    await vi.advanceTimersByTimeAsync(10 * 60_000); // well inside the quiet gap
 
-  it('resumes querying once the pulse wakes back up', async () => {
-    state.mayPoll = false;
-    await startScheduler();
-    await vi.advanceTimersByTimeAsync(TICK_MS * 3);
     expect(spies.findMany).not.toHaveBeenCalled();
-
-    state.mayPoll = true;
-    await vi.advanceTimersByTimeAsync(TICK_MS);
-
-    expect(spies.findMany).toHaveBeenCalled();
   });
 });
+
+// A burst is 90s; step past it before measuring the quiet gap.
+const BURST_TAIL_MS = 100_000;

@@ -121,6 +121,67 @@ export function mayPoll(name: string): boolean {
 }
 
 /**
+ * How often a gated poller's TIMER fires. Deliberately shorter than BURST_MS.
+ *
+ * `mayPoll` serves at most one turn per poller per burst — but a poller only
+ * receives that turn if one of its ticks happens to land INSIDE the window.
+ * A poller whose own interval is longer than BURST_MS usually has no tick in
+ * there, and since the burst is re-anchored by the 10s follow-up scheduler on a
+ * grid that divides IDLE_POLL_MS exactly, the phase is fixed at boot and never
+ * drifts. The result is permanent starvation, not occasional lateness.
+ *
+ * Measured over 14 simulated idle days before this existed: the reply poller and
+ * auto-scraper (both 300s) got 2 turns at roughly 70% of boot phases, and the
+ * watchdog (900s) got 1 turn at every phase tried — i.e. reply detection,
+ * scraping and alerting all silently stopped whenever the system went idle.
+ *
+ * A ticker faster than the window cannot miss it, so the logical cadence is
+ * enforced by startGatedPoller instead of by the timer period.
+ */
+const GATE_TICK_MS = Math.max(1_000, Math.min(30_000, Math.floor(BURST_MS / 3)));
+
+/**
+ * Run `run` on its logical `intervalMs` cadence while respecting the idle gate.
+ *
+ * Use this for anything that touches the database on a timer. Calling
+ * `setInterval(fn, longInterval)` and gating inside `fn` is the shape that
+ * starves — see GATE_TICK_MS above.
+ *
+ * Ordering matters: due-ness is checked BEFORE `mayPoll`, so a tick that is not
+ * due yet cannot consume the single burst turn that a due poller needs.
+ */
+export function startGatedPoller(opts: {
+  /** Gate identity — must be unique per poller; shares the one-turn-per-burst budget. */
+  name: string;
+  /** Logical cadence. Honoured exactly while active; becomes once-per-burst while idle. */
+  intervalMs: number;
+  run: () => Promise<void>;
+  /** Run on the first tick rather than waiting a full interval. Default false. */
+  runImmediately?: boolean;
+}): ReturnType<typeof setInterval> {
+  const { name, intervalMs, run, runImmediately = false } = opts;
+  let lastRunAt = runImmediately ? 0 : Date.now();
+  let running = false;
+
+  const tick = async (): Promise<void> => {
+    if (running) return; // a slow pass must not overlap the next tick
+    if (Date.now() - lastRunAt < intervalMs) return; // not due yet
+    if (!mayPoll(name)) return; // due, but the gate says wait for the burst
+    running = true;
+    lastRunAt = Date.now();
+    try {
+      await run();
+    } catch (err) {
+      logger.error({ err, poller: name }, 'Gated poller tick failed');
+    } finally {
+      running = false;
+    }
+  };
+
+  return setInterval(tick, Math.min(GATE_TICK_MS, intervalMs));
+}
+
+/**
  * Current state, for the deep-health payload — so an operator seeing stale
  * worker ticks can tell "deliberately asleep" from "wedged", which is exactly
  * the distinction the 2026-07-28 alerts could not make.

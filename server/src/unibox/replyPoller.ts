@@ -7,7 +7,7 @@ import { maskEmail } from '../util/redact.js';
 import { connectionForMailbox } from '../creds/mailboxStore.js';
 import { cancelScheduledFollowupsForUserRecipient } from '../scheduler/followupScheduler.js';
 import { classifyReplyIntent, type ReplyIntent } from './intent.js';
-import { mayPoll, reportWork } from '../scheduler/pulse.js';
+import { reportWork, startGatedPoller } from '../scheduler/pulse.js';
 
 /**
  * Unibox reply listener (polling — Gmail/Microsoft IMAP has no webhook here).
@@ -290,7 +290,6 @@ export async function replyPollTickOnce(): Promise<void> {
 }
 
 let started = false;
-let ticking = false;
 
 export function startReplyPoller(options?: { pollMs?: number }): void {
   if (started) return;
@@ -298,23 +297,18 @@ export function startReplyPoller(options?: { pollMs?: number }): void {
 
   const intervalMs = options?.pollMs && options.pollMs > 0 ? options.pollMs : 300_000;
 
-  const run = async () => {
-    if (ticking) return;
-    // Nothing to poll for when no lead is awaiting a reply; this loop's 5-minute
-    // cadence sat exactly at Neon's suspend threshold, so on its own it was
-    // enough to keep the compute alive permanently.
-    if (!mayPoll('replyPoller')) return;
-    ticking = true;
-    try {
-      await replyPollTickOnce();
-    } catch (err) {
-      logger.error({ err }, 'Reply poller tick failed');
-    } finally {
-      ticking = false;
-    }
-  };
+  // Via startGatedPoller rather than a bare setInterval: this poller's 5-minute
+  // cadence is longer than the idle burst window, so gating inside a 5-minute
+  // timer meant its ticks almost never landed in the window and reply detection
+  // stopped entirely whenever the system went idle. Sequences then kept mailing
+  // people who had already replied — the exact harm the fail-closed reply check
+  // exists to prevent. See GATE_TICK_MS in scheduler/pulse.ts.
+  startGatedPoller({
+    name: 'replyPoller',
+    intervalMs,
+    runImmediately: true,
+    run: replyPollTickOnce,
+  });
 
-  void run();
-  setInterval(run, intervalMs);
   logger.info({ intervalMs }, 'Unibox reply poller started');
 }

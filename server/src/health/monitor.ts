@@ -7,7 +7,7 @@ import { config } from '../config.js';
 import { lastCampaignTickAt } from '../campaigns/worker.js';
 import { lastFollowupTickAt } from '../scheduler/followupScheduler.js';
 import { smtpFallbackConfigured, sendViaFallbackSmtp } from '../portal/mailer.js';
-import { mayPoll, pulseState } from '../scheduler/pulse.js';
+import { pulseState, startGatedPoller } from '../scheduler/pulse.js';
 
 /**
  * Deep health checks + self-alerting watchdog. Plain /api/health stays a bare
@@ -403,20 +403,27 @@ export function startWatchdog(options?: { intervalMs?: number }): void {
   watchdogStarted = true;
   const intervalMs = options?.intervalMs ?? 15 * 60_000;
 
-  const run = async () => {
-    // The watchdog queries the database too (db round-trip, mailbox counts,
-    // quota, capacity). Left ungated at 15 minutes it would keep the compute
-    // alive by itself and undo the back-off entirely, so it takes its turn in
-    // the same burst as everything else. Detection latency for a genuine
-    // failure becomes one idle interval, which is the trade being made.
-    if (!mayPoll('watchdog')) return;
-    try {
+  // The watchdog queries the database too (db round-trip, mailbox counts,
+  // quota, capacity). Left ungated at 15 minutes it would keep the compute alive
+  // by itself and undo the back-off entirely, so it takes its turn in the same
+  // burst as everything else. Detection latency for a genuine failure becomes
+  // one idle interval, which is the trade being made.
+  //
+  // MUST go through startGatedPoller, not a gated 15-minute setInterval. The
+  // watchdog's period is an exact multiple of the idle wake interval, so its
+  // ticks landed on two fixed points per cycle and — measured over 14 simulated
+  // idle days — hit the 90-second burst window at NO boot phase tried. It was
+  // therefore silently dead exactly when the system was idle, which is precisely
+  // when an unnoticed failure needs alerting. The alerting whose first real
+  // delivery the 2026-07-28 outage demonstrated would have shipped switched off.
+  //
+  // First pass is delayed one interval: workers need time for their first tick.
+  startGatedPoller({
+    name: 'watchdog',
+    intervalMs,
+    run: async () => {
       await watchdogPassWith(await runDeepChecks());
-    } catch (err) {
-      logger.error({ err }, 'Watchdog pass failed');
-    }
-  };
-  // First pass delayed one interval: workers need time for their first tick.
-  setInterval(run, intervalMs);
+    },
+  });
   logger.info({ intervalMs, alerting: canAlert() }, 'Watchdog started');
 }
