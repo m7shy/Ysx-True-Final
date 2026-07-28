@@ -106,8 +106,15 @@ export const IntegrationsView: React.FC<IntegrationsViewProps> = ({ onViewDocume
 
   // Update integrations state based on structured AppError
   useEffect(() => {
-    // Determine if we have an authentication error
-    const isAuthError = appError && appError.code === AppErrorCode.AUTH_EXPIRED;
+    // Both auth codes count. This checked AUTH_EXPIRED alone, and nothing in the
+    // codebase ever throws it — the mail gateway raises AUTH_ERROR
+    // (services/mailGateway.ts) — so the check never matched and a provider whose
+    // credentials had failed was never flagged here. The two are documented as
+    // distinct in types.ts, and they are; but this screen's response to either is
+    // identical, which is exactly why the distinction went unnoticed.
+    const isAuthError =
+      !!appError &&
+      (appError.code === AppErrorCode.AUTH_EXPIRED || appError.code === AppErrorCode.AUTH_ERROR);
 
     // Determine which provider has the error (if known)
     const targetProvider = appError?.provider;

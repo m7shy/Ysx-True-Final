@@ -86,17 +86,34 @@ export const UniboxView: React.FC = () => {
     if (!selectedThreadId || !replyText.trim()) return;
     setIsSending(true);
     try {
+      // The SEND and the REFRESH are reported separately on purpose. They used
+      // to share one try/catch, so a refresh that failed after a reply had
+      // already gone out surfaced as "Failed to send reply. Please try again."
+      // — and trying again sends a second reply to a real prospect. The mail is
+      // the irreversible half; a stale thread list is cosmetic.
       await sendReplyToThread(selectedThreadId, replyText);
-      // Refresh threads to get the new message
-      const updatedThreads = await fetchInboxThreads();
-      if (isMounted.current) {
-        setThreads(updatedThreads);
-        setReplyText('');
-        showToast('SUCCESS', "Reply sent successfully.");
-      }
     } catch (e) {
       console.error("Failed to send reply", e);
       showToast('ERROR', "Failed to send reply. Please try again.");
+      if (isMounted.current) setIsSending(false);
+      return;
+    }
+
+    if (isMounted.current) {
+      setReplyText('');
+      showToast('SUCCESS', "Reply sent successfully.");
+    }
+
+    try {
+      const updatedThreads = await fetchInboxThreads();
+      if (isMounted.current) setThreads(updatedThreads);
+    } catch (e) {
+      // The reply is already out. Say what is actually wrong rather than
+      // implying the send failed.
+      console.error("Reply sent, but refreshing the thread list failed", e);
+      if (isMounted.current) {
+        showToast('ERROR', "Reply sent, but the thread list could not refresh. Reload to see it.");
+      }
     } finally {
       if (isMounted.current) setIsSending(false);
     }

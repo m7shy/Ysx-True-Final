@@ -178,7 +178,16 @@ export function startGatedPoller(opts: {
     }
   };
 
-  return setInterval(tick, Math.min(GATE_TICK_MS, intervalMs));
+  const timer = setInterval(tick, Math.min(GATE_TICK_MS, intervalMs));
+
+  // `setInterval` alone waits a full tick before the first run. The reply poller
+  // and auto-scraper both called their tick directly at startup before moving to
+  // this helper, and losing that would delay the first pass by up to
+  // GATE_TICK_MS on every boot — a silent behaviour change smuggled in by a
+  // refactor.
+  if (runImmediately) void tick();
+
+  return timer;
 }
 
 /**

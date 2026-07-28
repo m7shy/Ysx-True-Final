@@ -23,7 +23,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { spies } = vi.hoisted(() => ({
-  spies: { findMany: vi.fn(async () => []), updateMany: vi.fn(async () => ({ count: 0 })) },
+  spies: {
+    findMany: vi.fn(async (_args?: any): Promise<any[]> => []),
+    updateMany: vi.fn(async (_args?: any): Promise<{ count: number }> => ({ count: 0 })),
+  },
 }));
 
 vi.mock('../db/prisma.js', () => ({
@@ -58,6 +61,11 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   vi.resetModules();
+  // clearAllMocks resets call history but NOT implementations, so a test that
+  // makes findMany return a due schedule would otherwise leak that into every
+  // test after it. Restore the default explicitly.
+  spies.findMany.mockImplementation(async () => []);
+  spies.updateMany.mockImplementation(async () => ({ count: 0 }));
 });
 
 afterEach(() => {
@@ -117,6 +125,39 @@ describe('auto-scraper scheduler under the idle gate', () => {
     const calls = await runIdle(0);
     expect(calls).toBeGreaterThanOrEqual(10);
     expect(calls).toBeLessThanOrEqual(30);
+  });
+
+  it('reports work when a scrape is actually due, so the gate stays at full cadence', async () => {
+    // Untested until now: removing the reportWork() call passed the whole suite.
+    // Without it a launched scrape does not count as activity, so the pulse drops
+    // back to its idle cadence mid-run and the follow-up queries needed to finish
+    // that run wait for the next burst.
+    const pulse = await import('../scheduler/pulse.js');
+    const mod = await import('../scraper/autoScheduler.js');
+
+    // Asserted through its EFFECT, not by spying on the call. autoScheduler
+    // imports `reportWork` as a binding, so vi.spyOn on the module namespace
+    // never intercepts it — the spy would sit there uncalled and the test would
+    // fail for the wrong reason. What reportWork actually does is refresh
+    // lastWorkAt, which returns the gate to 'active'.
+    // `msSinceWork` rather than `mode`: mode is only recomputed inside mayPoll,
+    // so reading it here would report whatever the last poll decided. What
+    // reportWork actually does is reset the work clock, and that is observable
+    // immediately.
+    pulse.resetPulseForTests();
+    await vi.advanceTimersByTimeAsync(ACTIVE_GRACE_MS + 1_000);
+    expect(pulse.pulseState().msSinceWork).toBeGreaterThan(ACTIVE_GRACE_MS);
+
+    // One schedule is due, so the tick has real work to do.
+    spies.findMany.mockImplementation(async (args: any) =>
+      args?.where?.enabled ? [{ id: 's1', userId: 'u1', runsPerDay: 3 }] : [],
+    );
+    spies.updateMany.mockResolvedValue({ count: 1 });
+
+    mod.startAutoScraperScheduler({ tickMs: TICK_MS });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(pulse.pulseState().msSinceWork).toBeLessThan(5_000);
   });
 
   it('does not poll at all between bursts', async () => {
