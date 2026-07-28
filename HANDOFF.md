@@ -1,5 +1,107 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-28 (later) — Still down. Fairness + revision race fixed; mail review partially done.
+
+### Neon: still exhausted, re-verified
+
+Checked at 07:43 and 07:45 UTC, two independent ways: `/api/health/deep` returns 503 with
+`db: critical`, and a direct query over the **non-pooled `DIRECT_URL`** returns the same
+`exceeded the compute time quota` error — so it is account-level, not the pooler. Worker ticks
+were stale by 24,135s, back-dating the stop to ~01:03 UTC and corroborating the 01:01 figure.
+**The deploy is still blocked.**
+
+**Could not determine: the actual reset date.** Nothing in the repo records it; `.plans/decisions.md`
+says "~4 days" but that is an estimate, not a verified date. The free-plan allowance resets on the
+billing-period boundary, visible only in the Neon console (Billing/Usage), and it may be the signup
+anniversary rather than the 1st. Asked the user to read it off the console; unanswered so far.
+
+### Verified against the previous entry
+
+- Prod checkout `d573af5`, `dist/` from Jul 26 15:47 — confirmed running the old build.
+- Working checkout was `fc0c273`, clean, level with origin.
+- Prod has two **untracked** files not mentioned anywhere: `install-deps.bat`, `uninstall-deps.bat`.
+  Harmless for `git pull`, but unexplained — worth a look before the deploy.
+- Re-checked the readiness report's DNS claims independently; **all reproduce exactly**. DKIM
+  selector CNAMEs exist on `outreach.ysxvisuals.com`, their Microsoft targets are NXDOMAIN — still
+  not enabled, unchanged. `ysxvisuals.com` SPF is still a PermError. `outreach` SPF is healthy.
+
+### ⚠️ Correction to the previous entry's "Still open #1"
+
+"The campaign worker iterates all tenants oldest-first. One busy tenant starves the rest" — **the
+worker half of that did not hold up.** Every ACTIVE campaign is visited on every tick (`break`
+exits only the inner recipient loop), and the resources it contends on are all per tenant:
+`pickMailbox` and `assertUnderEmailLimit` are scoped by `userId`, the daily budget is per campaign.
+There is no global quota for one tenant to drain. The real cost was only *position* — a flat
+`createdAt asc` order put the same tenants last on every tick.
+
+The **reply poller** half was real, and worse than described: it starves *permanently*, not
+slowly, because a scan that finds no reply never touches `lastContacted`, so every later tick
+re-selects the identical set. It also starves **within** a single tenant past `SCAN_LIMIT`
+contacted leads — a second dimension the note missed entirely.
+
+### Committed this session (`fc0c273..e91d115`) — tsc clean, vitest 258/258
+
+- **`2b3dbcd`** — per-tenant fair-share + rotating cursor in the reply poller; round-robin
+  interleave across tenants in the campaign tick.
+- **`e91d115`** — `@@unique([projectId, roundNumber])` on `Revision` plus a bounded retry in
+  `portal/routes.ts`, closing the read-then-create race.
+
+Both mutation-checked. Poller: reverting selection fails all 4 of its tests. Worker: gutting the
+interleave fails 2 of 4, a lossy variant fails the other 2; a 5th test asserting the single-tenant
+no-op was **deleted** — it is an early return and survived every mutation, so it could not fail.
+Revision: four separate mutations, five of six tests individually falsified.
+
+### ⚠️ THE DEPLOY NOW CARRIES A THIRD MIGRATION, AND IT IS NOT ADDITIVE
+
+`20260728080000_revision_round_unique`. Unlike the other two, it takes a lock and can fail on
+existing data: prod may already hold duplicate round numbers created by the very race it fixes,
+and a bare `CREATE UNIQUE INDEX` would abort mid-deploy. Because Neon was suspended, **the live
+data could not be inspected to rule that out.** The migration therefore renumbers duplicates
+first — earliest row of each group keeps the number the client has seen, later collisions move to
+the end of that project's sequence; no-op on clean data.
+
+**It is unrehearsed.** The other two were rehearsed on a scratch database; this one has not been
+executed anywhere. Rehearse it before running the deploy, or at minimum run the renumber SELECT
+by hand first to see whether any duplicates exist.
+
+### Mail / reply-detection review — PARTIAL, see `.plans/REVIEW-2026-07-28-mail.md`
+
+Only `mail/replyCheck.ts` and its call path were covered. `imapClient.ts`, `mail/routes.ts`,
+`smtpClient.ts`, `smtpGateway.ts`, `unibox/routes.ts`, `unibox/intent.ts` are **still unreviewed**
+— do not record the item as closed.
+
+Two findings worth acting on, neither fixed (both change live send-gating, and the deploy is
+already heavy):
+
+1. **The DSN content-type guard is dead code.** `isNotAHumanReply` takes a `contentType` argument
+   documented as the protection that works "regardless of who it claims to be from" — and no call
+   site passes it, nor could it, since neither fetch requests `bodyStructure`. Only the sender
+   regex is live. Any bounce from a sender outside that pattern is scored as a human reply.
+   Same bug class the readiness report was written to catch.
+2. **Reply detection fails OPEN.** Every error path returns `false` = "has not replied", so an
+   IMAP outage does not pause follow-ups, it sends all of them — including to people who already
+   replied. Contrast the report's §7 note that this subsystem "fails in the safe direction"; this
+   path does not.
+
+### TypeScript 7 (asked about mid-session)
+
+`7.0.2` is GA; this repo is on 5.9.3. Measured, not quoted: server typecheck **~16.4s → ~8.2s**,
+identical zero errors. The frontend is **blocked** — TS7 removed `baseUrl`, which `tsconfig.json:19`
+still sets (`paths` is already present, so deleting the line is likely sufficient — untested).
+Recommendation: **not in this deploy** — `server`'s `build` script *is* `tsc -p .`, so a compiler
+swap changes the bytes emitted into prod `dist/`.
+
+Separately: **there is no typecheck or test in CI at all.** `smoke.yml` runs a smoke script;
+nothing runs `tsc` or `vitest` on push. Given this project's record of non-compiling delegated code
+reaching the tree, that is probably worth more than the version bump.
+
+### Still open
+
+Unchanged from below, minus the fairness item and the `Revision.roundNumber` race, plus:
+the unreviewed remainder of the mail layer, and the two findings above.
+
+---
+
 ## 2026-07-28 — 🔴 PROD IS DOWN (Neon free-tier compute quota). Fixes committed, NOT deployed.
 
 ### Read this first
