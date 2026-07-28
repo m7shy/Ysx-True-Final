@@ -222,6 +222,76 @@ you are not expecting them.
    this deploy: `server`'s build script IS `tsc`, so swapping compilers changes what ships.
 7. Everything in the to-do list below, none of which is code.
 
+### ✅ FIXED LATER THE SAME DAY — pulse starvation, portal crash, blocked-campaign blindness
+
+All four deploy blockers below are now fixed, tested and pushed. The sections that follow describe
+how they were found and are kept for the reasoning, not as open items.
+
+| Fix | Commit | Was |
+|---|---|---|
+| Pulse starved every poller slower than the burst | `780232a` | reply detection, scraping, alerting all dead while idle |
+| Portal white-screened on reload | `4544308` | every client user, first F5 after sign-in |
+| Blocked campaigns explained nothing | `4544308` | ACTIVE / 0 sent / forever after deploy |
+| Campaign wizard wedged permanently | `4544308` | lost all wizard state, no error |
+| CI gate would fail on first run | `4b16e29` | missing `MAILBOX_ENCRYPTION_KEY` |
+
+**The pulse fix is central, not per-poller.** `startGatedPoller` (in `pulse.ts`) ticks at
+`min(30s, interval)` — which cannot miss a 90s window — and enforces the logical cadence itself,
+checking due-ness *before* `mayPoll` so a not-yet-due tick cannot consume the burst turn a due
+poller needs. `replyPoller`, `autoScraper` and the watchdog all use it. **The next slow poller
+someone adds gets correct behaviour by default**, which is the real lesson: the previous fix was
+right for the four pollers it knew about and silently wrong for the fifth.
+After: ~672 turns per 14 idle days at every boot phase, for all three.
+
+⚠️ **Both pulse test files were VACUOUS on the first attempt** and passed against the starving
+implementation. Two separate reasons, both worth knowing before touching these tests:
+1. **A probe poller must not be the only caller.** Alone it opens every burst itself and is always
+   served, so it cannot starve. The 10s anchor in both files is the mechanism, not scenery.
+2. **Phase is RELATIVE.** Starting the poller alongside the anchor and then advancing time moves
+   both grids together and creates no offset. The anchor must already be running, and the system
+   already idle, before the poller under test starts.
+With both corrected, reverting to the slow ticker fails 6 tests in `pulse.test.ts` and 3 in
+`autoScraperPulse.test.ts` — at exactly the boot phases ≥90s the simulation predicted, passing at
+0/30/60s. `autoScraperPulse.test.ts` now drives the **real** pulse module: mocking `mayPoll` would
+test the mock's idea of the gate, and it was the gate's real *timing* that was wrong.
+
+**The portal fix removes a second response builder rather than patching it.** `/auth/refresh` was
+hand-rolling a partial copy of `issueSession` — whose `familyId` parameter exists precisely for the
+refresh path. One builder means the shapes cannot drift apart again. `touchLogin=false` keeps
+refresh from stamping `lastLoginAt`, which the admin UI labels "last login".
+
+### Still unfixed from the reviews — ranked, none is a deploy blocker
+
+**Frontend** (`.plans/REVIEW-2026-07-28-frontend.md`) — I verified the four above; these are the
+reviewer's, spot-check before acting:
+- Invoice **Send** has no in-flight guard and the server accepts DRAFT *or* SENT, so a double-click
+  double-emails a client. Flagged on 2026-07-25 and still open — the one double-submit gap not fixed.
+- `DashboardView` toasts "Follow-up sent successfully" unconditionally, because `sendFollowUp`
+  never throws.
+- The portal never routes to login when a refresh fails: `authed` is module state and nothing tells
+  React it changed, so the client sits on a spinner under an error string.
+- `clearAuth()` wipes `ysxflow_settings`, so the deploy's one-time logout resets every user's
+  signature and provider choice.
+- `AnalyticsView` renders hardcoded numbers (`42.8%`, `+12% vs last period`) while the real
+  `services/analyticsApi.ts` is imported by nothing.
+
+**Scraper** (`.plans/REVIEW-2026-07-28-scraper.md`):
+- `cancelJob` kills only the direct child; `orchestrator.py` spawns `main.py` as a grandchild that
+  is never signalled, and `status='cancelled'` is set before the child dies — so Stop→Start spawns
+  a second scraper into the same profile.
+- `activeJobFor`/`assertCapacity` are check-then-act across five awaits, so a double-click starts
+  two scrapers on one profile.
+- Every run re-imports the whole `leads.csv` at two sequential queries per row, unbatched.
+- Two premises I gave that reviewer were **wrong**: tenants cannot share a profile directory (the
+  slug is per-tenant), and the idle gate does not starve the scraper *by phase-lock with its own
+  interval* — the real mechanism was the burst-window one fixed above.
+
+**Test gaps** (backend reviewer; none is a live defect):
+- `tenantRotation` in `replyPoller.ts` can be deleted and all 4 fairness tests still pass.
+- Removing `threadSubject` from the `checkRecipientReply` call in `index.ts` passes all tests —
+  the dead-argument pattern again, in the fix written to close it. Fails safe.
+- `reportWork()` in `autoScheduler.ts` is untested.
+
 ### 🔴🔴 CORRECTION + ESCALATION — the pulse gate starves EVERY slow poller, not just the watchdog
 
 **I got this wrong the first time and am correcting it.** My earlier simulation reported "the
