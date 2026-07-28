@@ -38,13 +38,39 @@ vi.mock('../smtpGateway.js', () => ({
 
 const SENT_AT = new Date('2026-07-27T16:00:00Z');
 
+/** A plain human message's BODYSTRUCTURE. */
+const HUMAN_BODY = { type: 'text/plain' };
+
+/**
+ * An RFC 3464 DSN's BODYSTRUCTURE: multipart/report at the top with a
+ * message/delivery-status part beneath. Real bounces carry this whatever
+ * address they are sent from, which is the whole point of checking it.
+ */
+const DSN_BODY = {
+  type: 'multipart/report',
+  parameters: { 'report-type': 'delivery-status' },
+  childNodes: [
+    { type: 'text/plain' },
+    { type: 'message/delivery-status' },
+    { type: 'message/rfc822' },
+  ],
+};
+
 /** Make client.fetch yield the given messages, as ImapFlow's async iterator does. */
-function fetchYields(client: any, messages: Array<{ from: string; subject?: string; at: Date }>) {
-  (client.fetch as any).mockImplementation(async function* () {
+function fetchYields(
+  client: any,
+  messages: Array<{ from: string; subject?: string; at: Date; bodyStructure?: unknown }>,
+) {
+  (client.fetch as any).mockImplementation(async function* (_seq: unknown, options: any) {
     for (const m of messages) {
       yield {
         envelope: { from: [{ address: m.from }], subject: m.subject ?? 'Re: hello', date: m.at },
         internalDate: m.at,
+        // Mirror IMAP: the server returns BODYSTRUCTURE only when it was asked
+        // for. A mock that hands it over unconditionally would let code that
+        // forgot to request it still pass — which is exactly the defect these
+        // tests exist to catch.
+        ...(options?.bodyStructure ? { bodyStructure: m.bodyStructure ?? HUMAN_BODY } : {}),
       };
     }
   });
@@ -134,6 +160,76 @@ describe('hasRecipientReplied', () => {
     (mockClient.search as any).mockResolvedValue([]);
 
     expect(await call()).toBe(false);
+  });
+
+  // The sender regex catches the bounce senders we know about. These cover the
+  // ones we do not: a DSN relayed from an ordinary-looking address still
+  // carries multipart/report, and that is what must stop it. Before the fetch
+  // requested bodyStructure, isNotAHumanReply's content-type argument was
+  // always undefined and none of this was reachable.
+  describe('DSN detection by report content type', () => {
+    it('does NOT count a bounce from an ordinary-looking sender as a reply', async () => {
+      matchOnInReplyTo(mockClient);
+      fetchYields(mockClient, [
+        {
+          from: 'delivery@relay.example.com', // matches no bounce-sender pattern
+          subject: 'Re: hello',
+          at: new Date('2026-07-27T17:00:00Z'),
+          bodyStructure: DSN_BODY,
+        },
+      ]);
+
+      expect(await call()).toBe(false);
+    });
+
+    it('detects the report type when it appears only on a nested part', async () => {
+      matchOnInReplyTo(mockClient);
+      fetchYields(mockClient, [
+        {
+          from: 'delivery@relay.example.com',
+          at: new Date('2026-07-27T17:00:00Z'),
+          bodyStructure: {
+            type: 'multipart/mixed',
+            childNodes: [{ type: 'text/plain' }, { type: 'message/delivery-status' }],
+          },
+        },
+      ]);
+
+      expect(await call()).toBe(false);
+    });
+
+    it('still accepts an ordinary multipart human reply', async () => {
+      // Guards the obvious over-correction: rejecting anything multipart.
+      matchOnInReplyTo(mockClient);
+      fetchYields(mockClient, [
+        {
+          from: 'recipient@test.com',
+          at: new Date('2026-07-27T17:00:00Z'),
+          bodyStructure: {
+            type: 'multipart/alternative',
+            childNodes: [{ type: 'text/plain' }, { type: 'text/html' }],
+          },
+        },
+      ]);
+
+      expect(await call()).toBe(true);
+    });
+
+    it('rejects a content-type bounce on the subject-fallback path too', async () => {
+      // The fallback carries its own copy of the guard; two copies of one rule
+      // is how they drift apart.
+      (mockClient.search as any).mockImplementation((criteria: any) => (criteria?.header ? [] : [1]));
+      fetchYields(mockClient, [
+        {
+          from: 'delivery@relay.example.com',
+          subject: 'Re: hello',
+          at: new Date('2026-07-27T17:00:00Z'),
+          bodyStructure: DSN_BODY,
+        },
+      ]);
+
+      expect(await call()).toBe(false);
+    });
   });
 
   // The subject-based fallback is a THIRD code path, reached only when neither

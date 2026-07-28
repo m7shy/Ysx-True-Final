@@ -72,6 +72,38 @@ export function isNotAHumanReply(envelopeFrom: unknown, contentType?: unknown): 
 }
 
 /**
+ * Flatten an IMAP BODYSTRUCTURE tree into a space-joined string of its MIME
+ * types, for isNotAHumanReply's content-type check.
+ *
+ * A DSN is `multipart/report; report-type=delivery-status` at the top with a
+ * `message/delivery-status` part beneath it, so the marker can sit at either
+ * level depending on the generating server — walking the whole tree avoids
+ * having to care which.
+ *
+ * This exists because the content-type half of isNotAHumanReply was dead code:
+ * both fetch sites requested only `{ envelope, internalDate }` and passed one
+ * argument, so `contentType` was always undefined and the sender regex was the
+ * only guard actually running. The unit test for isNotAHumanReply passed the
+ * whole time — it called the function directly, which proved the rule worked
+ * without proving anything ever applied it.
+ */
+export function collectContentTypes(node: unknown): string {
+  const types: string[] = [];
+  // Depth-capped: BODYSTRUCTURE is attacker-influenced input (the message is
+  // whatever a stranger sent us), and a deeply nested multipart should cost a
+  // truncated string rather than a blown stack.
+  const walk = (n: any, depth: number): void => {
+    if (!n || typeof n !== 'object' || depth > 10) return;
+    if (typeof n.type === 'string') types.push(n.type.toLowerCase());
+    if (Array.isArray(n.childNodes)) {
+      for (const child of n.childNodes) walk(child, depth + 1);
+    }
+  };
+  walk(node, 0);
+  return types.join(' ');
+}
+
+/**
  * Filter IMAP search hits down to messages that are genuinely human replies
  * arriving AFTER the initial send.
  *
@@ -96,12 +128,19 @@ async function hasGenuineReply(
   // Cap the fetch: a thread with hundreds of hits is pathological, and the
   // newest are the ones that could be a reply.
   const sample = hits.slice(-25);
-  for await (const msg of client.fetch(sample as any, { envelope: true, internalDate: true })) {
+  for await (const msg of client.fetch(sample as any, {
+    envelope: true,
+    internalDate: true,
+    // Required for the content-type half of isNotAHumanReply — without it that
+    // check silently no-ops and only the sender regex protects this path.
+    bodyStructure: true,
+  })) {
     const envelope = (msg as any)?.envelope;
     const from = envelope?.from?.[0]?.address;
+    const contentTypes = collectContentTypes((msg as any)?.bodyStructure);
 
-    if (isNotAHumanReply(from)) {
-      debugLog('Reply check: ignoring delivery-status notification', { from });
+    if (isNotAHumanReply(from, contentTypes)) {
+      debugLog('Reply check: ignoring delivery-status notification', { from, contentTypes });
       continue;
     }
 
@@ -244,7 +283,11 @@ export async function hasRecipientReplied(input: {
     const r3 = await client.search(baseCriteriaSender);
     if (Array.isArray(r3) && r3.length > 0) {
       const sample = r3.slice(-10);
-      for await (const msg of client.fetch(sample, { envelope: true, internalDate: true })) {
+      for await (const msg of client.fetch(sample, {
+        envelope: true,
+        internalDate: true,
+        bodyStructure: true,
+      })) {
         const envelope = (msg as any)?.envelope;
         const subj = String(envelope?.subject ?? '').trim();
 
@@ -252,7 +295,7 @@ export async function hasRecipientReplied(input: {
         // does NOT start with "Re:" — but a forwarded or localized variant can,
         // and the same guard is applied on every path so no single one has to
         // be the clever exception.
-        if (isNotAHumanReply(envelope?.from?.[0]?.address)) continue;
+        if (isNotAHumanReply(envelope?.from?.[0]?.address, collectContentTypes((msg as any)?.bodyStructure))) continue;
 
         // Same day-granularity correction as hasGenuineReply.
         const received = (msg as any)?.internalDate ?? envelope?.date;
