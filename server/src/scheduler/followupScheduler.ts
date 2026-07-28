@@ -3,6 +3,7 @@ import { FollowupJobStatus, type FollowupJob as DbFollowupJob } from "@prisma/cl
 import { prisma } from "../db/prisma.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { mayPoll } from "./pulse.js";
 import { MailError } from "../httpErrors.js";
 import { computeNextRetryDelayMs } from "../campaigns/engine.js";
 import type { FollowupJob, FollowupJobInput, FollowupStatus, ProviderKey } from "./types.js";
@@ -446,6 +447,10 @@ export function startFollowupScheduler(
   );
 
   setInterval(() => {
+    // Idle gate. At 10s this was the single heaviest source of database
+    // wake-ups in the process — ~8,640 queries a day to discover that an empty
+    // queue is still empty.
+    if (!mayPoll("followupScheduler")) return;
     void tickOnce(onSend).catch((err) =>
       logger.error({ err }, "Follow-up scheduler tick failed"),
     );

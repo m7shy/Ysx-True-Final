@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { lastCampaignTickAt } from '../campaigns/worker.js';
 import { lastFollowupTickAt } from '../scheduler/followupScheduler.js';
 import { smtpFallbackConfigured, sendViaFallbackSmtp } from '../portal/mailer.js';
+import { mayPoll, pulseState } from '../scheduler/pulse.js';
 
 /**
  * Deep health checks + self-alerting watchdog. Plain /api/health stays a bare
@@ -35,6 +36,21 @@ const workersEnabled = () => Boolean(config.DATABASE_URL) && config.NODE_ENV !==
 
 function tickCheck(name: string, last: Date | null): HealthCheck {
   if (!workersEnabled()) return { status: 'disabled', detail: 'not started (no DATABASE_URL or test env)' };
+
+  // A stale tick is EXPECTED while the pulse is idle — that is the whole point
+  // of backing off, and reporting it as degraded would turn a working
+  // cost-control mechanism into a permanent 6-hourly alert. Report it plainly
+  // instead, so "asleep on purpose" and "wedged" stay distinguishable.
+  const pulse = pulseState();
+  if (pulse.mode === 'idle') {
+    return {
+      status: 'ok',
+      detail: last
+        ? `idle — polling suspended, next wake in ${Math.round(pulse.msToNextWake / 1000)}s (last tick ${Math.round((Date.now() - last.getTime()) / 1000)}s ago)`
+        : `idle — polling suspended, next wake in ${Math.round(pulse.msToNextWake / 1000)}s`,
+    };
+  }
+
   if (!last) return { status: 'degraded', detail: `${name} has not completed a tick since boot` };
   const age = Date.now() - last.getTime();
   return age > TICK_STALE_MS
@@ -126,6 +142,17 @@ export async function runDeepChecks(): Promise<DeepHealth> {
   }
 
   checks.backups = backupCheck();
+
+  // Not a pass/fail check — an explanation. Without it, "last tick 21953s ago"
+  // reads as a dead worker whether the cause is a crash or a deliberate sleep.
+  const pulse = pulseState();
+  checks.pulse = {
+    status: 'ok',
+    detail:
+      pulse.mode === 'active'
+        ? 'active — polling at full cadence'
+        : `idle — database polling suspended so the compute can scale to zero; next wake in ${Math.round(pulse.msToNextWake / 1000)}s`,
+  };
 
   const statuses = Object.values(checks).map((c) => c.status);
   const status = statuses.includes('critical') ? 'critical' : statuses.includes('degraded') ? 'degraded' : 'ok';
@@ -377,6 +404,12 @@ export function startWatchdog(options?: { intervalMs?: number }): void {
   const intervalMs = options?.intervalMs ?? 15 * 60_000;
 
   const run = async () => {
+    // The watchdog queries the database too (db round-trip, mailbox counts,
+    // quota, capacity). Left ungated at 15 minutes it would keep the compute
+    // alive by itself and undo the back-off entirely, so it takes its turn in
+    // the same burst as everything else. Detection latency for a genuine
+    // failure becomes one idle interval, which is the trade being made.
+    if (!mayPoll('watchdog')) return;
     try {
       await watchdogPassWith(await runDeepChecks());
     } catch (err) {

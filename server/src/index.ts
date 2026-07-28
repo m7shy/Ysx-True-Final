@@ -37,6 +37,7 @@ import projectsRouter from './projects/routes.js';
 import invoicesRouter from './invoices/routes.js';
 import { unsubscribeHeaders, unsubscribeUrlForRecipient, complianceFooter } from './campaigns/trackedHtml.js';
 import { assertSenderIdentity } from './campaigns/senderIdentity.js';
+import { reportActivity } from './scheduler/pulse.js';
 import { isSuppressed } from './leads/suppression.js';
 
 import { LeadStatus, CampaignStatus, FollowupJobStatus } from '@prisma/client';
@@ -275,6 +276,16 @@ app.use('/api/unibox', requireAuth, requireActiveTenant, uniboxRouter);
 // In-app YouTube scraper: a logged-in user launches the Python scraper and its
 // leads land in their own tenant (see scraper/service.ts).
 app.use('/api/scraper', requireAuth, requireActiveTenant, scraperRouter);
+// Someone is actually using the app: keep the pollers at full cadence rather
+// than making a live user wait up to an idle interval for their campaign to
+// move. Health probes are excluded deliberately — an uptime monitor hitting
+// /api/health every minute would otherwise pin the pollers permanently awake
+// and defeat the whole mechanism.
+app.use('/api', (req, _res, next) => {
+  if (!req.path.startsWith('/health')) reportActivity();
+  next();
+});
+
 app.use('/api/analytics', requireAuth, requireActiveTenant, analyticsRouter);
 app.use('/api/settings', requireAuth, requireActiveTenant, settingsRouter);
 

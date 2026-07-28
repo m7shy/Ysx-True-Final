@@ -91,6 +91,7 @@ function backupScraperState() {
 }
 
 let usedFallback = false;
+let dbFailed = false;
 try {
   // Custom format (-Fc): compressed, restorable table-by-table with pg_restore.
   execFileSync('pg_dump', ['--format=custom', `--file=${outFile}`, url], {
@@ -100,13 +101,37 @@ try {
 } catch (err) {
   if (err.code !== 'ENOENT') {
     console.error(`[backup] pg_dump FAILED: ${err.message}`);
-    process.exit(1);
+    // Fall through to the scraper half — see below.
+    dbFailed = true;
+  } else {
+    // pg_dump not installed (unelevated VM) — logical JSON fallback via pg over
+    // TLS. Restore is manual per-table but the data is safe and off-Neon.
+    console.warn('[backup] pg_dump not found — falling back to JSON table dump');
+    usedFallback = true;
+    try {
+      await jsonDump(url, outFile.replace(/\.dump$/, '.json.gz'));
+    } catch (dumpErr) {
+      // The DATABASE half failed. The SCRAPER half must still run: it reads
+      // local SQLite files and needs no database at all, so coupling the two
+      // means an outage at the provider silently costs you the one backup the
+      // provider cannot give back.
+      //
+      // Observed 2026-07-28: Neon hit its free-tier compute quota overnight,
+      // this rejection propagated out of the top-level await, and the process
+      // died BEFORE backupScraperState() — so neither artifact was written
+      // that day, including the one that had nothing to do with Neon.
+      console.error(`[backup] Database dump FAILED: ${dumpErr.message}`);
+      dbFailed = true;
+    }
   }
-  // pg_dump not installed (unelevated VM) — logical JSON fallback via pg over
-  // TLS. Restore is manual per-table but the data is safe and off-Neon.
-  console.warn('[backup] pg_dump not found — falling back to JSON table dump');
-  usedFallback = true;
-  await jsonDump(url, outFile.replace(/\.dump$/, '.json.gz'));
+}
+
+if (dbFailed) {
+  // Still try the half that can succeed, then exit non-zero so the scheduled
+  // task's log and the `backups` health check both record a partial run.
+  backupScraperState();
+  console.error('[backup] PARTIAL: scraper state attempted, database dump did NOT succeed');
+  process.exit(1);
 }
 
 async function jsonDump(dbUrl, file) {

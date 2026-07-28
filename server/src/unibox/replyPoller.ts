@@ -7,6 +7,7 @@ import { maskEmail } from '../util/redact.js';
 import { connectionForMailbox } from '../creds/mailboxStore.js';
 import { cancelScheduledFollowupsForUserRecipient } from '../scheduler/followupScheduler.js';
 import { classifyReplyIntent, type ReplyIntent } from './intent.js';
+import { mayPoll, reportWork } from '../scheduler/pulse.js';
 
 /**
  * Unibox reply listener (polling — Gmail/Microsoft IMAP has no webhook here).
@@ -172,6 +173,10 @@ export async function replyPollTickOnce(): Promise<void> {
   });
   if (contacted.length === 0) return;
 
+  // Leads awaiting a reply = keep checking promptly; a reply that sits unseen
+  // for half an hour delays cancelling the rest of that sequence.
+  reportWork();
+
   const byUser = new Map<string, Lead[]>();
   for (const lead of contacted) {
     const list = byUser.get(lead.userId) ?? [];
@@ -210,6 +215,10 @@ export function startReplyPoller(options?: { pollMs?: number }): void {
 
   const run = async () => {
     if (ticking) return;
+    // Nothing to poll for when no lead is awaiting a reply; this loop's 5-minute
+    // cadence sat exactly at Neon's suspend threshold, so on its own it was
+    // enough to keep the compute alive permanently.
+    if (!mayPoll('replyPoller')) return;
     ticking = true;
     try {
       await replyPollTickOnce();

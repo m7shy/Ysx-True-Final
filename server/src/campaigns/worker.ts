@@ -7,6 +7,7 @@ import { maskEmail } from '../util/redact.js';
 import { sendFromMailbox } from '../mail/smtpGateway.js';
 import { recordMailboxSend } from '../creds/mailboxStore.js';
 import { scheduleFollowup } from '../scheduler/followupScheduler.js';
+import { mayPoll, reportWork } from '../scheduler/pulse.js';
 import { resolveSpintax } from './spintax.js';
 import { renderTemplate } from './variables.js';
 import { buildTrackedEmail, unsubscribeHeaders } from './trackedHtml.js';
@@ -680,6 +681,11 @@ export async function campaignTickOnce(): Promise<void> {
     orderBy: { createdAt: 'asc' },
   });
 
+  // An active campaign is itself "work": it will have due recipients shortly
+  // even if none are due this instant, and dropping to a 30-minute cadence
+  // mid-campaign would stretch a send window badly.
+  if (active.length > 0) reportWork();
+
   for (const campaign of active) {
     try {
       await processCampaign(campaign);
@@ -706,6 +712,12 @@ export function startCampaignWorker(options?: { tickMs?: number }): void {
 
   const run = async () => {
     if (ticking) return; // a slow tick must not overlap the next one
+    // Idle gate: with no active campaigns there is nothing here worth waking a
+    // serverless database for, and this loop running every 60s forever is a
+    // third of why the compute never suspended. lastTickAt is deliberately
+    // NOT advanced when we skip, so a genuinely wedged worker still looks
+    // stale to the health check.
+    if (!mayPoll('campaignWorker')) return;
     ticking = true;
     try {
       await campaignTickOnce();
