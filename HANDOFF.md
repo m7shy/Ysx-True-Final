@@ -149,6 +149,12 @@ reaching the tree, that is probably worth more than the version bump.
 
 ### 🚀 DEPLOY SEQUENCE — SUPERSEDES the one in the entry below
 
+> **Alternative: migrating off Neon entirely.** Compute-hour billing is Neon-specific; Supabase and
+> a local Postgres do not charge for awake-time, so the outage class disappears rather than being
+> mitigated. The restore path is rehearsed and the dataset is 31 KB, so the migration is cheap.
+> Written up for the user as Part 2B of `ACTION-PLAN.md`. Not done — the user's call, and waiting
+> until Aug 5 costs nothing while DKIM/sender-identity/bank-details block sending anyway.
+
 The older sequence is now wrong in three ways: it says two migrations (there are **three**), it
 predates five behaviour changes to the send path, and its "wait for the reset" step has no date.
 **Earliest possible run: 2026-08-05**, when the Neon allowance resets.
@@ -218,8 +224,15 @@ you are not expecting them.
 
 ### Things I could NOT determine this session — do not assume either way
 
-- **Whether prod holds duplicate `Revision.roundNumber` rows.** The database was suspended the
-  entire session. This gates the third migration — step 2 above.
+- ~~Whether prod holds duplicate `Revision.roundNumber` rows.~~ **ANSWERED — inspected the local
+  backup instead of the live database, which was the obvious move and was not made until late.**
+  `C:ackups\ysx\ysx-2026-07-27.json.gz` (31 KB, JSON fallback format — `pg_dump` is not
+  installed on the VM) has **`Revision`: 0 rows** and `Project`: 0 rows, so the unique constraint
+  is a guaranteed no-op. The "not rehearsed, not additive" warning stands in principle but has
+  nothing to act on. Still run the SQL check at deploy time: the backup predates the shutdown by
+  ~8 hours.
+  Full contents for scale: 7 users, 23 leads, 1 campaign, 1 invoice, 1 mailbox, 1 campaign
+  recipient, 2 follow-up jobs, 23 tables. This is a pre-launch dataset.
 - **Whether deleting `baseUrl` alone unblocks TypeScript 7 on the frontend.** `paths` is already
   set and `moduleResolution` is `bundler`, so it is likely sufficient. Not tried.
 - **Whether Neon's free plan lets you lower the 5-minute suspend timeout.** The entry below

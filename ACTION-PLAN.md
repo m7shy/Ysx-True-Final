@@ -214,9 +214,13 @@ the project no longer says "paused".
 **If it's still paused, stop here and wait.**
 
 ### Step 2 — Check for a data problem BEFORE changing anything
-One of the updates adds a rule that revision round numbers must be unique. **If your database
-already has duplicates, the update will fail halfway through.** This check is read-only and cannot
-break anything.
+One of the updates adds a rule that revision round numbers must be unique, and duplicates would
+make it fail halfway through.
+
+**Good news: this is almost certainly a non-issue.** I checked your 27 July backup — the revisions
+table is **completely empty** (you have no projects yet), so there is nothing for the rule to trip
+over. Run the check anyway, because the backup is 8 hours older than the shutdown. It is read-only
+and cannot break anything.
 
 Run this against the database (ask me to run it if you're not sure how):
 ```sql
@@ -322,6 +326,176 @@ If the footer is missing or wrong, tell me before sending to anyone real.
 
 4. Open the client portal and look at an invoice. Your bank details from Step 8 should now appear
    as payment instructions. If that section is blank, the `.env` edit didn't take — tell me.
+
+---
+
+# PART 2B — OPTIONAL: move to Supabase and get the app back before 5 August
+
+**Only do this if you don't want to wait until 5 August.** Waiting is free and zero-risk. This is
+the alternative, not an extra step. **Do Part 2B *instead of* Part 2, not after it** — it contains
+all of Part 2's steps in the right order.
+
+## Should you do this at all?
+
+**The honest case for waiting:** the app can't send campaigns right now anyway — DKIM is off, your
+postal address isn't set, and clients can't pay you. Those are the real blockers, they're all in
+Part 1, and you can do all of them today with the app down.
+
+**The honest case for moving:** the "hours of database time" limit that broke you is specific to
+Neon — it charges for time the database is *awake*, which is why background polling killed it.
+Supabase doesn't bill that way, so this class of outage can't repeat. It's a permanent fix, not
+just a workaround.
+
+**What you lose:** roughly 8 hours of overnight activity — anything between the last backup
+(27 July, 17:12) and the shutdown (28 July, ~01:01). The app died at 1am, so this is almost
+certainly nothing at all.
+
+**⚠️ This is a one-way move.** If you migrate and start using the app, then Neon wakes up on
+5 August still holding the old data, the two have drifted apart. Pick one and stay on it. Don't
+switch back and forth.
+
+## What your data actually is
+
+I checked the backup file. The whole database is: **7 users, 23 leads, 1 campaign, 1 invoice,
+1 mailbox, 2 queued follow-ups.** 31 KB compressed. It fits in any free tier many times over, and
+there is very little here to lose.
+
+---
+
+### Step B1 — Create the Supabase project
+1. Sign up at **https://supabase.com** (free, no card).
+2. **New project.** Give it a name.
+3. **Set a database password — save it somewhere safe immediately.** Supabase shows it once. If you
+   lose it you have to reset it.
+4. **Region:** pick the one closest to your server. Your current database is in **AWS US East 1
+   (N. Virginia)** — matching that is a safe default.
+5. Wait for it to finish setting up (a minute or two).
+
+### Step B2 — Copy the two connection strings
+In the project: **Settings → Database → Connection string**.
+
+You need **two different ones**, and they are not interchangeable:
+- **Transaction / pooled** (port **6543**) → this becomes `DATABASE_URL`
+- **Direct** (port **5432**) → this becomes `DIRECT_URL`
+
+Replace `[YOUR-PASSWORD]` in each with the password from Step B1.
+
+⚠️ On the pooled one, add this to the end: `?pgbouncer=true&connection_limit=1`
+Without it the app throws confusing errors under load.
+
+### Step B3 — Back up your current settings file
+So you can undo this if anything goes wrong:
+```powershell
+cd C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS\server
+copy .env .env.before-supabase
+```
+
+### Step B4 — Get the new code
+```powershell
+cd C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS
+git pull
+```
+
+### Step B5 — Point the app at Supabase
+Open `C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS\server\.env` in Notepad.
+
+Find the lines starting `DATABASE_URL=` and `DIRECT_URL=`. **Don't delete them** — put a `#` at the
+start of each so you keep the old Neon values:
+```
+#DATABASE_URL=postgresql://...neon...
+#DIRECT_URL=postgresql://...neon...
+```
+Then add your two new lines underneath:
+```
+DATABASE_URL=<the pooled one, port 6543, ending ?pgbouncer=true&connection_limit=1>
+DIRECT_URL=<the direct one, port 5432>
+```
+While you're in this file, also add your bank details (same as Part 2 Step 8):
+```
+PORTAL_BANK_NAME=Your Bank Name
+PORTAL_BANK_BENEFICIARY=Your Business Name
+PORTAL_BANK_IBAN=GB00XXXX00000000000000
+PORTAL_BANK_SWIFT=XXXXGB00
+```
+Save and close.
+
+⚠️ **This file contains every password and key in the system. Never paste its contents into Gemini
+or any other chat.**
+
+### Step B6 — Build the database structure
+```powershell
+cd C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS\server
+npx prisma migrate deploy
+```
+This creates all the tables in the empty Supabase database. It should apply every migration and
+report success.
+
+**Note:** the risky migration everyone was worried about (revision round numbers) is a guaranteed
+no-op here — I checked the backup and that table is empty. Nothing for it to trip over.
+
+### Step B7 — Load your data in
+**This must come after B6.** The structure has to exist before the data goes in.
+
+In **Git Bash** (not PowerShell):
+```bash
+cd /c/Users/banjigum1/Desktop/YT-Scraper/YSXXS/server
+RESTORE_URL="<your DIRECT connection string, port 5432>" \
+  node scripts/restore-db.mjs /c/backups/ysx/ysx-2026-07-27.json.gz
+```
+Use the **direct** string here, not the pooled one.
+
+It should report the tables it filled. If it errors, **stop and tell me** — don't rerun it blindly.
+
+### Step B8 — Sync the Prisma file (the known trap)
+Exactly as Part 2 Step 6. In **Git Bash**:
+```bash
+cd /c/Users/banjigum1/Desktop/YT-Scraper/YSXXS/server
+for f in ../node_modules/.prisma/client/*; do b=$(basename "$f"); \
+  case "$b" in *.node) ;; *) cp -f "$f" node_modules/.prisma/client/"$b";; esac; done
+```
+
+### Step B9 — Build
+```powershell
+cd C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS\server
+npx tsc -p .
+cd C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS
+npm run build
+npm run build:portal
+```
+
+### Step B10 — Restart
+PowerShell **as Administrator**:
+```powershell
+nssm restart ysx-backend
+```
+
+### Step B11 — Check it worked
+1. Open `https://crm.ysxvisuals.com/api/health` → should say `{"ok":true}`.
+2. Log in (**you'll be logged out once — that's intended**).
+3. Check your leads are there. You should see **23 leads and 1 campaign**. If the app is empty, the
+   restore didn't take — stop and tell me.
+
+### Step B12 — Then do Part 2 Steps 10 and 11
+- **Settings → Sender identity** — business name and postal address. Campaigns stay blocked until
+  you do.
+- Send yourself one test campaign and **read the footer**.
+- Check an invoice in the portal shows your bank details.
+
+### If it goes wrong — how to undo
+Nothing is destroyed. Your Neon data is untouched and comes back on 5 August. To revert:
+```powershell
+cd C:\Users\banjigum1\Desktop\YT-Scraper\YSXXS\server
+copy .env.before-supabase .env
+```
+Then restart as Administrator. You're back to waiting for Neon, having lost nothing.
+
+### After you've moved
+- **Tell me**, so I can update the notes — the handoff still says Neon everywhere.
+- Supabase free projects pause after about a week of **no activity at all**. Yours is polled
+  constantly, so this shouldn't bite — but if you leave it untouched for a fortnight, expect to
+  click "restore" in their dashboard.
+- **Part 3's "watch your database usage" no longer applies.** Supabase doesn't bill by
+  compute-hours. That whole problem goes away.
 
 ---
 
