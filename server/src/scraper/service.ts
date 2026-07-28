@@ -87,6 +87,55 @@ function assertCapacity(): void {
   }
 }
 
+/**
+ * Check the limits and claim the slot in ONE synchronous step.
+ *
+ * Both entry points used to check `activeJobFor` / `assertCapacity`, then run
+ * five awaits — creating the profile directory, writing keywords.txt, reading
+ * leads.csv, and two Postgres round-trips for cookies and settings — before
+ * finally registering the job. Node will not interleave synchronous code, but it
+ * happily interleaves at every one of those awaits, so two requests arriving
+ * together (a double-clicked Start, or a manual run landing on top of the
+ * auto-scheduler) both passed the checks and both spawned. Two scrapers then
+ * fought over one profile's keywords.txt, leads.csv and SQLite file — the exact
+ * collision `activeJobFor` exists to prevent, and the one the per-tenant profile
+ * layout cannot save you from because both runs belong to the SAME tenant.
+ *
+ * Registering the job before the preparation closes the window: the loser now
+ * sees a running job on its synchronous check and gets a 409. The caller must
+ * release the claim if preparation then fails — see the callers' try/catch.
+ */
+function claimJobSlot(job: ScrapeJob): void {
+  if (activeJobFor(job.userId)) {
+    throw Object.assign(new Error('A scrape is already running for your account'), {
+      code: 'CONFLICT',
+      status: 409,
+    });
+  }
+  assertCapacity();
+  jobs.set(job.id, job);
+  reserveSlot();
+}
+
+/** Undo claimJobSlot when preparation fails before the child is spawned. */
+function abandonClaim(job: ScrapeJob, released: { done: boolean }): void {
+  jobs.delete(job.id);
+  releaseSlot(released);
+}
+
+function newJob(userId: string, source: ScrapeJob['source'], keywords: string[]): ScrapeJob {
+  return {
+    id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId,
+    niche: `crm-${userId}`,
+    keywords,
+    source,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    log: [],
+  };
+}
+
 /** Public shape (no internal handles); log is trimmed by the route if needed. */
 export function publicJob(job: ScrapeJob) {
   return {
@@ -390,12 +439,15 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
   if (cleanKeywords.length === 0) {
     throw Object.assign(new Error('At least one keyword is required'), { code: 'VALIDATION', status: 400 });
   }
-  if (activeJobFor(userId)) {
-    throw Object.assign(new Error('A scrape is already running for your account'), { code: 'CONFLICT', status: 409 });
-  }
-  assertCapacity();
+  // Claimed BEFORE any await — see claimJobSlot. Everything below this line can
+  // yield, and a second request arriving mid-preparation must lose the race
+  // rather than spawn a rival scraper into the same profile.
+  const job = newJob(userId, 'manual', cleanKeywords);
+  const id = job.id;
+  const niche = job.niche;
+  claimJobSlot(job);
+  const released = { done: false };
 
-  const niche = `crm-${userId}`;
   const slug = slugify(niche);
   const scraperDir = config.SCRAPER_DIR;
   const profileDir = path.join(scraperDir, 'profiles', slug);
@@ -403,37 +455,30 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
   const leadsPath = path.join(profileDir, 'leads.csv');
   const cookiesDir = path.join(profileDir, 'cookies');
 
-  await fs.mkdir(profileDir, { recursive: true });
-  await fs.writeFile(keywordsPath, cleanKeywords.join('\n') + '\n', 'utf8');
+  let before: Set<string>;
+  try {
+    await fs.mkdir(profileDir, { recursive: true });
+    await fs.writeFile(keywordsPath, cleanKeywords.join('\n') + '\n', 'utf8');
 
-  // Emails already in this profile before the run — so we can report only what's
-  // genuinely new, even though importLeadRows() is idempotent.
-  const before = new Set((await readLeads(leadsPath)).map((r) => r.email));
+    // Emails already in this profile before the run — so we can report only what's
+    // genuinely new, even though importLeadRows() is idempotent.
+    before = new Set((await readLeads(leadsPath)).map((r) => r.email));
 
-  // Rebuild the on-disk cookie pool from Postgres (the durable source of
-  // truth) right before spawning, into this tenant's own profile dir — never
-  // a shared one, since scrapes for other tenants can run concurrently — see
-  // cookieService.ts. Same idea for qualification-criteria overrides: written
-  // fresh from Postgres right before every spawn, not just once, so a
-  // settings change takes effect on the very next run.
-  await materializeCookiePool(cookiesDir, userId);
-  await writeProfileSettings(profileDir, userId);
-
-  const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const job: ScrapeJob = {
-    id,
-    userId,
-    niche,
-    keywords: cleanKeywords,
-    source: 'manual',
-    status: 'running',
-    startedAt: new Date().toISOString(),
-    log: [],
-  };
-  jobs.set(id, job);
-
-  reserveSlot();
-  const released = { done: false };
+    // Rebuild the on-disk cookie pool from Postgres (the durable source of
+    // truth) right before spawning, into this tenant's own profile dir — never
+    // a shared one, since scrapes for other tenants can run concurrently — see
+    // cookieService.ts. Same idea for qualification-criteria overrides: written
+    // fresh from Postgres right before every spawn, not just once, so a
+    // settings change takes effect on the very next run.
+    await materializeCookiePool(cookiesDir, userId);
+    await writeProfileSettings(profileDir, userId);
+  } catch (err) {
+    // Preparation failed, so no child will ever be spawned to release this.
+    // Without the undo the tenant is locked out of scraping until restart and a
+    // global concurrency slot leaks permanently.
+    abandonClaim(job, released);
+    throw err;
+  }
 
   const child = spawn(config.PYTHON_BIN, ['-u', 'main.py', '--niche', niche], {
     cwd: scraperDir,
@@ -490,12 +535,14 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
   if (!config.SCRAPER_DIR) {
     throw Object.assign(new Error('Scraper is not configured on this server'), { code: 'SCRAPER_DISABLED', status: 503 });
   }
-  if (activeJobFor(userId)) {
-    throw Object.assign(new Error('A scrape is already running for your account'), { code: 'CONFLICT', status: 409 });
-  }
-  assertCapacity();
+  // Claimed BEFORE any await — see claimJobSlot. The auto-scheduler and a manual
+  // Start can easily coincide, and both belong to the same tenant.
+  const job = newJob(userId, 'auto', []); // keywords populated once Gemini writes keywords.txt
+  const id = job.id;
+  const niche = job.niche;
+  claimJobSlot(job);
+  const released = { done: false };
 
-  const niche = `crm-${userId}`;
   const slug = slugify(niche);
   const scraperDir = config.SCRAPER_DIR;
   const profileDir = path.join(scraperDir, 'profiles', slug);
@@ -503,29 +550,19 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
   const leadsPath = path.join(profileDir, 'leads.csv');
   const cookiesDir = path.join(profileDir, 'cookies');
 
-  await fs.mkdir(profileDir, { recursive: true });
-  const before = new Set((await readLeads(leadsPath)).map((r) => r.email));
+  let before: Set<string>;
+  try {
+    await fs.mkdir(profileDir, { recursive: true });
+    before = new Set((await readLeads(leadsPath)).map((r) => r.email));
 
-  // Rebuild the on-disk cookie pool from Postgres before spawning, into this
-  // tenant's own profile dir — see the matching comment in startJob() above.
-  await materializeCookiePool(cookiesDir, userId);
-  await writeProfileSettings(profileDir, userId);
-
-  const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const job: ScrapeJob = {
-    id,
-    userId,
-    niche,
-    keywords: [], // populated after Gemini writes keywords.txt (see below)
-    source: 'auto',
-    status: 'running',
-    startedAt: new Date().toISOString(),
-    log: [],
-  };
-  jobs.set(id, job);
-
-  reserveSlot();
-  const released = { done: false };
+    // Rebuild the on-disk cookie pool from Postgres before spawning, into this
+    // tenant's own profile dir — see the matching comment in startJob() above.
+    await materializeCookiePool(cookiesDir, userId);
+    await writeProfileSettings(profileDir, userId);
+  } catch (err) {
+    abandonClaim(job, released);
+    throw err;
+  }
 
   const child = spawn(
     config.PYTHON_BIN,
