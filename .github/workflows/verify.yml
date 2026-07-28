@@ -1,0 +1,64 @@
+# Typecheck + test on every push.
+#
+# Why this exists: nothing ran `tsc` or `vitest` in CI. smoke.yml boots the
+# server and runs a smoke script, which does not compile the frontend, does not
+# run the unit suite, and passes happily on a tree that does not typecheck.
+#
+# .plans/known-failures.md records non-compiling code reaching this tree in
+# three consecutive sessions — an `await` in a non-async arrow, an unclosed
+# route handler — each a failure `tsc` surfaces instantly, each shipped by a
+# worker whose instructions said to run it. The standing rule is to re-run tsc
+# and the suite personally after every edit. This makes that automatic instead
+# of remembered.
+#
+# No database required: the server suite mocks Prisma throughout.
+
+name: Verify
+
+on: push
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm install
+
+      # Prisma resolves its output to the node_modules nearest the SCHEMA, i.e.
+      # the root one — but `server/` has its own @prisma/client install, and
+      # that is what require.resolve returns from inside server/. Without the
+      # copy, server tsc fails on fields that plainly exist in schema.prisma.
+      # See .plans/known-failures.md; this has cost real debugging time twice.
+      - name: Generate Prisma client
+        run: npx prisma generate --schema=prisma/schema.prisma
+
+      # mkdir -p first: on a clean install server/node_modules/.prisma does not
+      # exist yet (it is created by a generate that resolved there, which is
+      # exactly what does not happen), so a bare cp would fail.
+      - name: Sync Prisma client into server/
+        run: |
+          mkdir -p server/node_modules/.prisma/client
+          cp -r node_modules/.prisma/client/. server/node_modules/.prisma/client/
+
+      - name: Typecheck server
+        working-directory: server
+        run: npx tsc -p . --noEmit
+
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+
+      - name: Test server
+        working-directory: server
+        run: npx vitest run
