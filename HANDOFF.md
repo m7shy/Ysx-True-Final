@@ -226,7 +226,7 @@ you are not expecting them.
 
 - ~~Whether prod holds duplicate `Revision.roundNumber` rows.~~ **ANSWERED — inspected the local
   backup instead of the live database, which was the obvious move and was not made until late.**
-  `C:ackups\ysx\ysx-2026-07-27.json.gz` (31 KB, JSON fallback format — `pg_dump` is not
+  `C:/backups/ysx/ysx-2026-07-27.json.gz` (31 KB, JSON fallback format — `pg_dump` is not
   installed on the VM) has **`Revision`: 0 rows** and `Project`: 0 rows, so the unique constraint
   is a guaranteed no-op. The "not rehearsed, not additive" warning stands in principle but has
   nothing to act on. Still run the SQL check at deploy time: the backup predates the shutdown by
