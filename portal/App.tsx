@@ -1,6 +1,6 @@
 import React from 'react';
 import { RouterProvider, useRouter, useQueryParam } from './router';
-import { loadAuth, bootstrapSession } from './services/apiClient';
+import { bootstrapSession, isAuthed, onAuthChange } from './services/apiClient';
 import { PortalShell } from './components/PortalShell';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -11,7 +11,12 @@ import { FaqPage } from './pages/FaqPage';
 const Routes: React.FC = () => {
   const { path, navigate } = useRouter();
   const token = useQueryParam('token');
-  const authed = Boolean(loadAuth());
+  // Subscribed, not read during render. `authState` lives in a module, so
+  // computing this inline meant a session cleared mid-flight (a failed refresh
+  // on an open tab) never re-rendered: the client sat on a dead shell instead
+  // of bouncing to /login. Deploys make that the common case, because
+  // refresh-token rotation invalidates every live session at once.
+  const authed = React.useSyncExternalStore(onAuthChange, isAuthed, isAuthed);
   const isPublic = path.startsWith('/login') || path.startsWith('/set-password');
 
   // Unauthenticated deep links bounce to /login (preserving a magic-link token).

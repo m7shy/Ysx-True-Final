@@ -943,3 +943,38 @@ describe('receipt unique-number retry', () => {
     prismaMock.payment.create = originalCreate;
   });
 });
+
+describe('invoice send is idempotent', () => {
+  it('does not email the client twice when Send is double-clicked', async () => {
+    // The Send button only renders for DRAFT, but it is hidden by a reload that
+    // runs after the request resolves — so two clicks fire two POSTs while the
+    // invoice is still DRAFT. Both used to pass the status check (which accepted
+    // DRAFT *or* SENT) and both emailed the client the same invoice. Flagged on
+    // 2026-07-25 and still live until now.
+    const created = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', projectId: 'pA', amountCents: 111000, dueAt: '2026-09-01' });
+    expect(created.status).toBe(201);
+    const id = created.body.invoice.id;
+    const number = created.body.invoice.number;
+
+    const before = sentEmails.length;
+
+    // Concurrent, not sequential: sequential requests would let the first one
+    // finish and flip the status, which is not the race being guarded.
+    const [first, second] = await Promise.all([
+      request(app).post(`/api/invoices/${id}/send`).set('Authorization', adminA),
+      request(app).post(`/api/invoices/${id}/send`).set('Authorization', adminA),
+    ]);
+
+    // The second click is the same intent, not an error — it must not 409.
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.invoice.status).toBe('SENT');
+    expect(second.body.invoice.status).toBe('SENT');
+
+    const emails = sentEmails.slice(before).filter((e) => e.subject.includes(number));
+    expect(emails).toHaveLength(1);
+  });
+});

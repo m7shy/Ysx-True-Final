@@ -193,13 +193,40 @@ router.post('/:id/send', async (req: Request, res: Response) => {
     return;
   }
 
-  const invoice = await tenantDb(userId).invoice.update({
-    where: { id: existing.id },
-    data: { status: 'SENT', sentAt: existing.sentAt ?? new Date() },
+  // Atomic claim: ONLY the request that actually moves DRAFT -> SENT may email.
+  //
+  // The Send button renders only for DRAFT, but it is hidden by a reload that
+  // happens after the request resolves — so a double-click fires two POSTs while
+  // the invoice is still DRAFT, both passed the status check above, and both
+  // emailed the client. A client receiving the same invoice twice is the kind of
+  // thing they remember. Flagged on 2026-07-25 and still live.
+  //
+  // Re-sending stays a 200 rather than a 409: the second click is the same
+  // intent, not an error, and there is no resend affordance to preserve. It
+  // simply does not send a second email.
+  const sentAt = new Date();
+  const claimed = await tenantDb(userId).invoice.updateMany({
+    where: { id: existing.id, status: 'DRAFT' },
+    data: { status: 'SENT', sentAt },
   });
+  const isFirstSend = claimed.count === 1;
+
+  // Built from the row already in hand rather than re-read: the claim tells us
+  // exactly what changed, and this endpoint runs against a compute-billed
+  // database where a needless round-trip is a real cost. `client` is dropped so
+  // the response keeps the shape the previous `update()` returned — it was
+  // included above only to resolve recipient addresses, and it carries their
+  // email addresses.
+  const { client: _client, ...invoiceRow } = existing;
+  const invoice = isFirstSend ? { ...invoiceRow, status: 'SENT' as const, sentAt } : invoiceRow;
 
   const recipients = existing.client.clientUsers.map((u) => u.email);
-  if (recipients.length > 0) {
+  if (!isFirstSend) {
+    logger.info(
+      { invoiceId: invoice.id },
+      'Invoice already sent; skipping duplicate notification email',
+    );
+  } else if (recipients.length > 0) {
     const amount = (invoice.amountCents / 100).toFixed(2);
     const due = invoice.dueAt ? ` — due ${invoice.dueAt.toISOString().slice(0, 10)}` : '';
     try {
@@ -214,7 +241,9 @@ router.post('/:id/send', async (req: Request, res: Response) => {
     }
   }
 
-  if (invoice.projectId) {
+  // Gated on the same claim: the client sees this feed, and an invoice issued
+  // once should not appear twice in it because someone double-clicked.
+  if (isFirstSend && invoice.projectId) {
     await logActivity(invoice.projectId, 'INVOICE_SENT', `Invoice ${invoice.number} issued`);
   }
   res.json({ invoice });

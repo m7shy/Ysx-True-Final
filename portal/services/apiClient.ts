@@ -26,16 +26,59 @@ export interface PortalAuthState {
 // In-memory only. Lost on reload by design — bootstrapSession() restores it.
 let authState: PortalAuthState | null = null;
 
+/**
+ * Subscribers notified whenever the session appears or disappears.
+ *
+ * This exists because `authState` is plain module state: React had no way to
+ * learn it had changed. `App.tsx` computed `authed` during render, so when a
+ * mid-session refresh failed and `clearAuth()` ran, nothing re-rendered — the
+ * client stayed on the shell with a dead UI instead of being sent to /login,
+ * and only a manual reload got them out. A fresh load was fine (bootstrap runs
+ * before the first render), so this only ever bit an already-open tab — which
+ * is exactly what a deploy produces, since refresh-token rotation invalidates
+ * every existing session at once.
+ */
+const authListeners = new Set<() => void>();
+
+/** Subscribe to session changes. Returns an unsubscribe function. */
+export function onAuthChange(listener: () => void): () => void {
+  authListeners.add(listener);
+  return () => {
+    authListeners.delete(listener);
+  };
+}
+
+function emitAuthChange(): void {
+  // A throwing subscriber must not stop the others from being told, and must
+  // never take down the caller — this runs inside request error handling.
+  for (const listener of authListeners) {
+    try {
+      listener();
+    } catch {
+      /* a broken subscriber is not the session's problem */
+    }
+  }
+}
+
 export function loadAuth(): PortalAuthState | null {
   return authState;
 }
 
+/** Stable snapshot for useSyncExternalStore — a primitive, so identity is safe. */
+export function isAuthed(): boolean {
+  return authState !== null;
+}
+
 export function saveAuth(state: PortalAuthState): void {
+  const had = authState !== null;
   authState = state;
+  if (!had) emitAuthChange();
 }
 
 export function clearAuth(): void {
+  const had = authState !== null;
   authState = null;
+  if (had) emitAuthChange();
 }
 
 /**
