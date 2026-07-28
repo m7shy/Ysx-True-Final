@@ -223,3 +223,46 @@ Two habits that catch this class:
 - make the fake refuse to volunteer data the real dependency would only return **on request** —
   the fetch mock now returns `bodyStructure` only when `options.bodyStructure` is set, so code that
   forgets to ask for it fails the test instead of passing.
+
+## Tests — `vi.clearAllMocks()` does NOT reset implementations (2026-07-28)
+Hit three separate times in one session, each time producing tests that passed for the wrong reason:
+a `mockRejectedValue` set by one test leaking into every later one, and a `mockImplementation`
+returning fixture data long after its test finished. `clearAllMocks` clears call history only.
+
+Restore implementations explicitly in `beforeEach`, especially where the mock is shared via
+`vi.hoisted` or lives on a prototype (all instances of a `vi.fn()`-constructed class share it).
+
+## Tests — a test that passes the moment you write it deserves suspicion (2026-07-28)
+Two pulse-starvation suites were written, passed immediately, and were VACUOUS — they passed against
+the broken implementation too. Two independent reasons, both non-obvious:
+
+- **A lone probe cannot starve.** The poller under test was the only caller, so it opened every
+  burst window itself and was always served. The competing fast poller is the *mechanism*, not
+  scenery.
+- **Phase is relative.** Starting the poller alongside the anchor and then advancing the clock moves
+  both grids together, so no offset is ever created.
+
+The mutation check is what caught both. Corollary observed the same day: writing a genuinely missing
+test found a real bug three times — a rotation cursor advancing by 1 while serving 10, an
+off-by-one in a cache cap, and a startup tick silently dropped by a refactor.
+
+## This repo — "a value the code produces that nothing reads" is a recurring bug class (2026-07-28)
+Four instances found in one session, all of which type-check and all of which fail silently:
+- `contentType` never passed to `isNotAHumanReply` — half the bounce guard was dead its whole life.
+- `threadSubject` never passed in `index.ts` — in the very fix written to close the previous one.
+- The `sendFollowUp` result never inspected — it resolves `{ success: false }` rather than throwing,
+  so the UI reported success on a failed send.
+- `AppErrorCode.AUTH_EXPIRED` checked in the UI and thrown by nothing.
+
+Worth grepping for deliberately: an exported argument, option or result field with no reader.
+
+## Reviewers — verify the PREMISE you hand them, not just the finding they return (2026-07-28)
+Two premises given to the scraper reviewer were wrong: that tenants could collide on a shared
+profile directory (the slug is per tenant — the real collision was same-tenant), and that the idle
+gate starved it by phase-locking with its own interval (the real mechanism was the burst window).
+A wrong premise costs the reviewer's time and can steer it away from the actual defect.
+
+Separately: one reported finding — `clearAuth()` wiping `ysxflow_settings` — was accurately
+described but **intentional and security-motivated** (that key holds OAuth tokens under one unscoped
+name). "Fixing" it would have reintroduced a cross-tenant credential leak. An accurate description
+is not the same as a defect.

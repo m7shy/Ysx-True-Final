@@ -74,3 +74,9 @@ jobs:
       - name: Test server
         working-directory: server
         run: npx vitest run
+
+      # Added once the frontend finally had a runner. Without this step the new
+      # suites would exist and never gate anything, which is how the frontend
+      # went 13k lines with no tests in the first place.
+      - name: Test frontend
+        run: npm test

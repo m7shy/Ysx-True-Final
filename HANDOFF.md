@@ -1,5 +1,121 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-28 (final) — Every review finding fixed. Frontend has a test runner. Prod still down until Aug 5.
+
+### Read this first
+
+Three independent reviews ran today (backend / scraper / frontend). **Everything they found that
+verified as a real defect is now fixed, tested and pushed.** Prod is unchanged and still waiting on
+the Neon reset — nothing here has been deployed.
+
+- **Server: 316 tests.** Frontend: **14 tests** (there were none this morning). Both typechecks clean.
+- Branch `phase5-frontend-wiring`, all pushed.
+- The deploy sequence is in the entry below and still applies, with **three** migrations.
+
+### 🔴 The single most important finding of the day
+
+**The fix that was written to prevent the outage would have disabled the alarm that detected it.**
+
+The pulse gate serves one turn per poller per burst, but a poller only gets that turn if one of its
+ticks lands inside the 90-second window. Anything gated inside a `setInterval` longer than
+`BURST_MS` usually has no tick in there, and the burst grid is pinned by the 10s follow-up
+scheduler, so the phase is fixed at boot and never drifts. Measured over 14 simulated idle days
+before the fix: the 5-minute pollers (reply detection, auto-scraper) got **2 turns** at ~70% of boot
+phases and the 15-minute watchdog got **1 turn at every phase tried**.
+
+Nothing errored. Reply detection, scraping and alerting simply stopped whenever the system went
+quiet — which is exactly when an unnoticed failure matters. Fixed centrally in `startGatedPoller`,
+so **the next slow poller someone adds gets correct behaviour by default**. That is the real lesson:
+the previous fix was right for the four pollers it knew about and silently wrong for the fifth.
+
+⚠️ **I got this wrong once before getting it right.** My first analysis said the auto-scraper was
+unaffected — it used a model missing `servedThisBurst` and pinned the scraper's boot phase to one of
+the few values that works. Both errors flattered the result. If you take one habit from today: when
+a simulation agrees with you, check what it left out.
+
+### Everything fixed today
+
+| # | Fix | Commit |
+|---|---|---|
+| 1 | Reply poller starved tenants permanently (and each tenant's own tail) | `2b3dbcd` |
+| 2 | `Revision.roundNumber` race → unique constraint + retry | `e91d115` |
+| 3 | DSN content-type guard was dead code | `bbba3e8` |
+| 4 | Reply detection failed OPEN on any IMAP error | `78b5868` |
+| 5 | Subject fallback matched any unrelated "Re:" | `aea5b5c` |
+| 6 | No typecheck or test in CI at all | `359539c` |
+| 7 | Auto-scraper was an ungated 5-minute DB poller (the missed fifth timer) | `fc07e12` |
+| 8 | CI would have failed on its first run (missing `MAILBOX_ENCRYPTION_KEY`) | `4b16e29` |
+| 9 | **Pulse starved every poller slower than the burst** | `780232a` |
+| 10 | Portal white-screened on reload; blocked campaigns explained nothing; wizard wedged | `4544308` |
+| 11 | Invoice Send double-emailed the client; portal wedged after a failed refresh | `f35008f` |
+| 12 | Tenant rotation advanced by 1 while serving 10; `threadSubject` untested | `9d30b7a` |
+| 13 | "Follow-up sent successfully" shown on a FAILED send | `4e387d6` |
+| 14 | Scraper check-then-act → two runs on one profile | `0ac39c3` |
+| 15 | Finished scrape jobs never evicted (unbounded memory) | `521f6f9` |
+| 16 | Analytics screen showed invented numbers | `1ebaab1` |
+| 17 | **Frontend test runner** + first two suites | `c72ea1e` |
+| 18 | Stop did not kill the scraper's process tree; freed the slot too early | `25ade72` |
+| 19 | Unibox reported a sent reply as failed; integrations error state unreachable | `2b5c239` |
+
+### The frontend has tests now
+
+`npm test` at the root — vitest + jsdom + @testing-library. Config is separate from
+`vite.config.ts` deliberately (that one has a dev proxy and inlines the Gemini key). CI runs it.
+
+Two suites so far: the portal auth subscription and AnalyticsView. **The rest of the ~13k-line
+component tree is still uncovered** — the runner exists, the coverage does not. Highest value next:
+`CampaignWizard` (it wedged today), `CampaignsListView` (the blocked-campaign badge), and
+`DashboardView` (the toast).
+
+### Patterns worth carrying forward — these cost real time today
+
+1. **"A value the code produces that nothing reads" is a bug class.** It appeared FOUR times:
+   `contentType` never passed to `isNotAHumanReply`, `threadSubject` never passed in `index.ts`, the
+   `sendFollowUp` result never inspected, and `AUTH_EXPIRED` checked but never thrown. All four
+   type-check. All four fail silently. Grep for it deliberately.
+
+2. **`vi.clearAllMocks()` resets call history but NOT implementations.** Hit three separate times
+   today, each producing tests that passed for the wrong reason. Restore implementations explicitly
+   in `beforeEach`.
+
+3. **A test that passes the moment you write it deserves suspicion.** The pulse tests were VACUOUS
+   twice over: a lone probe poller opens every burst itself and cannot starve, and phase is relative
+   so starting the poller alongside the anchor creates no offset. Both passed against the broken
+   implementation.
+
+4. **Writing the missing test found a real bug three times** — tenant rotation advancing by 1, the
+   job-eviction off-by-one, and a startup tick I had silently dropped in a refactor.
+
+5. **Verify a reviewer's premise, not just its conclusion.** Two premises I fed the scraper reviewer
+   were wrong (tenants cannot share a profile directory; the gate was not starving it the way I
+   guessed). And one finding it reported — `clearAuth` wiping settings — was accurately described
+   but **intentional**, and "fixing" it would have reintroduced a cross-tenant credential leak.
+
+### Still open — nothing here is a deploy blocker
+
+- **Frontend coverage** beyond the two suites above.
+- **Scraper**: every run re-imports the whole `leads.csv` at two sequential queries per row,
+  unbatched. Real cost against a compute-billed database; needs batching.
+- **Scraper**: plaintext YouTube cookies are swept into the backup tarball.
+- `MAILBOX_ENCRYPTION_KEY` rotation; the 8-char passphrase on `.env.enc` is the real risk.
+- **Portal backend has never had a completed independent review.**
+- ~7 unverified round-2 findings in `.plans/round2-agy-raw/` — readiness report says carry.
+- **TypeScript 7** — measured ~2x faster, frontend blocked on one `tsconfig.json` line. Not in this
+  deploy: `server`'s build script IS `tsc`.
+- The **unbounded reply-check defer** (a permanently dead mailbox stalls that sequence). Capping it
+  needs a schema field, i.e. a fourth migration.
+- The **backend adversarial review never finished** — it hit an API session limit. Its worktree is
+  preserved at `<scratchpad>/backend-review` with its probe files intact; resume rather than restart.
+  Its brief is `.plans/REVIEW-PROMPT-2026-07-28.md`.
+
+### What YOU need to do — see the to-do list further down, and ACTION-PLAN.md
+
+Unchanged and none of it is code: DKIM, the sender identity after deploy, bank details, the DMARC
+address, SPF, uptime monitoring, off-machine backups, the Microsoft sending limit, the `.env.enc`
+passphrase, and a privacy policy. **Nothing on that list has been done yet.**
+
+---
+
 ## 2026-07-28 (later) — Still down until Aug 5. Six fixes, incl. the fifth timer that would have
 ## defeated the pulse fix. Deploy sequence rewritten below.
 
