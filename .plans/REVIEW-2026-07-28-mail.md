@@ -62,7 +62,7 @@ that is the metric becoming correct, not a regression.
 `unibox/replyPoller.ts` deliberately unchanged: it searches `from: lead.email`, and a DSN's From
 is the postmaster/Exchange address, so bounces never match its search to begin with.
 
-## F2 — Reply detection fails OPEN on any IMAP error. HIGH confidence, verified.
+## F2 — Reply detection fails OPEN on any IMAP error. HIGH confidence, verified. ✅ FIXED (`78b5868`)
 
 `hasRecipientReplied` returns `false` on every failure path:
 
@@ -76,9 +76,22 @@ including the people who already replied asking to stop.
 Worth contrasting with the report's §7 note that the `SINCE` day-granularity issue "fails in the
 safe direction". This one fails the other way, and it is the same subsystem.
 
-Whether this should fail closed is a judgement call — failing closed means an IMAP outage
-silently stalls every sequence instead. My read is that stalling is the cheaper error, but it is
-the user's call and it is not obviously wrong as written. Recorded, not changed.
+**Fixed in `78b5868`** — user's call, after the trade-off was put to them.
+
+`checkRecipientReply` (renamed from `hasRecipientReplied`, since the old name promised a boolean)
+now returns `'replied' | 'no-reply' | 'unknown'`, and the caller defers the job on `'unknown'` —
+never sends, never cancels.
+
+The obvious "fix" of returning `true` on error would have been **much worse than the bug**: the
+reply branch cancels the recipient's entire remaining sequence, so one bad IMAP afternoon would
+have permanently destroyed every in-flight sequence. Deferring is the only action wrong in
+neither direction.
+
+⚠️ **The defer is unbounded.** A permanently dead mailbox now stalls that recipient's sequence
+rather than sending. That is what failing closed means, but a silently broken mailbox will halt
+follow-ups with only the per-check warn/error log and the `mailboxes` health check to show for it.
+Capping it needs a per-job counter that does not collide with the send-retry `attemptCount`, i.e.
+a schema field — not added, since the deploy already carries three migrations. **Follow-up item.**
 
 ## F3 — The subject fallback can cancel a sequence off an unrelated thread. MEDIUM.
 
@@ -109,4 +122,5 @@ two numbering spaces. No bug.
 The readiness report's §1 open question — whether an Exchange NDR carries `In-Reply-To` on the
 NDR itself — is still unanswered and still requires one live IMAP header fetch against the
 production mailbox. F1 above makes it matter less than it did (fixing the content-type guard
-covers the case regardless of the answer), but it does not make it moot, because F1 is not fixed.
+covers the case regardless of the answer), so this is now a lower-priority curiosity rather than a
+blocker — but it is still the only way to know for certain how Exchange NDRs thread.

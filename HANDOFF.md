@@ -39,14 +39,15 @@ slowly, because a scan that finds no reply never touches `lastContacted`, so eve
 re-selects the identical set. It also starves **within** a single tenant past `SCAN_LIMIT`
 contacted leads — a second dimension the note missed entirely.
 
-### Committed this session (`fc0c273..bbba3e8`) — tsc clean, vitest 262/262
+### Committed this session (`fc0c273..78b5868`) — tsc clean, vitest 272/272
 
 - **`2b3dbcd`** — per-tenant fair-share + rotating cursor in the reply poller; round-robin
   interleave across tenants in the campaign tick.
 - **`e91d115`** — `@@unique([projectId, roundNumber])` on `Revision` plus a bounded retry in
   `portal/routes.ts`, closing the read-then-create race.
-- **`bbba3e8`** — the DSN content-type guard in `mail/replyCheck.ts`, which was dead code. See
-  the mail review section below.
+- **`bbba3e8`** — the DSN content-type guard in `mail/replyCheck.ts`, which was dead code.
+- **`78b5868`** — reply detection now fails closed; `sendFollowupJob` exported and tested.
+  Both are behaviour changes on a live send gate — see the mail review section below.
 
 All mutation-checked. Poller: reverting selection fails all 4 of its tests. Worker: gutting the
 interleave fails 2 of 4, a lossy variant fails the other 2; a 5th test asserting the single-tenant
@@ -84,11 +85,16 @@ Two findings. The first is **fixed**; the second is not.
    proving the rule worked without proving anything applied it.
    **Deploy note:** this changes a live send gate. More messages now classify as bounces, so
    `repliedCount` will drop after deploy. That is the metric becoming correct, not a regression.
-2. ❌ **Reply detection fails OPEN — not fixed.** Every error path returns `false` = "has not
-   replied", so an IMAP outage does not pause follow-ups, it sends all of them — including to
-   people who already replied. Contrast the report's §7 note that this subsystem "fails in the
-   safe direction"; this path does not. Failing closed would instead stall every sequence during
-   an outage, so which error is cheaper is a judgement call — left for you.
+2. ✅ **Reply detection failed OPEN — fixed in `78b5868`.** Every error path returned `false` =
+   "has not replied", so an IMAP outage did not pause follow-ups, it sent all of them — including
+   to people who already replied. `checkRecipientReply` (renamed, the old name promised a boolean)
+   now returns `'replied' | 'no-reply' | 'unknown'` and the caller defers on `'unknown'`.
+   Returning `true` on error would have been **worse than the bug** — the reply branch cancels the
+   recipient's whole remaining sequence, so one outage would have destroyed every in-flight
+   sequence permanently.
+   ⚠️ **The defer is unbounded:** a permanently dead mailbox now stalls that sequence instead of
+   sending. Capping it needs a schema field (a per-job counter that does not collide with the
+   send-retry `attemptCount`), deliberately not added on top of three migrations. **Follow-up.**
 3. ❌ **The subject fallback is not thread-scoped — not fixed.** Any "Re:" from the recipient on
    any thread counts, so `repliedCount` is inflated and reply rates are not comparable between
    campaigns. Documented as a deliberate trade-off and it errs toward not emailing, so recorded
