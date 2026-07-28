@@ -44,7 +44,7 @@ import { LeadStatus, CampaignStatus, FollowupJobStatus } from '@prisma/client';
 import { prisma } from './db/prisma.js';
 import { startFollowupScheduler, cancelFollowup, cancelRemainingFollowupsForRecipient, cancelScheduledFollowupsForUserRecipient } from './scheduler/followupScheduler.js';
 import { sendSmtpMail, parseProvider } from './mail/smtpGateway.js';
-import { hasRecipientReplied } from './mail/replyCheck.js';
+import { checkRecipientReply } from './mail/replyCheck.js';
 import { startCampaignWorker } from './campaigns/worker.js';
 import { isWithinSendWindow } from './campaigns/engine.js';
 import { startReplyPoller } from './unibox/replyPoller.js';
@@ -61,6 +61,21 @@ const PAUSED_RECHECK_MS = 5 * 60_000;
 // than the paused interval: a window reopens on a schedule, so this bounds how
 // late into the window a deferred follow-up goes out.
 const OUTSIDE_WINDOW_RECHECK_MS = 10 * 60_000;
+
+// How long a follow-up waits after a reply check that could not complete (IMAP
+// down, credentials unresolvable). Deliberately the shortest of the three: this
+// is an unexpected fault rather than a scheduled state, so it should clear as
+// soon as the mailbox is reachable again.
+//
+// ⚠️ This defer is UNBOUNDED — a permanently broken mailbox stalls the
+// recipient's sequence indefinitely rather than sending. That is the intended
+// meaning of failing closed (never mail someone who may have replied), but it
+// does mean a silently dead mailbox quietly halts follow-ups. Visibility comes
+// from the warn/error logged on every failed check and from the `mailboxes`
+// check in /api/health/deep. Capping it properly needs a per-job counter that
+// does not collide with the send-retry attemptCount, i.e. a schema field —
+// deliberately not added here.
+const REPLY_CHECK_RECHECK_MS = 3 * 60_000;
 
 export const app = express();
 
@@ -350,7 +365,13 @@ process.on('uncaughtException', (err) => {
 });
 
 // ---- Followup scheduler boot wiring ----
-async function sendFollowupJob(job: any) {
+/**
+ * Dispatch one follow-up job. Exported for tests: the reply gate below decides
+ * whether a scheduled email goes out, gets deferred, or cancels a whole
+ * sequence, and that decision is worth testing through the real function rather
+ * than through a re-implementation of its rules.
+ */
+export async function sendFollowupJob(job: any) {
   const provider = parseProvider(job.provider ?? job.mailProvider ?? 'gmail');
   const userId = String(job.userId ?? '');
 
@@ -461,7 +482,7 @@ async function sendFollowupJob(job: any) {
     const originalMessageId = job.originalMessageId ? String(job.originalMessageId) : undefined;
 
     if (recipientRaw && initialSentAt) {
-      const replied = await hasRecipientReplied({
+      const replyState = await checkRecipientReply({
         userId,
         provider,
         recipientEmail: recipientRaw,
@@ -469,7 +490,31 @@ async function sendFollowupJob(job: any) {
         originalMessageId,
       });
 
-      if (replied) {
+      // Could not determine whether they replied. Defer — never send, never
+      // cancel.
+      //
+      // Sending would be the old behaviour: every error path returned "has not
+      // replied", so an IMAP outage mailed the whole sequence to everyone,
+      // including people who had already answered. Cancelling would be worse
+      // still, since the reply branch below tears down the recipient's entire
+      // remaining sequence and an outage would do that to every recipient at
+      // once. Waiting is the only action that is wrong in neither direction.
+      if (replyState === 'unknown') {
+        await prisma.followupJob.updateMany({
+          where: { id: String(job.id), status: FollowupJobStatus.SENDING },
+          data: {
+            status: FollowupJobStatus.SCHEDULED,
+            scheduledAt: new Date(Date.now() + REPLY_CHECK_RECHECK_MS),
+          },
+        });
+        logger.warn(
+          { id: job.id, campaignId: job.campaignId },
+          'Follow-up deferred: could not determine whether the recipient replied',
+        );
+        return;
+      }
+
+      if (replyState === 'replied') {
         const campaignId = job.campaignId ? String(job.campaignId) : undefined;
         const normalizedRecipient = recipientRaw.toLowerCase();
 

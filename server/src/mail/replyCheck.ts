@@ -160,6 +160,28 @@ async function hasGenuineReply(
 }
 
 /**
+ * Outcome of a reply check.
+ *
+ * Three states, not two, and the third is the point: this used to return a
+ * plain boolean, and every failure path returned `false` — which reads as "has
+ * not replied" and lets the follow-up go out. An IMAP outage therefore did not
+ * pause a single sequence; it sent all of them, including to the people who had
+ * already replied asking to stop.
+ *
+ * Collapsing the failure into `'replied'` instead would be far worse than the
+ * bug: the caller responds to a reply by cancelling the recipient's ENTIRE
+ * remaining sequence (index.ts, cancelRemainingFollowupsForRecipient), so one
+ * bad IMAP afternoon would permanently destroy every in-flight sequence.
+ *
+ * "I could not find out" is genuinely a third answer, so it gets its own value
+ * and the caller defers. A string union rather than `boolean | 'unknown'` on
+ * purpose: with the latter, `if (replied)` is truthy for `'unknown'` and would
+ * silently mean "cancel the sequence". This shape makes every caller compare
+ * explicitly.
+ */
+export type ReplyCheckResult = 'replied' | 'no-reply' | 'unknown';
+
+/**
  * Reply detection used by the follow-up scheduler.
  *
  * We check the sender mailbox INBOX for messages:
@@ -167,15 +189,18 @@ async function hasGenuineReply(
  * - Sent/received since initialSentAt
  * - Optionally referencing the original Message-ID (In-Reply-To / References)
  */
-export async function hasRecipientReplied(input: {
+export async function checkRecipientReply(input: {
   userId: string;
   provider: WireProvider;
   recipientEmail: string;
   initialSentAt: string;
   originalMessageId?: string;
-}): Promise<boolean> {
+}): Promise<ReplyCheckResult> {
   const recipientEmail = String(input.recipientEmail ?? '').trim().toLowerCase();
-  if (!recipientEmail) return false;
+  // No address to check against is a caller bug, not a transient fault —
+  // deferring would stall the job forever waiting for something that cannot
+  // change. Treat it as "nothing found" and let the send proceed, as before.
+  if (!recipientEmail) return 'no-reply';
 
   const sinceDate = new Date(input.initialSentAt);
   const hasValidSince = !Number.isNaN(sinceDate.getTime());
@@ -185,11 +210,15 @@ export async function hasRecipientReplied(input: {
     // Sender mailbox credentials resolved from the DB for this tenant.
     imap = await getImapConfig(input.userId, input.provider);
   } catch (err: any) {
-    debugLog('Reply check: failed to resolve mailbox credentials', {
-      provider: input.provider,
-      err: err?.message ?? String(err),
-    });
-    return false;
+    // Logged at warn, not debug: this is the difference between "checked, no
+    // reply" and "could not check", and the caller is about to stall a sequence
+    // over it. A DEBUG_REPLY_DETECT-gated line would have made an outage
+    // invisible in the very logs you would go looking at.
+    logger.warn(
+      { provider: input.provider, err: err?.message ?? String(err) },
+      'Reply check could not resolve mailbox credentials; treating as unknown',
+    );
+    return 'unknown';
   }
 
   const client = new ImapFlow({
@@ -245,7 +274,7 @@ export async function hasRecipientReplied(input: {
     // reply to a message they had not yet received.
     if (!originalMessageId) {
       const r = await client.search(baseCriteriaSender);
-      return await hasGenuineReply(client, r, sinceDate, hasValidSince);
+      return (await hasGenuineReply(client, r, sinceDate, hasValidSince)) ? 'replied' : 'no-reply';
     }
 
     // IMAP SEARCH HEADER matches substring in header value.
@@ -269,13 +298,13 @@ export async function hasRecipientReplied(input: {
     const r1 = await client.search(criteriaInReplyTo);
     if (await hasGenuineReply(client, r1, sinceDate, hasValidSince)) {
       debugLog('Reply check: matched In-Reply-To');
-      return true;
+      return 'replied';
     }
 
     const r2 = await client.search(criteriaReferences);
     if (await hasGenuineReply(client, r2, sinceDate, hasValidSince)) {
       debugLog('Reply check: matched References');
-      return true;
+      return 'replied';
     }
 
     // Optional last-resort fallback: any inbound email from recipient whose subject looks like a reply.
@@ -303,15 +332,18 @@ export async function hasRecipientReplied(input: {
 
         if (/^re\s*:/i.test(subj)) {
           debugLog('Reply check: matched fallback subject', { subject: subj });
-          return true;
+          return 'replied';
         }
       }
     }
 
-    return false;
+    return 'no-reply';
   } catch (err) {
-    logger.error({ err }, 'Error checking replies');
-    return false;
+    // Fail CLOSED. This previously returned false — "has not replied" — so an
+    // IMAP outage did not pause follow-ups, it sent every one of them. The
+    // caller now defers instead of sending, and deliberately does not cancel.
+    logger.error({ err }, 'Reply check failed; treating as unknown and deferring the follow-up');
+    return 'unknown';
   } finally {
     try {
       await client.logout();

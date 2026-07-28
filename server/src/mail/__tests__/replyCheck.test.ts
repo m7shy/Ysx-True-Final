@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { hasRecipientReplied, isNotAHumanReply, isDeliveryStatusSender } from '../replyCheck.js';
+import { checkRecipientReply, isNotAHumanReply, isDeliveryStatusSender } from '../replyCheck.js';
 import { ImapFlow } from 'imapflow';
 
 /**
@@ -82,16 +82,25 @@ function matchOnInReplyTo(client: any) {
   );
 }
 
-describe('hasRecipientReplied', () => {
+describe('checkRecipientReply', () => {
   let mockClient: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockClient = new ImapFlow({} as any);
+
+    // clearAllMocks() resets call history but NOT implementations, and every
+    // instance shares these prototype fns — so a mockRejectedValue set by one
+    // of the failure tests below leaks into every test declared after it.
+    // Restore the happy path explicitly.
+    (ImapFlow.prototype.connect as any).mockResolvedValue(undefined);
+    (ImapFlow.prototype.mailboxOpen as any).mockResolvedValue(undefined);
+    (ImapFlow.prototype.search as any).mockResolvedValue([]);
+    (ImapFlow.prototype.logout as any).mockResolvedValue(undefined);
   });
 
   const call = () =>
-    hasRecipientReplied({
+    checkRecipientReply({
       userId: 'test-user',
       provider: 'gmail',
       recipientEmail: 'recipient@test.com',
@@ -103,7 +112,7 @@ describe('hasRecipientReplied', () => {
     matchOnInReplyTo(mockClient);
     fetchYields(mockClient, [{ from: 'recipient@test.com', at: new Date('2026-07-27T17:00:00Z') }]);
 
-    expect(await call()).toBe(true);
+    expect(await call()).toBe('replied');
   });
 
   it('detects a reply sent from a different alias, since the Message-ID matches', async () => {
@@ -112,7 +121,7 @@ describe('hasRecipientReplied', () => {
     matchOnInReplyTo(mockClient);
     fetchYields(mockClient, [{ from: 'alias@test.com', at: new Date('2026-07-27T17:00:00Z') }]);
 
-    expect(await call()).toBe(true);
+    expect(await call()).toBe('replied');
   });
 
   it('does NOT count an Exchange bounce as a reply', async () => {
@@ -125,7 +134,7 @@ describe('hasRecipientReplied', () => {
       },
     ]);
 
-    expect(await call()).toBe(false);
+    expect(await call()).toBe('no-reply');
   });
 
   it('does NOT count a mailer-daemon bounce as a reply', async () => {
@@ -134,7 +143,7 @@ describe('hasRecipientReplied', () => {
       { from: 'MAILER-DAEMON@googlemail.com', at: new Date('2026-07-27T17:00:00Z') },
     ]);
 
-    expect(await call()).toBe(false);
+    expect(await call()).toBe('no-reply');
   });
 
   it('does NOT count a message that arrived before the initial send', async () => {
@@ -143,7 +152,7 @@ describe('hasRecipientReplied', () => {
     matchOnInReplyTo(mockClient);
     fetchYields(mockClient, [{ from: 'recipient@test.com', at: new Date('2026-07-27T13:00:00Z') }]);
 
-    expect(await call()).toBe(false);
+    expect(await call()).toBe('no-reply');
   });
 
   it('still finds the real reply when a bounce arrives alongside it', async () => {
@@ -153,13 +162,63 @@ describe('hasRecipientReplied', () => {
       { from: 'recipient@test.com', at: new Date('2026-07-27T17:00:00Z') },
     ]);
 
-    expect(await call()).toBe(true);
+    expect(await call()).toBe('replied');
   });
 
-  it('returns false when nothing matches', async () => {
+  it('reports no-reply when nothing matches', async () => {
     (mockClient.search as any).mockResolvedValue([]);
 
-    expect(await call()).toBe(false);
+    expect(await call()).toBe('no-reply');
+  });
+
+  // Every one of these paths used to return `false` — indistinguishable from
+  // "checked the inbox, they have not replied" — so an IMAP outage did not
+  // pause a single follow-up. It sent all of them, to everyone, including the
+  // people who had already replied asking to stop.
+  //
+  // 'unknown' must NOT collapse to 'replied' either: the caller responds to a
+  // reply by cancelling the recipient's entire remaining sequence, so that
+  // would turn one bad IMAP afternoon into permanent destruction of every
+  // in-flight sequence. The caller defers on 'unknown' — see index.ts.
+  describe('failing closed when the mailbox cannot be reached', () => {
+    it('reports unknown when the IMAP connection fails', async () => {
+      (mockClient.connect as any).mockRejectedValue(new Error('ECONNREFUSED'));
+
+      expect(await call()).toBe('unknown');
+    });
+
+    it('reports unknown when the mailbox cannot be opened', async () => {
+      (mockClient.mailboxOpen as any).mockRejectedValue(new Error('NO [SERVERBUG]'));
+
+      expect(await call()).toBe('unknown');
+    });
+
+    it('reports unknown when the search itself fails mid-check', async () => {
+      (mockClient.search as any).mockRejectedValue(new Error('connection reset'));
+
+      expect(await call()).toBe('unknown');
+    });
+
+    it('reports unknown when mailbox credentials cannot be resolved', async () => {
+      const { getImapConfig } = await import('../smtpGateway.js');
+      (getImapConfig as any).mockRejectedValueOnce(new Error('mailbox disconnected'));
+
+      expect(await call()).toBe('unknown');
+    });
+
+    it('reports no-reply — NOT unknown — for a missing recipient address', async () => {
+      // A permanent caller error, not a transient fault. Deferring on it would
+      // stall the job forever waiting for something that cannot change.
+      const result = await checkRecipientReply({
+        userId: 'test-user',
+        provider: 'gmail',
+        recipientEmail: '   ',
+        initialSentAt: SENT_AT.toISOString(),
+        originalMessageId: 'original-id',
+      });
+
+      expect(result).toBe('no-reply');
+    });
   });
 
   // The sender regex catches the bounce senders we know about. These cover the
@@ -179,7 +238,7 @@ describe('hasRecipientReplied', () => {
         },
       ]);
 
-      expect(await call()).toBe(false);
+      expect(await call()).toBe('no-reply');
     });
 
     it('detects the report type when it appears only on a nested part', async () => {
@@ -195,7 +254,7 @@ describe('hasRecipientReplied', () => {
         },
       ]);
 
-      expect(await call()).toBe(false);
+      expect(await call()).toBe('no-reply');
     });
 
     it('still accepts an ordinary multipart human reply', async () => {
@@ -212,7 +271,7 @@ describe('hasRecipientReplied', () => {
         },
       ]);
 
-      expect(await call()).toBe(true);
+      expect(await call()).toBe('replied');
     });
 
     it('rejects a content-type bounce on the subject-fallback path too', async () => {
@@ -228,7 +287,7 @@ describe('hasRecipientReplied', () => {
         },
       ]);
 
-      expect(await call()).toBe(false);
+      expect(await call()).toBe('no-reply');
     });
   });
 
@@ -246,7 +305,7 @@ describe('hasRecipientReplied', () => {
         { from: 'recipient@test.com', subject: 'Re: hello', at: new Date('2026-07-27T17:00:00Z') },
       ]);
 
-      expect(await call()).toBe(true);
+      expect(await call()).toBe('replied');
     });
 
     it('does NOT accept a bounce whose subject happens to start with "Re:"', async () => {
@@ -255,7 +314,7 @@ describe('hasRecipientReplied', () => {
         { from: 'postmaster@test.com', subject: 'Re: hello', at: new Date('2026-07-27T17:00:00Z') },
       ]);
 
-      expect(await call()).toBe(false);
+      expect(await call()).toBe('no-reply');
     });
 
     it('does NOT accept a "Re:" message that predates the initial send', async () => {
@@ -264,7 +323,7 @@ describe('hasRecipientReplied', () => {
         { from: 'recipient@test.com', subject: 'Re: hello', at: new Date('2026-07-27T13:00:00Z') },
       ]);
 
-      expect(await call()).toBe(false);
+      expect(await call()).toBe('no-reply');
     });
   });
 });
