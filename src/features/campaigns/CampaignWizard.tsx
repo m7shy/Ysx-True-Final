@@ -138,9 +138,29 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
 
   const submit = async (asDraft: boolean): Promise<void> => {
     setSubmitError(null);
-    setSubmitting(true);
     const main = sequence[0]?.variants[0];
-    const scheduledAt = startNow ? new Date().toISOString() : new Date(startAt).toISOString();
+
+    // Validated BEFORE `setSubmitting(true)`, and inside the try below, because
+    // `startAt` initialises to '' — so choosing "start later" and submitting
+    // without picking a date threw `RangeError: Invalid time value` from
+    // `new Date('').toISOString()`. That throw used to happen after
+    // setSubmitting(true) and OUTSIDE the try, so the finally never ran:
+    // `submitting` stayed true, both buttons stayed disabled, no error was ever
+    // shown, and every imported lead and sequence step in the wizard was lost
+    // with no way to recover but a reload.
+    let scheduledAt: string;
+    if (startNow) {
+      scheduledAt = new Date().toISOString();
+    } else {
+      const parsed = new Date(startAt);
+      if (!startAt || Number.isNaN(parsed.getTime())) {
+        setSubmitError('Pick a start date and time, or choose "Start now".');
+        return;
+      }
+      scheduledAt = parsed.toISOString();
+    }
+
+    setSubmitting(true);
     const recipients = leads.map(wizardLeadToRecipient);
 
     try {

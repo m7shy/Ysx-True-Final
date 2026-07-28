@@ -78,8 +78,17 @@ async function issueSession(
   res: Response,
   status = 200,
   familyId?: string,
+  /**
+   * Whether this counts as a login for `lastLoginAt`. False on refresh: the
+   * admin UI renders that field as "last login", and a refresh is not one — it
+   * fires whenever an access token expires, so counting it would turn the label
+   * into "last seen" and add a database write to every refresh.
+   */
+  touchLogin = true,
 ): Promise<void> {
-  await prisma.clientUser.update({ where: { id: cu.id }, data: { lastLoginAt: new Date() } });
+  if (touchLogin) {
+    await prisma.clientUser.update({ where: { id: cu.id }, data: { lastLoginAt: new Date() } });
+  }
   const client = await prisma.client.findUnique({
     where: { id: cu.clientId },
     select: { id: true, name: true, companyName: true },
@@ -321,12 +330,19 @@ router.post('/refresh', async (req: Request, res: Response) => {
     return;
   }
 
-  const refreshToken = signClientRefreshToken(tokenInput(cu));
-  await recordRefreshToken({ clientUserId: cu.id }, refreshToken, rotation.familyId);
-  setPortalRefreshCookie(res, refreshToken);
-  res.json({
-    accessToken: signClientAccessToken(tokenInput(cu)),
-  });
+  // Reuse issueSession — which is what `familyId` was added for — rather than
+  // rebuilding the response here. The hand-rolled version returned ONLY
+  // `accessToken`, while the client stores `clientUser` and `client` from it and
+  // PortalShell then reads `auth?.clientUser.email`. `?.` guards `auth`, not
+  // `clientUser`, so every client user hit a blank page on their first reload
+  // after signing in: login worked (that path goes through issueSession and does
+  // send the identity), and the crash began on the next visit with the 30-day
+  // cookie. `tsc` was no help — PortalAuthState declares `clientUser` as
+  // non-optional, so the type asserted a shape the server never sent.
+  //
+  // One response builder means the two paths cannot drift apart again, which is
+  // the actual defect here.
+  await issueSession(cu, res, 200, rotation.familyId, false);
 });
 
 export default router;

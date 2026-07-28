@@ -40,6 +40,33 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
     return matchesSearch && matchesStatus;
   });
 
+  /**
+   * Human-readable label for `Campaign.pausedReason`, which the send worker sets
+   * when it refuses to dispatch. Unknown values fall through to the raw code
+   * rather than being hidden — a reason we cannot name is still worth showing.
+   */
+  const blockedReasonLabel = (reason: string): string => {
+    switch (reason) {
+      case 'MISSING_SENDER_IDENTITY':
+        return 'Add your postal address in Settings';
+      case 'BOUNCE_RATE':
+        return 'Auto-paused: high bounce rate';
+      default:
+        return reason;
+    }
+  };
+
+  const blockedReasonHelp = (reason: string): string => {
+    switch (reason) {
+      case 'MISSING_SENDER_IDENTITY':
+        return 'Anti-spam law requires a real postal address in commercial email, so sending is blocked until Settings → Sender identity has your business name and address. Nothing is broken and no recipients were lost — the campaign resumes by itself once you save it.';
+      case 'BOUNCE_RATE':
+        return 'Too many addresses bounced, so sending was paused automatically to protect your sender reputation. Clean the list before resuming.';
+      default:
+        return `Sending is blocked. Reason code: ${reason}`;
+    }
+  };
+
   const getStatusVariant = (status: string): 'volt' | 'warning' | 'success' | 'neutral' => {
     switch (status) {
       case 'ACTIVE': return 'volt';
@@ -223,10 +250,27 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
                   </div>
 
                   {/* Status Column */}
-                  <div className="col-span-2 flex justify-center relative z-10 pointer-events-none">
-                     <Badge variant={getStatusVariant(campaign.status)}>
+                  <div className="col-span-2 flex flex-col items-center gap-1 relative z-10 pointer-events-none">
+                     <Badge variant={campaign.pausedReason ? 'warning' : getStatusVariant(campaign.status)}>
                         {campaign.status}
                      </Badge>
+                     {/*
+                       The server can block a campaign WITHOUT changing its status:
+                       the worker sets pausedReason and leaves status ACTIVE. Rendering
+                       status alone showed a campaign as ACTIVE, 0 sent, forever, with
+                       nothing anywhere explaining why — and MISSING_SENDER_IDENTITY is
+                       guaranteed to hit every user immediately after the compliance
+                       deploy, because a postal address is now required before anything
+                       can send. The reason existed on the row and had no consumer.
+                     */}
+                     {campaign.pausedReason && (
+                        <span
+                          className="text-[10px] leading-tight text-amber-400/90 text-center px-1"
+                          title={blockedReasonHelp(campaign.pausedReason)}
+                        >
+                          {blockedReasonLabel(campaign.pausedReason)}
+                        </span>
+                     )}
                   </div>
 
                   {/* Progress Column */}

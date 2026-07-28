@@ -361,6 +361,43 @@ describe('portal auth HTTP flow', () => {
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.accessToken).toBeTruthy();
   });
+
+  it('refresh returns the identity payload, not just an access token', async () => {
+    // The portal client does saveAuth({ accessToken, clientUser, client }) from
+    // this exact response, and PortalShell then reads `auth?.clientUser.email` —
+    // where `?.` guards `auth`, not `clientUser`. When refresh returned only
+    // `accessToken`, that stored `undefined` and threw on the next render, with
+    // no error boundary: a blank page for every client user on their first
+    // reload after signing in. Login was fine, so it looked like it worked.
+    //
+    // The test above asserts `accessToken` and nothing else, which is precisely
+    // why this shipped. Assert what the client actually consumes.
+    const invite = await createLoginToken('cu1', 'INVITE');
+    const setPw = await request(app)
+      .post('/api/portal/auth/set-password')
+      .send({ token: invite, password: 'a-real-password' });
+    const cookie = (setPw.headers['set-cookie'] as unknown as string[] | undefined)
+      ?.find((c) => c.startsWith('ysxportal_rt='));
+    const refreshToken = decodeURIComponent(cookie!.split(';')[0].split('=')[1]);
+
+    const refreshed = await request(app)
+      .post('/api/portal/auth/refresh')
+      .set('Cookie', `ysxportal_rt=${refreshToken}`);
+
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.clientUser).toBeTruthy();
+    expect(refreshed.body.clientUser.email).toBe(setPw.body.clientUser.email);
+    expect(refreshed.body.clientUser.id).toBe(setPw.body.clientUser.id);
+    // `client` is rendered in the portal shell too, so it must survive a refresh.
+    expect(refreshed.body.client).toBeTruthy();
+  });
+
+  // NOT tested: that refresh leaves `lastLoginAt` alone (issueSession's
+  // `touchLogin=false`). The in-memory rows live inside the vi.mock factory's
+  // closure and no portal endpoint exposes the field, so asserting it would mean
+  // restructuring the whole mock for a minor semantic. The reason it matters is
+  // recorded at the parameter instead: the admin UI labels that field "last
+  // login", and a refresh is not one.
 });
 
 describe('portal logout clears the refresh cookie', () => {

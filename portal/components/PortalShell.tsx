@@ -55,7 +55,7 @@ export const PortalShell: React.FC<{ children: React.ReactNode }> = ({ children 
                 void logout();
                 navigate('/login');
               }}
-              title={auth?.clientUser.email}
+              title={auth?.clientUser?.email}
               className="ml-2 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-500 hover:bg-white/[0.05] hover:text-white transition-colors"
             >
               <LogOut className="h-3.5 w-3.5" />
