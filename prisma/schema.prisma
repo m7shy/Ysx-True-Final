@@ -881,6 +881,14 @@ model Revision {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // The round counter is derived by reading the current max and adding one
+  // (portal/routes.ts), which is a read-then-write race: a client who
+  // double-submits, or two people on the same client team submitting at once,
+  // both read round N and both write N+1. The result is two "Round 3" entries
+  // in a client-facing list, and an approve/deliver action that addresses one
+  // of them by number is ambiguous. The database is the only place this can be
+  // made safe; the route retries on the resulting conflict.
+  @@unique([projectId, roundNumber])
   @@index([projectId, status])
 }
 

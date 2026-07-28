@@ -27,6 +27,51 @@ const requestSchema = z.object({
   details: z.string().trim().max(5000, 'Details are too long').optional(),
 });
 
+/**
+ * Whether a Prisma error is a unique-constraint violation on the given index.
+ * Matched structurally rather than with `instanceof PrismaClientKnownRequestError`
+ * so this keeps working across the client regenerations this repo does on every
+ * schema change (see .plans/known-failures.md on the two @prisma/client installs).
+ */
+function isUniqueViolation(err: unknown, target: string): boolean {
+  if (!err || typeof err !== 'object' || (err as any).code !== 'P2002') return false;
+  const meta = (err as any).meta?.target;
+  const fields = Array.isArray(meta) ? meta.join(',') : String(meta ?? '');
+  return fields.includes(target);
+}
+
+// Rounds are allocated by reading the current max and adding one, which two
+// concurrent submissions can do simultaneously. @@unique([projectId,
+// roundNumber]) turns that from a silent duplicate into a caught conflict, and
+// re-reading the max resolves it — the loser of the race simply takes the next
+// number. Bounded because a caller stuck in this loop is no longer racing, it is
+// failing, and should be told so rather than retried indefinitely.
+const REVISION_ROUND_ATTEMPTS = 5;
+
+/** Allocate the next revision round for a project, retrying on the round collision. Exported for tests. */
+export async function createNextRevision(projectId: string, note: string) {
+  for (let attempt = 0; attempt < REVISION_ROUND_ATTEMPTS; attempt++) {
+    const last = await prisma.revision.findFirst({
+      where: { projectId },
+      orderBy: { roundNumber: 'desc' },
+    });
+
+    try {
+      return await prisma.revision.create({
+        data: { projectId, roundNumber: (last?.roundNumber ?? 0) + 1, note },
+      });
+    } catch (err) {
+      if (!isUniqueViolation(err, 'roundNumber')) throw err;
+      logger.warn(
+        { projectId, attempt: attempt + 1 },
+        'Revision round collided with a concurrent request; retrying with a fresh max',
+      );
+    }
+  }
+  logger.error({ projectId }, 'Gave up allocating a revision round after repeated collisions');
+  return null;
+}
+
 function badRequest(res: Response, err: z.ZodError): void {
   res.status(400).json({ code: 'VALIDATION', message: err.issues.map((i) => i.message).join('; ') });
 }
@@ -108,18 +153,14 @@ router.post('/projects/:id/revisions', async (req: Request, res: Response) => {
     return;
   }
 
-  const last = await prisma.revision.findFirst({
-    where: { projectId: project.id },
-    orderBy: { roundNumber: 'desc' },
-  });
-
-  const revision = await prisma.revision.create({
-    data: {
-      projectId: project.id,
-      roundNumber: (last?.roundNumber ?? 0) + 1,
-      note: parsed.data.note,
-    },
-  });
+  const revision = await createNextRevision(project.id, parsed.data.note);
+  if (!revision) {
+    res.status(409).json({
+      code: 'CONFLICT',
+      message: 'Could not allocate a revision round just now. Please try again.',
+    });
+    return;
+  }
   await logActivity(project.id, 'REVISION_REQUESTED', `Revision round ${revision.roundNumber} requested`);
   logger.info({ projectId: project.id, revisionId: revision.id }, 'Client requested revision');
   res.status(201).json({ revision });
