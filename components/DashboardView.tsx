@@ -147,10 +147,21 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     const body = content || "Follow-up content";
 
     try {
-      await sendFollowUp(selectedEmail, body);
+      // The result must be INSPECTED, not merely awaited. sendFollowUp catches
+      // its own failures and resolves with { success: false, error } rather than
+      // throwing, so the catch below never fired on a failed send — and the user
+      // was told "Follow-up sent successfully" for an email that never left.
+      // Believing that costs a real follow-up to a real prospect.
+      const result = await sendFollowUp(selectedEmail, body);
+      if (!result?.success) {
+        showToast('ERROR', `Action failed: ${result?.error?.message ?? 'The follow-up could not be sent.'}`);
+        return;
+      }
       setSelectedEmailId(null);
       showToast('SUCCESS', date ? "Follow-up scheduled successfully." : "Follow-up sent successfully.");
     } catch (e: any) {
+      // Still needed: a throw before sendFollowUp's own try (or from the toast
+      // path) would otherwise surface as an unhandled rejection.
       showToast('ERROR', `Action failed: ${e.message}`);
     }
   };

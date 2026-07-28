@@ -260,6 +260,55 @@ hand-rolling a partial copy of `issueSession` — whose `familyId` parameter exi
 refresh path. One builder means the shapes cannot drift apart again. `touchLogin=false` keeps
 refresh from stamping `lastLoginAt`, which the admin UI labels "last login".
 
+### ✅ SECOND FIX ROUND — invoice double-send, portal wedge, toast lie, two test gaps
+
+| Fix | Commit |
+|---|---|
+| Invoice **Send** double-emailed the client on a double-click | `f35008f` |
+| Portal wedged instead of returning to login after a failed refresh | `f35008f` |
+| Reply-poller tenant rotation advanced by 1 while serving up to 10 | `9d30b7a` |
+| `threadSubject` never asserted to reach `checkRecipientReply` | `9d30b7a` |
+| "Follow-up sent successfully" shown on a FAILED send | (this commit) |
+
+**The invoice fix is an atomic claim, not a guard.** Only the request that actually
+performs `DRAFT → SENT` may email or write the `INVOICE_SENT` activity entry. A repeat send
+stays `200` — the second click is the same intent, not an error, and there is no resend
+affordance to preserve. The response is now built from the row already in hand rather than
+re-read, since this runs against a compute-billed database.
+
+**Writing a test for tenant rotation immediately found a real bug in this session's own
+fairness fix.** No prior test created more tenants than `SCAN_LIMIT`, which is the only case
+where rotation matters — so it could be deleted with everything still green. The new test
+(25 tenants, budget 10) failed at once: three ticks reached 12 distinct tenants, not 25,
+because the cursor advanced one place per tick while a tick serves ten. Not the permanent
+starvation the original fix removed, but the tail waited far longer than it should. Rotation
+now resumes at the first tenant the tick did not reach.
+
+**The dead-argument pattern has now appeared three times in the mail layer** — `contentType`
+never passed to `isNotAHumanReply`, `threadSubject` never passed in `index.ts`, and the
+`sendFollowUp` result never inspected. All three type-check, all three fail quietly. Worth
+treating "an argument or return value that nothing reads" as a first-class thing to grep for.
+
+**`sendFollowUp` swallows its own errors** and resolves `{ success: false, error }` rather
+than throwing, so `DashboardView`'s `try/catch` never fired and the user was told a
+follow-up had been sent when it had not. The result is now inspected.
+
+### ⚠️ The frontend has NO test runner at all
+
+Root `package.json` has `dev`/`build`/`preview` and no test script; every test in this repo is
+server-side. So all frontend fixes above — the portal white-screen, the auth subscription, the
+wizard wedge, the blocked-campaign badge, the toast — rest on `tsc` and reading the code. That
+is a real gap for a ~13k-line component tree, and it is why the frontend reviewer's findings
+had to be verified by hand rather than by writing a failing test first.
+
+### Deliberately NOT fixed, after verifying
+
+- **`clearAuth()` wiping `ysxflow_settings`.** The reviewer flagged the deploy's forced logout
+  resetting everyone's signature and provider. True, and **intentional**: that key holds OAuth
+  tokens and client secrets under one unscoped name, so preserving it across a session clear
+  would hand the next user on a shared browser the previous tenant's mail credentials
+  (`context/SettingsContext.tsx`). Accurate as a description, wrong as a defect.
+
 ### Still unfixed from the reviews — ranked, none is a deploy blocker
 
 **Frontend** (`.plans/REVIEW-2026-07-28-frontend.md`) — I verified the four above; these are the
