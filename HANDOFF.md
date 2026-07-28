@@ -39,17 +39,20 @@ slowly, because a scan that finds no reply never touches `lastContacted`, so eve
 re-selects the identical set. It also starves **within** a single tenant past `SCAN_LIMIT`
 contacted leads — a second dimension the note missed entirely.
 
-### Committed this session (`fc0c273..e91d115`) — tsc clean, vitest 258/258
+### Committed this session (`fc0c273..bbba3e8`) — tsc clean, vitest 262/262
 
 - **`2b3dbcd`** — per-tenant fair-share + rotating cursor in the reply poller; round-robin
   interleave across tenants in the campaign tick.
 - **`e91d115`** — `@@unique([projectId, roundNumber])` on `Revision` plus a bounded retry in
   `portal/routes.ts`, closing the read-then-create race.
+- **`bbba3e8`** — the DSN content-type guard in `mail/replyCheck.ts`, which was dead code. See
+  the mail review section below.
 
-Both mutation-checked. Poller: reverting selection fails all 4 of its tests. Worker: gutting the
+All mutation-checked. Poller: reverting selection fails all 4 of its tests. Worker: gutting the
 interleave fails 2 of 4, a lossy variant fails the other 2; a 5th test asserting the single-tenant
 no-op was **deleted** — it is an early return and survived every mutation, so it could not fail.
-Revision: four separate mutations, five of six tests individually falsified.
+Revision: four separate mutations, five of six tests individually falsified. DSN guard: dropping
+the arguments fails 3 of 4, over-widening the match fails the 4th.
 
 ### ⚠️ THE DEPLOY NOW CARRIES A THIRD MIGRATION, AND IT IS NOT ADDITIVE
 
@@ -70,18 +73,26 @@ Only `mail/replyCheck.ts` and its call path were covered. `imapClient.ts`, `mail
 `smtpClient.ts`, `smtpGateway.ts`, `unibox/routes.ts`, `unibox/intent.ts` are **still unreviewed**
 — do not record the item as closed.
 
-Two findings worth acting on, neither fixed (both change live send-gating, and the deploy is
-already heavy):
+Two findings. The first is **fixed**; the second is not.
 
-1. **The DSN content-type guard is dead code.** `isNotAHumanReply` takes a `contentType` argument
-   documented as the protection that works "regardless of who it claims to be from" — and no call
-   site passes it, nor could it, since neither fetch requests `bodyStructure`. Only the sender
-   regex is live. Any bounce from a sender outside that pattern is scored as a human reply.
-   Same bug class the readiness report was written to catch.
-2. **Reply detection fails OPEN.** Every error path returns `false` = "has not replied", so an
-   IMAP outage does not pause follow-ups, it sends all of them — including to people who already
-   replied. Contrast the report's §7 note that this subsystem "fails in the safe direction"; this
-   path does not.
+1. ✅ **The DSN content-type guard was dead code — fixed in `bbba3e8`.** `isNotAHumanReply` takes
+   a `contentType` argument documented as the protection that works "regardless of who it claims
+   to be from", and no call site passed it, nor could it, since neither fetch requested
+   `bodyStructure`. Only the sender regex was live, so any bounce from a sender outside that
+   pattern was scored as a human reply. Same bug class the readiness report was written to catch —
+   and the existing unit test passed the whole time because it called the function directly,
+   proving the rule worked without proving anything applied it.
+   **Deploy note:** this changes a live send gate. More messages now classify as bounces, so
+   `repliedCount` will drop after deploy. That is the metric becoming correct, not a regression.
+2. ❌ **Reply detection fails OPEN — not fixed.** Every error path returns `false` = "has not
+   replied", so an IMAP outage does not pause follow-ups, it sends all of them — including to
+   people who already replied. Contrast the report's §7 note that this subsystem "fails in the
+   safe direction"; this path does not. Failing closed would instead stall every sequence during
+   an outage, so which error is cheaper is a judgement call — left for you.
+3. ❌ **The subject fallback is not thread-scoped — not fixed.** Any "Re:" from the recipient on
+   any thread counts, so `repliedCount` is inflated and reply rates are not comparable between
+   campaigns. Documented as a deliberate trade-off and it errs toward not emailing, so recorded
+   as accepted risk.
 
 ### TypeScript 7 (asked about mid-session)
 

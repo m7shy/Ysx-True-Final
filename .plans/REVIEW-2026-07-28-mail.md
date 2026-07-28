@@ -13,7 +13,7 @@ recorded as closing the item.
 
 ---
 
-## F1 — The DSN content-type guard is dead code. HIGH confidence, verified.
+## F1 — The DSN content-type guard is dead code. HIGH confidence, verified. ✅ FIXED (`bbba3e8`)
 
 `isNotAHumanReply(envelopeFrom, contentType)` takes two arguments and documents the second as
 the load-bearing one:
@@ -44,9 +44,23 @@ either way. That reasoning is sound and the code does not implement it.
 **This is the readiness report's own bug class:** a comment asserting two independent
 protections where only one is wired up.
 
-Fix is small but not free — it needs `bodyStructure` added to both fetches and the value
-threaded to the guard. Not applied: it changes live send-gating behaviour and the deploy is
-already carrying three migrations. Flagged for a decision.
+**Fixed in `bbba3e8`.** Both fetches now request `bodyStructure`; `collectContentTypes` flattens
+the whole tree (the marker is on the top part for `multipart/report` but on a child for
+`message/delivery-status`, depending on the generating server) and both call sites pass it.
+
+Mutation-checked both directions — dropping the arguments again fails 3 of the 4 new tests,
+and widening the match from `multipart/report` to `multipart` fails the 4th. The fetch mock was
+changed to return `bodyStructure` **only when the caller requests it**, so code that forgets to
+ask can no longer pass.
+
+Note this is a **behaviour change on a live send gate** shipping in an already-heavy deploy: more
+messages will now be classified as bounces, which means *fewer* follow-ups cancelled in error and
+a `repliedCount` that no longer counts bounces. The direction is safe (it stops false "replied"
+signals rather than creating them), but it does mean reply-rate figures will drop after deploy —
+that is the metric becoming correct, not a regression.
+
+`unibox/replyPoller.ts` deliberately unchanged: it searches `from: lead.email`, and a DSN's From
+is the postmaster/Exchange address, so bounces never match its search to begin with.
 
 ## F2 — Reply detection fails OPEN on any IMAP error. HIGH confidence, verified.
 
