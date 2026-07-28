@@ -1,6 +1,7 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
-## 2026-07-28 (later) — Still down. Fairness + revision race fixed; mail review partially done.
+## 2026-07-28 (later) — Still down until Aug 5. Six fixes, incl. the fifth timer that would have
+## defeated the pulse fix. Deploy sequence rewritten below.
 
 ### Neon: still exhausted, re-verified
 
@@ -146,10 +147,90 @@ Separately: **there is no typecheck or test in CI at all.** `smoke.yml` runs a s
 nothing runs `tsc` or `vitest` on push. Given this project's record of non-compiling delegated code
 reaching the tree, that is probably worth more than the version bump.
 
+### 🚀 DEPLOY SEQUENCE — SUPERSEDES the one in the entry below
+
+The older sequence is now wrong in three ways: it says two migrations (there are **three**), it
+predates five behaviour changes to the send path, and its "wait for the reset" step has no date.
+**Earliest possible run: 2026-08-05**, when the Neon allowance resets.
+
+1. **Confirm the database is actually back** — `/api/health/deep` with the `HEALTH_TOKEN` header,
+   or a direct query on `DIRECT_URL`. Do not go by the console alone.
+2. **BEFORE ANYTHING ELSE, check for duplicate revision rounds.** The third migration adds a
+   unique constraint and will abort the deploy if prod already holds duplicates. This could not be
+   checked while the database was down. Read-only, safe to run first:
+   ```sql
+   SELECT "projectId", "roundNumber", COUNT(*) FROM "Revision"
+   GROUP BY "projectId", "roundNumber" HAVING COUNT(*) > 1;
+   ```
+   Zero rows = the migration's renumber step is a no-op and the deploy is clean. Any rows = it will
+   renumber them (earliest keeps its number); read `20260728080000_revision_round_unique` first so
+   you know what it will do to client-visible round numbers.
+3. `git pull` in the prod checkout (`Desktop/YT-Scraper/YSXXS`, currently `d573af5`). Note the two
+   untracked files there — `install-deps.bat`, `uninstall-deps.bat` — are unexplained and predate
+   this session. They do not block a pull.
+4. **Fresh backup:** `cd server && node scripts/backup-db.mjs`.
+5. `npx prisma migrate deploy` — **THREE** migrations now:
+   `20260727120000_compliance_sender_identity_and_suppression` (rehearsed),
+   `20260727170000_refresh_token_rotation` (rehearsed),
+   `20260728080000_revision_round_unique` (**NOT rehearsed, NOT additive** — see step 2).
+6. **Sync the Prisma client** into `server/node_modules/.prisma/client` — the standing trap in
+   `.plans/known-failures.md`. Copy everything EXCEPT `*.node` while the service holds the DLL.
+7. `npx tsc -p .` in server; `npm run build` and `npm run build:portal` at root.
+8. Restart the service (needs elevation).
+9. **Set Settings → Sender identity immediately** — every campaign is fail-closed without a postal
+   address, by design.
+10. Verify: `/api/health/deep` green including `pulse` / `emailQuota` / `sendCapacity` / `backups`;
+    log in; send one test campaign to yourself and **read the footer in the received mail**.
+
+⚠️ **Three forced effects, all intended, all at once:** everyone is logged out once (refresh
+rotation), every campaign is blocked until step 9, and reply-rate numbers will drop (see below).
+
+### ⚠️ What changes in behaviour the moment this deploys
+
+Five changes land on the live send path at the same time. None is a bug; all will look like one if
+you are not expecting them.
+
+1. **Reply rates will fall.** Bounces were being counted as replies. They are not any more. The
+   number was wrong before, not now.
+2. **Some follow-ups will pause instead of sending.** If the mailbox is unreachable, sequences now
+   wait rather than mail someone who may have already replied. They resume by themselves.
+3. **Sequences no longer cancel on unrelated replies.** A prospect replying about something else
+   used to stop this campaign.
+4. **Every campaign is blocked** until Settings → Sender identity is filled in.
+5. **Everyone is logged out once.**
+
 ### Still open
 
-Unchanged from below, minus the fairness item and the `Revision.roundNumber` race, plus:
-the unreviewed remainder of the mail layer.
+1. `MAILBOX_ENCRYPTION_KEY` rotation path; the 8-char passphrase on `.env.enc` is the real risk.
+2. ~7 unverified round-2 findings in `.plans/round2-agy-raw/` — readiness report says carry, do not
+   spend time here.
+3. **Portal backend still has no completed independent review.**
+4. **Most of the mail layer is still unreviewed** — `imapClient.ts`, `mail/routes.ts`,
+   `smtpClient.ts`, `smtpGateway.ts`, `unibox/routes.ts`, `unibox/intent.ts`. Only `replyCheck.ts`
+   was covered this session.
+5. **The reply-check defer is unbounded** — a permanently dead mailbox stalls that recipient's
+   sequence forever instead of sending. Capping it needs a schema field (a per-job counter that
+   does not collide with the send-retry `attemptCount`), deliberately not added on top of three
+   migrations. Visibility today is the per-check warn/error log plus the `mailboxes` health check.
+6. **TypeScript 7** — measured, ~2x faster, frontend blocked on one `tsconfig.json` line. Not in
+   this deploy: `server`'s build script IS `tsc`, so swapping compilers changes what ships.
+7. Everything in the to-do list below, none of which is code.
+
+### Things I could NOT determine this session — do not assume either way
+
+- **Whether prod holds duplicate `Revision.roundNumber` rows.** The database was suspended the
+  entire session. This gates the third migration — step 2 above.
+- **Whether deleting `baseUrl` alone unblocks TypeScript 7 on the frontend.** `paths` is already
+  set and `moduleResolution` is `bundler`, so it is likely sufficient. Not tried.
+- **Whether Neon's free plan lets you lower the 5-minute suspend timeout.** The entry below
+  recommends doing this, but "configurable scale to zero" is listed as a *Scale-plan* feature in
+  the console's own plan comparison, so it may not be available on Free at all. Unverified — the
+  project was paused and its settings were not reachable.
+- **Whether the post-fix compute estimate now clears 100 CU-hrs.** The fifth-timer fix should cut
+  it materially, but the number was never independently recomputed. Watch the console in the first
+  week of the new period.
+- **Whether an Exchange NDR carries `In-Reply-To`.** Still open from the readiness report, still
+  needs one live IMAP header fetch. Lower priority now that the content-type guard works.
 
 ---
 
@@ -244,7 +325,9 @@ still RUNNING and `/api/health` returns 200 — only `/api/health/deep` shows `d
 timers queried it forever (follow-ups 10s, campaign worker 60s, reply poller 5 min, watchdog
 15 min), so it never suspended: ~730 compute-hours/month against a free allowance near 190. It was
 ~4x over budget from the day the workers were written, and ran out three days before the monthly
-reset. **Correction to READINESS-2026-07-27 §6:** that section assessed Neon on storage and PITR
+reset. **[Corrected 2026-07-28 later: both numbers were wrong. The allowance is 100 CU-hours and
+actual usage was 110.24 over 23 days (~143/month projected). The diagnosis was right; the
+magnitude was ~5x too high. There was also a FIFTH timer — the auto-scraper — not in this list.]** **Correction to READINESS-2026-07-27 §6:** that section assessed Neon on storage and PITR
 and never named compute-hours. That is what broke first.
 
 **Decision taken:** wait for the monthly reset (no upgrade). Fix the cause so it cannot recur.
@@ -288,6 +371,10 @@ migrations. A rebuild without them breaks the service.
 
 ### Deploy sequence (blocked until Neon is back)
 
+> ⚠️ **SUPERSEDED — do not follow this one.** It lists two migrations; there are now three, and
+> the third is neither rehearsed nor additive. Use the sequence in the 2026-07-28 (later) entry
+> at the top of this file.
+
 1. Wait for the Neon quota reset; confirm with `/api/health/deep`.
 2. `git pull` in prod (currently `d573af5`; pull again for `b96328a`).
 3. Fresh backup: `cd server && node scripts/backup-db.mjs`.
@@ -311,6 +398,11 @@ step 8. Both intended.
 
 Lower the endpoint's **suspend timeout** (Neon console → compute settings; default 300s). At 60s
 each wake costs a fifth as much, multiplying the pulse saving.
+
+> ⚠️ **Possibly not available on the Free plan.** The console's own plan comparison lists
+> "Configurable scale to zero" as a *Scale*-plan feature, while Launch says "Scale to zero after 5
+> minutes". Unverified — the project was paused so its compute settings could not be opened. Do not
+> plan the compute budget around this working.
 
 ### Still open
 

@@ -183,3 +183,43 @@ the narration itself contained the complete findings, including the two that ver
 Consequence: **do not delete a "failed" unit's stdout without reading it.** A unit that fails both
 delivery channels can still be 90% recoverable, and the runner cannot tell the difference between
 that and a genuine no-op.
+
+## This project's own notes — an enumerated list in a handoff is a claim, not an inventory (2026-07-28)
+The 2026-07-28 entry stated that four timers were keeping the Neon compute alive and that all four
+were now gated. There was a **fifth** — `scraper/autoScheduler.ts`, polling every 5 minutes,
+exactly at Neon's suspend threshold. On its own it would have kept the database awake permanently
+and the entire fix would have appeared to do nothing.
+
+It was found in seconds by grepping the *call sites* of the gate rather than re-reading the prose:
+
+```bash
+grep -rn "mayPoll(" --include=*.ts server/src | grep -v pulse.ts
+```
+
+The general rule: when a note says "all N of X now do Y", derive the list of X from the code and
+diff it against N. Prose lists are written from memory at the end of a long session and silently
+omit whatever was not on screen at the time.
+
+Same session, same shape, three more times:
+- "the campaign worker starves tenants" — it does not; every campaign is visited each tick and the
+  contended resources are all per-tenant. Only the reply poller starved.
+- "free allowance near 190 compute-hours, ~730 used" — actually 100 allowed, ~143/month used. Right
+  diagnosis, ~5x wrong magnitude, and the wrong margin then justified a fix that still overran.
+- "the reply poller starves other tenants" — true, but it also starved *within* a single tenant,
+  which the note did not mention and which no amount of cross-tenant fairness would have fixed.
+
+None of these came from a delegated worker. They were all self-authored notes from a previous
+session, which is exactly why they read as trustworthy.
+
+## Tests — a unit test on a pure function proves the rule, not its application (2026-07-28)
+`isNotAHumanReply(from, contentType)` had a passing unit test asserting it rejects a
+`multipart/report` DSN. It had also never once been called with a second argument: neither fetch
+site requested `bodyStructure`, so `contentType` was `undefined` on every real invocation and half
+the guard was dead code for its entire life. The test passed the whole time because it called the
+function directly.
+
+Two habits that catch this class:
+- test the **wiring**, through the caller, not just the rule through the function;
+- make the fake refuse to volunteer data the real dependency would only return **on request** —
+  the fetch mock now returns `bodyStructure` only when `options.bodyStructure` is set, so code that
+  forgets to ask for it fails the test instead of passing.
