@@ -164,13 +164,98 @@ async function scanMailbox(mailbox: Mailbox, leads: Lead[]): Promise<Set<string>
   return handled;
 }
 
+/**
+ * Per-tenant scan cursors, and the tenant the rotation starts from.
+ *
+ * In memory by design. Losing these on restart only means each tenant's scan
+ * resumes from the top of its own queue, which costs nothing — the alternative
+ * is a schema column and a migration for what is purely a scheduling hint.
+ */
+const scanCursors = new Map<string, number>();
+let tenantRotation = 0;
+
+/** Test seam: reset the rotation state between cases. */
+export function __resetScanRotationForTests(): void {
+  scanCursors.clear();
+  tenantRotation = 0;
+}
+
+/**
+ * Choose this tick's leads, fairly.
+ *
+ * The previous implementation took the globally oldest SCAN_LIMIT contacted
+ * leads across every tenant. That starved in two independent ways, and both
+ * were permanent rather than merely slow, because `lastContacted` does not
+ * change when a scan finds no reply — so the identical set was re-selected on
+ * every subsequent tick, forever:
+ *
+ *   1. ACROSS tenants: a tenant holding SCAN_LIMIT leads older than everyone
+ *      else's consumed the entire budget, and no other tenant was ever scanned.
+ *   2. WITHIN a tenant: past SCAN_LIMIT contacted leads, the ones beyond the
+ *      oldest SCAN_LIMIT were never scanned either, even with a single tenant.
+ *
+ * So each tenant now gets a share of the budget, and each tenant's share
+ * advances through its own queue.
+ */
+async function selectLeadsForTick(): Promise<Lead[]> {
+  const groups = await prisma.lead.groupBy({
+    by: ['userId'],
+    where: { status: LeadStatus.CONTACTED },
+    _count: { _all: true },
+  });
+  if (groups.length === 0) return [];
+
+  // Sort for a stable order across ticks, so rotating by an index is meaningful.
+  const sorted = [...groups].sort((a, b) => a.userId.localeCompare(b.userId));
+
+  // Start from a different tenant each tick. This only bites when there are
+  // more tenants than SCAN_LIMIT can serve at one lead each, but in that case
+  // it is the whole difference between "waits a tick" and "never scanned".
+  const start = tenantRotation % sorted.length;
+  const ordered = [...sorted.slice(start), ...sorted.slice(0, start)];
+  tenantRotation = (tenantRotation + 1) % sorted.length;
+
+  const share = Math.max(1, Math.floor(SCAN_LIMIT / ordered.length));
+  const picked: Lead[] = [];
+
+  for (const group of ordered) {
+    const remaining = SCAN_LIMIT - picked.length;
+    if (remaining <= 0) break;
+
+    const total = group._count._all;
+    if (total === 0) continue;
+    const take = Math.min(share, remaining);
+    const cursor = (scanCursors.get(group.userId) ?? 0) % total;
+
+    const leads = await prisma.lead.findMany({
+      where: { status: LeadStatus.CONTACTED, userId: group.userId },
+      orderBy: { lastContacted: 'asc' },
+      skip: cursor,
+      take,
+    });
+
+    // Wrap around: a cursor near the end of the queue would otherwise return a
+    // short page and waste the rest of this tenant's share.
+    if (leads.length < take && cursor > 0) {
+      const seen = new Set(leads.map((l) => l.id));
+      const fromStart = await prisma.lead.findMany({
+        where: { status: LeadStatus.CONTACTED, userId: group.userId },
+        orderBy: { lastContacted: 'asc' },
+        take: take - leads.length,
+      });
+      leads.push(...fromStart.filter((l) => !seen.has(l.id)));
+    }
+
+    scanCursors.set(group.userId, (cursor + leads.length) % total);
+    picked.push(...leads);
+  }
+
+  return picked;
+}
+
 /** One poller pass. Exported for tests. */
 export async function replyPollTickOnce(): Promise<void> {
-  const contacted = await prisma.lead.findMany({
-    where: { status: LeadStatus.CONTACTED },
-    orderBy: { lastContacted: 'asc' },
-    take: SCAN_LIMIT,
-  });
+  const contacted = await selectLeadsForTick();
   if (contacted.length === 0) return;
 
   // Leads awaiting a reply = keep checking promptly; a reply that sits unseen

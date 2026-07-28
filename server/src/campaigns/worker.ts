@@ -666,6 +666,59 @@ async function recoverStaleSendingRecipients(): Promise<void> {
   }
 }
 
+/** Rotating offset so the tenant served first changes from tick to tick. */
+let tenantRotation = 0;
+
+/** Test seam: reset the rotation between cases. */
+export function __resetTenantRotationForTests(): void {
+  tenantRotation = 0;
+}
+
+/**
+ * Round-robin the tick's campaigns across tenants instead of running them in
+ * global `createdAt` order.
+ *
+ * To be precise about what this does and does not fix: every ACTIVE campaign is
+ * visited on every tick either way — nothing here is a global quota that one
+ * tenant can drain, since mailbox selection, the tier email cap and the daily
+ * budget are all scoped per tenant. What the old flat ordering did cost is
+ * position: a tenant whose campaigns were all created late sat behind every
+ * older tenant's SMTP round-trips on *every* tick, and a tick slow enough to
+ * overrun its interval is skipped wholesale by the `ticking` guard. So the
+ * delay was small but always landed on the same tenants.
+ *
+ * Interleaving spreads that cost, and rotating the starting tenant keeps it
+ * from settling onto whoever sorts first.
+ */
+export function interleaveByTenant<T extends { userId: string }>(campaigns: T[]): T[] {
+  if (campaigns.length < 2) return campaigns;
+
+  const byTenant = new Map<string, T[]>();
+  for (const campaign of campaigns) {
+    const list = byTenant.get(campaign.userId) ?? [];
+    list.push(campaign);
+    byTenant.set(campaign.userId, list);
+  }
+  if (byTenant.size < 2) return campaigns;
+
+  // Map iteration is insertion-ordered, and `campaigns` arrives sorted by
+  // createdAt, so tenants are ordered by their oldest campaign — stable across
+  // ticks, which is what makes rotating by an index meaningful.
+  const tenants = [...byTenant.keys()];
+  const start = tenantRotation % tenants.length;
+  tenantRotation = (tenantRotation + 1) % tenants.length;
+  const ordered = [...tenants.slice(start), ...tenants.slice(0, start)];
+
+  const out: T[] = [];
+  for (let round = 0; out.length < campaigns.length; round++) {
+    for (const tenant of ordered) {
+      const campaign = byTenant.get(tenant)![round];
+      if (campaign) out.push(campaign);
+    }
+  }
+  return out;
+}
+
 /** One worker pass. Exported for tests. */
 export async function campaignTickOnce(): Promise<void> {
   await recoverStaleSendingRecipients();
@@ -686,7 +739,7 @@ export async function campaignTickOnce(): Promise<void> {
   // mid-campaign would stretch a send window badly.
   if (active.length > 0) reportWork();
 
-  for (const campaign of active) {
+  for (const campaign of interleaveByTenant(active)) {
     try {
       await processCampaign(campaign);
     } catch (err) {
