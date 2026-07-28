@@ -222,6 +222,53 @@ you are not expecting them.
    this deploy: `server`'s build script IS `tsc`, so swapping compilers changes what ships.
 7. Everything in the to-do list below, none of which is code.
 
+### 🔴🔴 CORRECTION + ESCALATION — the pulse gate starves EVERY slow poller, not just the watchdog
+
+**I got this wrong the first time and am correcting it.** My earlier simulation reported "the
+auto-scraper gate is unaffected — 672 grants, verified not assumed." That verification used an
+incomplete model: it omitted `servedThisBurst` (`pulse.ts:105-111` — **each poller gets at most ONE
+turn per burst**) and pinned the auto-scraper's boot phase to 0, which happens to be one of the few
+values that works. Both errors flattered the result.
+
+**The real rule: any poller whose interval exceeds `BURST_MS` (90s) starves at most boot phases.**
+A poller only ever runs if one of its ticks happens to land inside the 90-second window, and
+because the burst is re-anchored by the 10s follow-up scheduler on a grid that divides 1800s
+exactly, that phase relationship is fixed at boot and never drifts.
+
+Faithful simulation (models `servedThisBurst`; 14 idle days; only the slow pollers' boot phase varies):
+
+| boot phase | replyPoller (300s) | autoScraper (300s) | watchdog (900s) |
+|---|---|---|---|
+| 0s / 30s / 60s | 674 | 674 | **1** |
+| 90s / 120s / 150s / 200s / 250s | **2** | **2** | **1** |
+
+- **watchdog — starved at every phase tested.** The single grant is the initial active-grace tick.
+- **replyPoller and autoScraper — ~70% of boot phases give 2 grants in 14 days**, i.e. dead.
+
+**What that costs, if deployed:**
+1. **Reply detection stops while idle.** Sequences keep mailing people who already replied — the
+   exact harm the fail-closed work this session was meant to prevent.
+2. **Auto-scraping stops.** No new leads.
+3. **Alerting stops.** No warning when any of it breaks.
+
+**My auto-scraper gate (`fc07e12`) made this worse, not better.** It moved the scraper from
+"always polls" into the starving set. It correctly stops the compute-hour bleed; it also breaks
+scraping at ~70% of boot phases. Both are true.
+
+**Root cause and fix shape:** the design assumes a poller is awake during the burst, but a poller
+slower than the burst usually is not. Long-period pollers must tick FASTER than `BURST_MS` and
+self-throttle internally — e.g. tick every 30s and do work only when
+`mayPoll() && now - lastRun >= <logical period>`. A 30s ticker cannot miss a 90s window, the
+logical cadence is preserved in active mode, and in idle mode each poller lands naturally on the
+once-per-burst rhythm the design intends.
+
+**Not fixed.** This is the scheduler that caused the outage, the change is subtle, and it trades
+against the 100 CU-hour budget. It needs a deliberate decision, not a late-session patch.
+
+---
+
+### ⚠️ Superseded by the above: the watchdog-only version of this finding
+
 ### 🔴 DEPLOY BLOCKER — the pulse fix silently disabled the watchdog
 
 Found by the scraper reviewer, **independently re-verified here by simulation.** This is a
@@ -259,6 +306,47 @@ participations per hour rather than a return to keeping the database alive.
 
 **The auto-scraper gate added this session is NOT affected** — 672 grants in the same simulation,
 i.e. it participates in every burst. Verified, not assumed.
+
+### Backend review — INCOMPLETE (hit an API session limit mid-run)
+
+The backend reviewer died partway through, and its final message invalidated its own boot-phase
+sweep (`pulse.ts` holds module-level state that leaked between its simulation runs). Its earlier,
+self-contained results stand; that sweep does not. **Its worktree is preserved** at
+`<scratchpad>/backend-review` — source clean, with `server/probe-out.txt` and
+`server/src/__tests__/zz_probe_pulse.test.ts` left behind. Resume there rather than restarting.
+
+**Confirmed by it, re-verified here:**
+- 🔴 **The CI workflow I added was broken and would have failed on its first run.** `server/.env`
+  is gitignored (`.gitignore:12`) and `config.ts` imports `dotenv/config`, so locally the key loads
+  from that file and the suite passes — but a CI runner has no `.env`, and four `cookieService`
+  tests fail with `MAILBOX_ENCRYPTION_KEY unset`. Reproduced in the env-free worktree: 275/279.
+  **Fixed**: a throwaway 32-byte hex key in the workflow's `env:` block, the same value
+  `mailboxStore.test.ts` and `oauth.test.ts` already set inline. Verified 280/280 in a checkout
+  with no `.env` at all. The real key must never become a CI secret — nothing in CI decrypts
+  anything real. Note the shape of this bug: **it was invisible on every machine that had ever run
+  the app.**
+
+**Test gaps it found (none is a code defect):**
+- `tenantRotation` in `replyPoller.ts` can be deleted and all 4 fairness tests still pass. It is
+  load-bearing only when tenants outnumber `SCAN_LIMIT`, which no test covers.
+- **Removing `threadSubject` from the `checkRecipientReply` call in `index.ts` passes all 279
+  tests** — the F1 dead-argument pattern *again*, in the very fix written to close F1. It fails
+  safe (the fallback declines rather than over-matching), so it is a gap, not a defect.
+- `reportWork()` in `autoScheduler.ts` is untested; removing it passes.
+- The `!threadSubject` guard is an *equivalent* mutation — the equality check already rejects
+  empty — so its survival is correct, not a gap.
+
+**Claims it verified as CORRECT (do not redo):**
+- The migration SQL: collision-free (shifts are 1..k above a max captured pre-update), idempotent,
+  and the NULL concerns are moot since `roundNumber`/`projectId` are both non-null.
+- `normalizeSubject` does not over-strip realistic subjects — it requires an immediate colon, so
+  `REMINDER:` / `Report:` are safe. `RE:MAX` is real but negligible, and both sides normalise alike.
+- `collectContentTypes` matches imapflow's real `parseBodystructure` output.
+- The reply-poller cursor arithmetic is sound, including the wrap path (on wrap you always receive
+  the full `take`, so advancing by `leads.length` is exactly right). **This was my top suspicion
+  and it survived.**
+- The timer inventory is complete — five `setInterval` pollers, no cron, no self-rescheduling
+  `setTimeout` pollers.
 
 ### 🔍 An adversarial review is queued — `.plans/REVIEW-PROMPT-2026-07-28.md`
 

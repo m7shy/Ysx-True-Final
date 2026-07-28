@@ -20,6 +20,18 @@ on: push
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      # `server/.env` is gitignored, and `config.ts` imports `dotenv/config`, so
+      # locally this key is loaded from that file and the suite passes. A CI
+      # runner has no `.env`, so without this the four cookieService tests fail
+      # with "Cookie storage is not configured (MAILBOX_ENCRYPTION_KEY unset)" —
+      # i.e. the first run of this workflow would have failed, and the failure
+      # was invisible on any machine that had ever run the app.
+      #
+      # A throwaway 32-byte hex value, matching what mailboxStore.test.ts and
+      # oauth.test.ts already set inline. The real key must never be a CI secret:
+      # nothing here decrypts anything real, and the suite mocks Prisma.
+      MAILBOX_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
