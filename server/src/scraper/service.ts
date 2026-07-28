@@ -31,7 +31,15 @@ import { materializeCookiePool } from './cookieService.js';
  * already written survive in Postgres). One active run per tenant is enforced.
  */
 
-export type JobStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+/**
+ * `cancelling` is a distinct state, not cosmetic. Cancel used to set `cancelled`
+ * the instant it signalled the child, but the process does not die instantly —
+ * and `activeJobFor` only treats `running` as occupied, so Stop immediately
+ * followed by Start launched a second scraper into the same profile directory
+ * while the first was still writing to its keywords.txt, leads.csv and SQLite
+ * file. Cancelling holds the tenant's slot until the child actually exits.
+ */
+export type JobStatus = 'running' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
 export type JobSource = 'manual' | 'auto';
 
 export interface ScrapeJob {
@@ -129,15 +137,21 @@ const MAX_RETAINED_JOBS = Number(process.env.SCRAPER_MAX_RETAINED_JOBS ?? 200);
  * background work to an idle process — which matters, since a timer here would
  * be one more thing keeping a compute-billed database's host busy.
  *
- * Running jobs are never evicted at any age: losing one would strand its child
- * process and free a concurrency slot that is still in use.
+ * In-flight jobs are never evicted at any age: losing one would strand its child
+ * process and free a concurrency slot that is still in use. That includes
+ * 'cancelling', whose child is very much alive and still shutting down.
  */
+/** Has a live child process attached: still occupies the tenant's slot. */
+function isInFlight(job: ScrapeJob): boolean {
+  return job.status === 'running' || job.status === 'cancelling';
+}
+
 function sweepFinishedJobs(): void {
   const now = Date.now();
   const endedAt = (j: ScrapeJob): number => Date.parse(j.finishedAt ?? j.startedAt) || 0;
 
   for (const job of [...jobs.values()]) {
-    if (job.status === 'running') continue;
+    if (isInFlight(job)) continue;
     if (now - endedAt(job) > JOB_RETENTION_MS) jobs.delete(job.id);
   }
 
@@ -145,7 +159,7 @@ function sweepFinishedJobs(): void {
   if (excess <= 0) return;
 
   const evictable = [...jobs.values()]
-    .filter((j) => j.status !== 'running')
+    .filter((j) => !isInFlight(j))
     .sort((a, b) => endedAt(a) - endedAt(b)); // oldest first
 
   for (const job of evictable) {
@@ -357,8 +371,18 @@ export function listJobs(userId: string): ScrapeJob[] {
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 }
 
+/**
+ * The tenant's in-flight run, if any.
+ *
+ * `cancelling` counts as in-flight: the child process is still alive and still
+ * writing to the profile directory, so starting another run now would put two
+ * scrapers on the same files. Only a job whose process has genuinely exited
+ * frees the slot.
+ */
 export function activeJobFor(userId: string): ScrapeJob | undefined {
-  return [...jobs.values()].find((j) => j.userId === userId && j.status === 'running');
+  return [...jobs.values()].find(
+    (j) => j.userId === userId && (j.status === 'running' || j.status === 'cancelling'),
+  );
 }
 
 function appendLog(job: ScrapeJob, chunk: string): void {
@@ -556,7 +580,10 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
   child.on('close', async (code, signal) => {
     releaseSlot(released);
     procs.delete(id);
-    if (job.status === 'cancelled') {
+    // 'cancelling' is the state cancelJob leaves behind while the child winds
+    // down; this is where it becomes terminal and the tenant's slot is freed.
+    if (job.status === 'cancelled' || job.status === 'cancelling') {
+      job.status = 'cancelled';
       appendLog(job, '■ cancelled');
       job.finishedAt = new Date().toISOString();
       return;
@@ -643,7 +670,8 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
     child.on('close', async (code, signal) => {
       releaseSlot(released);
       procs.delete(id);
-      if (job.status === 'cancelled') {
+      if (job.status === 'cancelled' || job.status === 'cancelling') {
+        job.status = 'cancelled';
         appendLog(job, '■ cancelled');
         job.finishedAt = new Date().toISOString();
         resolve(job);
@@ -661,11 +689,71 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
 }
 
 /** Cancel a tenant's running job, if any. Returns true if one was killed. */
+/**
+ * Kill the scraper AND everything it started.
+ *
+ * `child.kill()` signals only the direct child. On Windows Node implements that
+ * as TerminateProcess, which cannot be caught and does not touch descendants —
+ * so main.py died while the yt-dlp / curl_cffi processes it had spawned kept
+ * running, holding the profile's files and SQLite database open. The visible
+ * symptom is the 1-2 MB `tracking.db-wal` files sitting beside 4 KB main
+ * databases: writers that were never allowed to check point.
+ *
+ * `taskkill /T` walks the tree; `/F` is required because the intermediate
+ * processes have no window to close politely. Windows is what production runs.
+ *
+ * On POSIX a group kill is attempted first — it only succeeds if the child leads
+ * its own process group — and falls back to signalling the child directly.
+ */
+function killProcessTree(child: ChildProcess, jobId: string): void {
+  const pid = child.pid;
+  if (!pid) return;
+
+  if (process.platform === 'win32') {
+    const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    killer.on('error', (err) => {
+      logger.error({ err, jobId, pid }, 'taskkill failed; falling back to a direct kill');
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    });
+    return;
+  }
+
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 export function cancelJob(userId: string, id: string): boolean {
   const job = getJob(userId, id);
-  if (!job || job.status !== 'running') return false;
-  job.status = 'cancelled';
+  if (!job || (job.status !== 'running' && job.status !== 'cancelling')) return false;
+  // Already signalled and still winding down — report success (the caller asked
+  // for it to stop and it is stopping) without signalling a second time.
+  if (job.status === 'cancelling') return true;
+
+  // NOT 'cancelled': the child is still alive for as long as it takes to die,
+  // and flipping straight to a terminal status freed the tenant's slot so a new
+  // run could start on top of the one still shutting down. The close handler
+  // moves it to 'cancelled' once the process is genuinely gone.
+  job.status = 'cancelling';
+  appendLog(job, '■ cancelling — stopping the scraper and everything it started');
+
   const child = procs.get(id);
-  if (child) child.kill('SIGTERM');
+  if (child) {
+    killProcessTree(child, id);
+  } else {
+    // No child to wait for, so nothing will ever fire the close handler.
+    job.status = 'cancelled';
+    job.finishedAt = new Date().toISOString();
+  }
   return true;
 }

@@ -189,6 +189,64 @@ describe('scraper — one run per tenant under concurrent starts', () => {
     delete process.env.SCRAPER_MAX_RETAINED_JOBS;
   });
 
+  it('kills the whole process tree on cancel, not just the direct child', async () => {
+    // child.kill() signals only the direct child. On Windows Node implements
+    // that as TerminateProcess, which cannot be caught and does not touch
+    // descendants — so main.py died while the yt-dlp processes it had spawned
+    // kept running, holding the profile's files and SQLite database open. The
+    // symptom on disk was 1-2 MB tracking.db-wal files beside 4 KB databases.
+    const { startJob, cancelJob } = await import('../scraper/service.js');
+    const cp: any = await import('node:child_process');
+
+    const job = await startJob('tenant-cancel', ['k']);
+    cp.spawn.mockClear();
+
+    expect(cancelJob('tenant-cancel', job.id)).toBe(true);
+
+    // On win32 that means taskkill /T (tree) /F; elsewhere a group signal.
+    if (process.platform === 'win32') {
+      const call = cp.spawn.mock.calls.find((c: any[]) => c[0] === 'taskkill');
+      expect(call, 'expected a taskkill for the process tree').toBeTruthy();
+      expect(call[1]).toContain('/T');
+      expect(call[1]).toContain('/F');
+    }
+  });
+
+  it('holds the tenant slot until the cancelled child actually exits', async () => {
+    // Cancel used to set 'cancelled' the instant it signalled, and activeJobFor
+    // only treated 'running' as occupied — so Stop immediately followed by Start
+    // launched a second scraper into the same profile while the first was still
+    // writing to it.
+    const { startJob, cancelJob } = await import('../scraper/service.js');
+
+    const job = await startJob('tenant-stopstart', ['k']);
+    const child = spawned[spawned.length - 1];
+    cancelJob('tenant-stopstart', job.id);
+
+    // The child has been signalled but has NOT exited yet.
+    await expect(startJob('tenant-stopstart', ['k'])).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    // Once it really exits the slot frees up and a new run is allowed.
+    child.emit('close', null, 'SIGTERM');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(startJob('tenant-stopstart', ['k'])).resolves.toMatchObject({ status: 'running' });
+  });
+
+  it('reports success without re-signalling a job already being cancelled', async () => {
+    const { startJob, cancelJob } = await import('../scraper/service.js');
+    const cp: any = await import('node:child_process');
+
+    const job = await startJob('tenant-twice', ['k']);
+    cancelJob('tenant-twice', job.id);
+    cp.spawn.mockClear();
+
+    // The caller asked for it to stop and it is stopping — that is success, not
+    // an error, but it must not fire a second kill.
+    expect(cancelJob('tenant-twice', job.id)).toBe(true);
+    expect(cp.spawn.mock.calls.filter((c: any[]) => c[0] === 'taskkill')).toHaveLength(0);
+  });
+
   it('releases the claim when preparation fails, so the tenant is not locked out', async () => {
     const { startJob } = await import('../scraper/service.js');
     const fsMod: any = await import('node:fs');
