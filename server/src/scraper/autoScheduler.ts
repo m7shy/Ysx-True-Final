@@ -6,6 +6,7 @@ import { prisma } from '../db/prisma.js';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { startAutoJob, activeJobFor } from './service.js';
+import { mayPoll, reportWork } from '../scheduler/pulse.js';
 
 /**
  * Automatic per-tenant scraper scheduler, backed by the `ScraperSchedule`
@@ -162,6 +163,11 @@ export async function tickOnce(): Promise<void> {
       take: available,
     });
 
+    // A due schedule is real work: keep the database at full cadence while
+    // scrapes are actually being launched, rather than dropping to the idle
+    // burst mid-run.
+    if (due.length > 0) reportWork();
+
     for (const schedule of due) {
       const claimed = await prisma.scraperSchedule.updateMany({
         where: { id: schedule.id, status: ScraperScheduleStatus.IDLE },
@@ -195,6 +201,15 @@ export function startAutoScraperScheduler(options?: { tickMs?: number }): void {
   void tickOnce().catch((err) => logger.error({ err }, 'Initial auto-scraper tick failed'));
 
   setInterval(() => {
+    // Idle gate — the fifth timer, and it was missed when the other four were
+    // gated. It queries the database every 5 minutes, and Neon suspends after
+    // 5 minutes idle, so on its own it kept the compute alive permanently and
+    // defeated the entire pulse fix. Free-plan allowance is 100 CU-hours per
+    // month; the outage of 2026-07-28 was 110.24 against that.
+    //
+    // Delaying a due scrape by up to one idle-poll window is harmless here:
+    // schedules run 3-5x/day, so they are not sensitive to half an hour.
+    if (!mayPoll('autoScraper')) return;
     void tickOnce().catch((err) => logger.error({ err }, 'Auto-scraper scheduler tick failed'));
   }, intervalMs);
 }

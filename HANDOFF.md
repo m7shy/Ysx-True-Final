@@ -10,10 +10,31 @@ Checked at 07:43 and 07:45 UTC, two independent ways: `/api/health/deep` returns
 were stale by 24,135s, back-dating the stop to ~01:03 UTC and corroborating the 01:01 figure.
 **The deploy is still blocked.**
 
-**Could not determine: the actual reset date.** Nothing in the repo records it; `.plans/decisions.md`
-says "~4 days" but that is an estimate, not a verified date. The free-plan allowance resets on the
-billing-period boundary, visible only in the Neon console (Billing/Usage), and it may be the signup
-anniversary rather than the 1st. Asked the user to read it off the console; unanswered so far.
+### ✅ NEON NUMBERS — READ FROM THE CONSOLE, NOT ESTIMATED (2026-07-28)
+
+Read directly off `console.neon.tech` (org `org-misty-sun-10557677`, project **Ysx**, Free plan).
+**Three prior assumptions were wrong.**
+
+| | Previously assumed | **Actual** |
+|---|---|---|
+| Monthly compute allowance | "near 190" hours | **100 CU-hours** per project |
+| Billing period | calendar month → reset Jul 31/Aug 1 | **starts the 5th** — "Usage since Jul 5, 2026" |
+| Time still down | "~4 days" | **~8 days: reset is 2026-08-05** |
+
+Console also shows, verbatim: *"Project Ysx is paused after reaching its monthly free plan limit."*
+
+Current usage this period: **compute 110.24 CU-hrs** (over the 100 allowance — this is the
+outage), storage 0.03 GB of 0.5 GB, history 0 GB, network transfer 0.24 GB. Storage was never
+remotely close; compute was the whole story, as the previous entry said.
+
+⚠️ **The pulse fix's own arithmetic no longer clears the bar.** That estimate was ≈120
+compute-hours/month, judged safe against an assumed ~190 allowance. Against the real **100**, 120
+still blows the budget. The auto-scraper gate below is what closes that gap; if next month runs
+close again, raise `PULSE_IDLE_POLL_MS` — it is an env var, free, no code change.
+
+Note also: 110.24 CU-hrs over 23 days is ~143/month projected — NOT the ~730/month the previous
+entry calculated. That estimate was roughly 5x too high. The conclusion it drove (four timers kept
+the compute alive) was still correct; the magnitude was not.
 
 ### Verified against the previous entry
 
@@ -39,7 +60,7 @@ slowly, because a scan that finds no reply never touches `lastContacted`, so eve
 re-selects the identical set. It also starves **within** a single tenant past `SCAN_LIMIT`
 contacted leads — a second dimension the note missed entirely.
 
-### Committed this session (`fc0c273..359539c`) — tsc clean, vitest 276/276
+### Committed this session (`fc0c273..HEAD`) — tsc clean, vitest 279/279
 
 - **`2b3dbcd`** — per-tenant fair-share + rotating cursor in the reply poller; round-robin
   interleave across tenants in the campaign tick.
@@ -51,6 +72,14 @@ contacted leads — a second dimension the note missed entirely.
   All three are behaviour changes on a live send gate — see the mail review section below.
 - **`359539c`** — CI now runs tsc (server + frontend) and vitest on every push. There was no
   typecheck or test gate at all before this; smoke.yml passes on a tree that does not compile.
+- **🔴 THE FIFTH TIMER** — `scraper/autoScheduler.ts` queries the database every 5 minutes and was
+  **never put behind the idle gate**. The previous session found four pollers and gated them; this
+  one was missed. Neon suspends after 5 minutes idle, so this timer alone sat exactly on the
+  threshold and **would have kept the compute awake permanently, defeating the entire pulse fix.**
+  Found by grepping for `mayPoll(` call sites rather than trusting the previous entry's list.
+  `SCRAPER_DIR` and `DATABASE_URL` are both set in prod, so it was definitely running.
+  Now gated, with `reportWork()` when a scrape is actually due. Three tests, mutation-checked
+  (removing the gate fails 2).
 
 All mutation-checked. Poller: reverting selection fails all 4 of its tests. Worker: gutting the
 interleave fails 2 of 4, a lossy variant fails the other 2; a 5th test asserting the single-tenant
@@ -120,7 +149,80 @@ reaching the tree, that is probably worth more than the version bump.
 ### Still open
 
 Unchanged from below, minus the fairness item and the `Revision.roundNumber` race, plus:
-the unreviewed remainder of the mail layer, and the two findings above.
+the unreviewed remainder of the mail layer.
+
+---
+
+## 📋 YOUR TO-DO LIST — things only you can do (plain English)
+
+Nothing here is code. I cannot do any of it: it needs an account login, a DNS/registrar
+change, a business decision, or money. **Everything on this list is free** unless it says
+otherwise. Roughly most-important first.
+
+### 1. Turn on DKIM for your sending domain — FREE, ~10 minutes
+**What it is:** a signature that proves your emails really came from you.
+**Why it matters:** without it, Gmail and Outlook trust your cold emails much less, and more of
+them land in spam. This is the single biggest deliverability item outstanding.
+**How:** Microsoft 365 admin → Security (Defender) → Policies → Email Authentication → DKIM →
+select `outreach.ysxvisuals.com` → **Enable**.
+**Status:** I re-checked on 2026-07-28. Still off. The DNS records are already in place and
+correct — only the switch in the admin portal is unflipped.
+**How you'll know it worked:** tell me, and I'll re-check the DNS and confirm.
+
+### 2. Put your postal address into the app — FREE, ~2 minutes, DO THIS RIGHT AFTER DEPLOY
+**What it is:** Settings → Sender identity (business name + postal address).
+**Why it matters:** **every campaign is blocked until you fill this in.** That is deliberate —
+anti-spam law (CAN-SPAM) requires a real postal address in commercial email, so the app now
+refuses to send without one. Nothing is broken; it is waiting for you.
+
+### 3. Add your bank details — FREE, ~5 minutes
+**What it is:** four `PORTAL_BANK_*` settings in the server config.
+**Why it matters:** **clients literally cannot pay you.** The portal shows an invoice with no
+payment instructions on it.
+
+### 4. Fix the DMARC report address — FREE, ~5 minutes
+**What it is:** your DMARC DNS record sends daily deliverability reports to
+`dmarc@ysxvisuals.com`, and **that mailbox does not exist**, so the reports vanish.
+**Why it matters:** those reports are how you'd find out your email is being rejected.
+**How:** either create that mailbox, or change the DNS record to point at an address you read.
+
+### 5. Fix the broken SPF record on `ysxvisuals.com` — FREE, ~5 minutes
+**What it is:** the record points at a subdomain that no longer exists, which makes the whole
+record invalid.
+**Why it matters:** it does not affect `outreach.ysxvisuals.com` (your actual sending domain,
+which is healthy), so this is not urgent — but `ysxvisuals.com` is your public identity and mail
+from it can never pass checks while this is broken.
+
+### 6. Set up free uptime monitoring — FREE, ~15 minutes
+**What it is:** an UptimeRobot account pointed at the app's health URL.
+**Why it matters:** prod went down at 01:01 and nobody knew until hours later. The app's own
+alarm did email you — this is the independent second opinion for when the app itself is the
+thing that is down. UptimeRobot's free tier is enough.
+
+### 7. Get your backups off this machine — FREE, ~15 minutes
+**What it is:** install Google Drive for Desktop, point the backup folder into it.
+**Why it matters:** every backup currently lives on the same VM as the thing it is backing up.
+If that machine dies you lose the database and its backups together.
+
+### 8. Ask Microsoft what your sending limit actually is — FREE, one support ticket
+**Why it matters:** Microsoft already refused a send once on 2026-06-15 for exceeding a limit,
+and the app records those as successful sends, so you cannot see it happening. You need the real
+number before sending at volume.
+
+### 9. Lengthen the password on the offline key backup — FREE, ~5 minutes
+**What it is:** the `.env.enc` file is protected by an 8-character passphrase.
+**Why it matters:** that one file plus that password is enough to unlock every connected mailbox.
+Eight characters is guessable. Make it a long phrase instead.
+
+### 10. Privacy policy + legitimate-interest note — FREE, but it is writing, not clicking
+**Why it matters:** required under GDPR for cold outreach to people in the EU/UK. Not a blocker
+for sending to a handful of test contacts; is a blocker for volume.
+
+### Things that WOULD cost money — none of them are necessary
+- **Neon paid plan.** Not needed. The free tier is enough now that the database-polling fix has
+  cut usage roughly 6x. Wait for the monthly reset instead.
+- **A dedicated email service** (SendGrid/Postmark etc). Only becomes relevant if Microsoft's
+  sending limit turns out to be too low — see item 8. Ask them first.
 
 ---
 
