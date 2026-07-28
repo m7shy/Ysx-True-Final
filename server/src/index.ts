@@ -488,6 +488,10 @@ export async function sendFollowupJob(job: any) {
         recipientEmail: recipientRaw,
         initialSentAt,
         originalMessageId,
+        // The follow-up subject is "Re: <original>", and normalizeSubject
+        // strips that back to the thread's base subject — so this scopes the
+        // last-resort subject fallback to this conversation.
+        threadSubject: job.subject ? String(job.subject) : undefined,
       });
 
       // Could not determine whether they replied. Defer — never send, never

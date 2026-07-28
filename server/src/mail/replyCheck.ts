@@ -72,6 +72,23 @@ export function isNotAHumanReply(envelopeFrom: unknown, contentType?: unknown): 
 }
 
 /**
+ * Strip reply/forward prefixes and normalize a subject for thread comparison.
+ *
+ * Handles the prefixes non-English mail clients use, because the recipient's
+ * client — not ours — writes the subject on a reply: German AW:, Swedish SV:,
+ * Italian R:/RIF:, Dutch ANTW:, plus Outlook's numbered "RE[2]:" form. A
+ * missed prefix here does not create a false match, it just fails to strip and
+ * the subjects compare unequal — the safe direction.
+ */
+export function normalizeSubject(raw: unknown): string {
+  return String(raw ?? '')
+    .replace(/^\s*(?:(?:re|fw|fwd|aw|sv|vs|antw|rif|r)\s*(?:\[\d+\])?\s*:\s*)+/i, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/**
  * Flatten an IMAP BODYSTRUCTURE tree into a space-joined string of its MIME
  * types, for isNotAHumanReply's content-type check.
  *
@@ -195,6 +212,13 @@ export async function checkRecipientReply(input: {
   recipientEmail: string;
   initialSentAt: string;
   originalMessageId?: string;
+  /**
+   * Our own subject on this thread, used to scope the last-resort subject
+   * fallback below. Without it that fallback matches any "Re:" the recipient
+   * sent us about anything at all. Optional only for backwards compatibility;
+   * callers should always pass it.
+   */
+  threadSubject?: string;
 }): Promise<ReplyCheckResult> {
   const recipientEmail = String(input.recipientEmail ?? '').trim().toLowerCase();
   // No address to check against is a caller bug, not a transient fault —
@@ -307,8 +331,25 @@ export async function checkRecipientReply(input: {
       return 'replied';
     }
 
-    // Optional last-resort fallback: any inbound email from recipient whose subject looks like a reply.
-    // This helps when clients omit References/In-Reply-To but still use a Re: subject.
+    // Last-resort fallback: an inbound email from the recipient whose subject
+    // is a reply to THIS thread. Exists because some clients omit
+    // References/In-Reply-To entirely while still writing a "Re:" subject.
+    //
+    // Scoped by subject, which is the only thread signal left once the two
+    // Message-ID searches have missed. Previously it accepted any subject
+    // starting with "Re:", so a prospect replying about a completely unrelated
+    // thread — an earlier conversation, a newsletter, a thread they share with
+    // a colleague — cancelled this campaign's sequence and inflated its
+    // repliedCount.
+    //
+    // The residual trade-off, stated plainly: a recipient who EDITS the subject
+    // while replying is no longer detected here, and would receive a follow-up
+    // after replying. That case is already covered by the In-Reply-To and
+    // References searches above, which conforming clients populate and which
+    // run first — this path only ever sees the clients that omit both. Matching
+    // every unrelated "Re:" to catch the edited-subject minority was the worse
+    // trade.
+    const threadSubject = normalizeSubject(input.threadSubject);
     const r3 = await client.search(baseCriteriaSender);
     if (Array.isArray(r3) && r3.length > 0) {
       const sample = r3.slice(-10);
@@ -330,10 +371,23 @@ export async function checkRecipientReply(input: {
         const received = (msg as any)?.internalDate ?? envelope?.date;
         if (hasValidSince && received && new Date(received).getTime() < sinceDate.getTime()) continue;
 
-        if (/^re\s*:/i.test(subj)) {
-          debugLog('Reply check: matched fallback subject', { subject: subj });
-          return 'replied';
+        if (!/^\s*(?:re|aw|sv|vs|antw|rif|r)\s*(?:\[\d+\])?\s*:/i.test(subj)) continue;
+
+        // Must be a reply on THIS thread, not merely a reply to something.
+        // When no thread subject was supplied the fallback cannot be scoped at
+        // all, and an unscoped match is what this guard exists to prevent — so
+        // decline rather than guess.
+        if (!threadSubject) {
+          debugLog('Reply check: skipping subject fallback, no thread subject supplied');
+          continue;
         }
+        if (normalizeSubject(subj) !== threadSubject) {
+          debugLog('Reply check: ignoring a reply on a different thread', { subject: subj });
+          continue;
+        }
+
+        debugLog('Reply check: matched fallback subject', { subject: subj });
+        return 'replied';
       }
     }
 

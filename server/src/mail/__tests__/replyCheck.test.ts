@@ -106,6 +106,9 @@ describe('checkRecipientReply', () => {
       recipientEmail: 'recipient@test.com',
       initialSentAt: SENT_AT.toISOString(),
       originalMessageId: 'original-id',
+      // What the caller passes in production: the follow-up's own subject,
+      // which is "Re: <original>". normalizeSubject strips it back to "hello".
+      threadSubject: 'Re: hello',
     });
 
   it('detects a genuine reply matched on In-Reply-To', async () => {
@@ -306,6 +309,62 @@ describe('checkRecipientReply', () => {
       ]);
 
       expect(await call()).toBe('replied');
+    });
+
+    // The fallback runs only when both Message-ID searches miss, i.e. for
+    // clients that omit In-Reply-To AND References. It used to accept any
+    // subject starting with "Re:", so a prospect replying about something
+    // else entirely cancelled this campaign's sequence and inflated its
+    // repliedCount. Scoped to the thread's own subject now.
+    it('does NOT accept a "Re:" reply about an unrelated thread', async () => {
+      matchOnSenderOnly(mockClient);
+      fetchYields(mockClient, [
+        {
+          from: 'recipient@test.com',
+          subject: 'Re: your invoice from March',
+          at: new Date('2026-07-27T17:00:00Z'),
+        },
+      ]);
+
+      expect(await call()).toBe('no-reply');
+    });
+
+    it('matches the thread despite a localized reply prefix and stacked prefixes', async () => {
+      matchOnSenderOnly(mockClient);
+      fetchYields(mockClient, [
+        // German client replying to a forwarded copy of our mail.
+        { from: 'recipient@test.com', subject: 'AW: Fwd: hello', at: new Date('2026-07-27T17:00:00Z') },
+      ]);
+
+      expect(await call()).toBe('replied');
+    });
+
+    it('matches regardless of surrounding whitespace and case', async () => {
+      matchOnSenderOnly(mockClient);
+      fetchYields(mockClient, [
+        { from: 'recipient@test.com', subject: 'RE:   HELLO  ', at: new Date('2026-07-27T17:00:00Z') },
+      ]);
+
+      expect(await call()).toBe('replied');
+    });
+
+    it('declines rather than guessing when no thread subject was supplied', async () => {
+      matchOnSenderOnly(mockClient);
+      fetchYields(mockClient, [
+        { from: 'recipient@test.com', subject: 'Re: hello', at: new Date('2026-07-27T17:00:00Z') },
+      ]);
+
+      const result = await checkRecipientReply({
+        userId: 'test-user',
+        provider: 'gmail',
+        recipientEmail: 'recipient@test.com',
+        initialSentAt: SENT_AT.toISOString(),
+        originalMessageId: 'original-id',
+        // threadSubject deliberately omitted — an unscoped match is exactly
+        // what this guard exists to prevent.
+      });
+
+      expect(result).toBe('no-reply');
     });
 
     it('does NOT accept a bounce whose subject happens to start with "Re:"', async () => {
