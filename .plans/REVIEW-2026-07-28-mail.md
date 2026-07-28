@@ -93,7 +93,7 @@ follow-ups with only the per-check warn/error log and the `mailboxes` health che
 Capping it needs a per-job counter that does not collide with the send-retry `attemptCount`, i.e.
 a schema field — not added, since the deploy already carries three migrations. **Follow-up item.**
 
-## F3 — The subject fallback can cancel a sequence off an unrelated thread. MEDIUM.
+## F3 — The subject fallback can cancel a sequence off an unrelated thread. MEDIUM. ✅ FIXED (`aea5b5c`)
 
 `replyCheck.ts:244-266`: when the Message-ID searches miss, it searches for *any* message from
 the recipient since the send date and accepts it if the subject matches `/^re\s*:/i`.
@@ -103,10 +103,23 @@ conversation, a newsletter, a shared thread with a colleague — reads as a repl
 campaign. The Message-ID paths above it are precise; this one is not scoped to the thread in any
 way.
 
-This is documented as a deliberate trade-off ("helps when clients omit References/In-Reply-To"),
-and it errs toward *not* emailing someone, which is the safe direction. Flagging it as an
-accepted risk rather than a defect — but it is worth knowing that `repliedCount` is inflated by
-it, so reply-rate metrics are not trustworthy for campaign comparison.
+**Fixed in `aea5b5c`.** Subject is the only thread signal left once both Message-ID searches have
+missed, so the fallback now requires the candidate's subject to normalize to the same base as our
+own. `normalizeSubject` strips stacked and localized reply prefixes (AW:, SV:, R:/RIF:, ANTW:,
+Outlook's RE[2]:) because the RECIPIENT's client writes that subject, not ours; a prefix we fail
+to strip cannot create a false match, it just compares unequal.
+
+With no thread subject supplied the fallback now declines rather than guessing.
+
+**Residual trade-off, accepted deliberately:** a recipient who EDITS the subject while replying is
+no longer caught on this path and would receive a follow-up after replying. Conforming clients
+populate In-Reply-To/References and are caught by the searches that run first — this path only
+ever sees clients that omit both. Matching every unrelated "Re:" to catch the edited-subject
+minority was the worse trade.
+
+Mutation-checked with three mutations: removing the scoping fails 2 tests, weakening
+`normalizeSubject` to English-only single-prefix fails 1, dropping case normalization fails the
+4th.
 
 ## F4 — Not a finding: UID/sequence-number consistency is correct.
 

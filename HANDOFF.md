@@ -39,7 +39,7 @@ slowly, because a scan that finds no reply never touches `lastContacted`, so eve
 re-selects the identical set. It also starves **within** a single tenant past `SCAN_LIMIT`
 contacted leads — a second dimension the note missed entirely.
 
-### Committed this session (`fc0c273..78b5868`) — tsc clean, vitest 272/272
+### Committed this session (`fc0c273..359539c`) — tsc clean, vitest 276/276
 
 - **`2b3dbcd`** — per-tenant fair-share + rotating cursor in the reply poller; round-robin
   interleave across tenants in the campaign tick.
@@ -47,7 +47,10 @@ contacted leads — a second dimension the note missed entirely.
   `portal/routes.ts`, closing the read-then-create race.
 - **`bbba3e8`** — the DSN content-type guard in `mail/replyCheck.ts`, which was dead code.
 - **`78b5868`** — reply detection now fails closed; `sendFollowupJob` exported and tested.
-  Both are behaviour changes on a live send gate — see the mail review section below.
+- **`aea5b5c`** — the last-resort subject fallback is scoped to its own thread.
+  All three are behaviour changes on a live send gate — see the mail review section below.
+- **`359539c`** — CI now runs tsc (server + frontend) and vitest on every push. There was no
+  typecheck or test gate at all before this; smoke.yml passes on a tree that does not compile.
 
 All mutation-checked. Poller: reverting selection fails all 4 of its tests. Worker: gutting the
 interleave fails 2 of 4, a lossy variant fails the other 2; a 5th test asserting the single-tenant
@@ -95,10 +98,12 @@ Two findings. The first is **fixed**; the second is not.
    ⚠️ **The defer is unbounded:** a permanently dead mailbox now stalls that sequence instead of
    sending. Capping it needs a schema field (a per-job counter that does not collide with the
    send-retry `attemptCount`), deliberately not added on top of three migrations. **Follow-up.**
-3. ❌ **The subject fallback is not thread-scoped — not fixed.** Any "Re:" from the recipient on
-   any thread counts, so `repliedCount` is inflated and reply rates are not comparable between
-   campaigns. Documented as a deliberate trade-off and it errs toward not emailing, so recorded
-   as accepted risk.
+3. ✅ **The subject fallback was not thread-scoped — fixed in `aea5b5c`.** Any "Re:" from the
+   recipient on any thread counted, so an unrelated reply cancelled this campaign's sequence and
+   inflated `repliedCount`. Now requires the subject to normalize to the same base as ours, with
+   localized/stacked reply prefixes stripped. **Residual, accepted:** a recipient who edits the
+   subject while replying is no longer caught on this path — but conforming clients are caught by
+   the Message-ID searches that run first, which this path only sees after they miss.
 
 ### TypeScript 7 (asked about mid-session)
 
