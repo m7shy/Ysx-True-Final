@@ -145,6 +145,50 @@ describe('scraper — one run per tenant under concurrent starts', () => {
     expect(spawned).toHaveLength(2);
   });
 
+  it('evicts finished jobs instead of retaining every run forever', async () => {
+    // `jobs` had no eviction at all — every scrape ever run stayed in memory for
+    // the life of the process, each holding up to 800 log lines. At 3-5 auto-runs
+    // per tenant per day that is a slow leak that would surface as unexplained
+    // memory growth months later.
+    process.env.SCRAPER_MAX_RETAINED_JOBS = '3';
+    vi.resetModules();
+    const { startJob, listJobs } = await import('../scraper/service.js');
+
+    // Each run must finish before the next can start (one per tenant), so close
+    // the child each time — which is also what makes the job evictable.
+    for (let i = 0; i < 6; i++) {
+      await startJob('tenant-evict', [`k${i}`]);
+      const child = spawned[spawned.length - 1];
+      child.emit('close', 0, null);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(listJobs('tenant-evict').length).toBeLessThanOrEqual(3);
+    delete process.env.SCRAPER_MAX_RETAINED_JOBS;
+  });
+
+  it('never evicts a RUNNING job, however far over the cap', async () => {
+    // Dropping a running job would strand its child process and free a
+    // concurrency slot that is still very much in use.
+    process.env.SCRAPER_MAX_RETAINED_JOBS = '1';
+    vi.resetModules();
+    const { startJob, listJobs } = await import('../scraper/service.js');
+
+    // Two finished runs for one tenant, then a live one for another.
+    for (let i = 0; i < 2; i++) {
+      await startJob('tenant-done', [`k${i}`]);
+      spawned[spawned.length - 1].emit('close', 0, null);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const live = await startJob('tenant-live', ['k']);
+
+    // A further claim triggers the sweep while `live` is still running.
+    await startJob('tenant-other', ['k']).catch(() => {});
+
+    expect(listJobs('tenant-live').some((j) => j.id === live.id && j.status === 'running')).toBe(true);
+    delete process.env.SCRAPER_MAX_RETAINED_JOBS;
+  });
+
   it('releases the claim when preparation fails, so the tenant is not locked out', async () => {
     const { startJob } = await import('../scraper/service.js');
     const fsMod: any = await import('node:fs');

@@ -105,6 +105,56 @@ function assertCapacity(): void {
  * sees a running job on its synchronous check and gets a 409. The caller must
  * release the claim if preparation then fails — see the callers' try/catch.
  */
+/**
+ * How long a finished job stays readable, and the hard ceiling on retained jobs.
+ *
+ * `jobs` had no eviction at all: every scrape ever run stayed in memory for the
+ * life of the process, each holding up to MAX_LOG_LINES (800) lines of output.
+ * At the auto-scheduler's 3-5 runs per tenant per day that is thousands of
+ * retained jobs a year on a service intended to run for months — a slow leak
+ * that would surface as unexplained memory growth long after anyone connected it
+ * to scraping.
+ *
+ * Retention exists because the UI polls for status and logs after a run ends;
+ * an hour is far longer than that needs and short enough to bound the map.
+ */
+const JOB_RETENTION_MS = Number(process.env.SCRAPER_JOB_RETENTION_MS ?? 60 * 60_000);
+const MAX_RETAINED_JOBS = Number(process.env.SCRAPER_MAX_RETAINED_JOBS ?? 200);
+
+/**
+ * Drop finished jobs that are past retention, then enforce the hard cap.
+ *
+ * Swept here rather than on a timer because `claimJobSlot` is the ONLY way the
+ * map grows, so sweeping on claim bounds it by construction and adds no
+ * background work to an idle process — which matters, since a timer here would
+ * be one more thing keeping a compute-billed database's host busy.
+ *
+ * Running jobs are never evicted at any age: losing one would strand its child
+ * process and free a concurrency slot that is still in use.
+ */
+function sweepFinishedJobs(): void {
+  const now = Date.now();
+  const endedAt = (j: ScrapeJob): number => Date.parse(j.finishedAt ?? j.startedAt) || 0;
+
+  for (const job of [...jobs.values()]) {
+    if (job.status === 'running') continue;
+    if (now - endedAt(job) > JOB_RETENTION_MS) jobs.delete(job.id);
+  }
+
+  let excess = jobs.size - MAX_RETAINED_JOBS;
+  if (excess <= 0) return;
+
+  const evictable = [...jobs.values()]
+    .filter((j) => j.status !== 'running')
+    .sort((a, b) => endedAt(a) - endedAt(b)); // oldest first
+
+  for (const job of evictable) {
+    if (excess <= 0) break;
+    jobs.delete(job.id);
+    excess--;
+  }
+}
+
 function claimJobSlot(job: ScrapeJob): void {
   if (activeJobFor(job.userId)) {
     throw Object.assign(new Error('A scrape is already running for your account'), {
@@ -115,6 +165,10 @@ function claimJobSlot(job: ScrapeJob): void {
   assertCapacity();
   jobs.set(job.id, job);
   reserveSlot();
+  // Swept AFTER registering, so the cap counts this job too — sweeping first
+  // left room for the new one and made the effective ceiling MAX + 1. The job
+  // just added is 'running' and therefore never a candidate.
+  sweepFinishedJobs();
 }
 
 /** Undo claimJobSlot when preparation fails before the child is spawned. */
