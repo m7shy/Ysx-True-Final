@@ -421,24 +421,16 @@ export const analyzeLead = async (leadId: string): Promise<Lead> => {
   return lead;
 };
 
-export const getFunnelMetrics = async () => {
-  await delay(300);
-  
-  // DMs Sent: Count of leads with status CONTACTED or higher (Anything not 'NEW' or 'LOST', roughly)
-  // To be precise with the funnel:
-  const activeStatuses = ['CONTACTED', 'REPLIED', 'CALL_BOOKED', 'TRIAL', 'CLIENT_CLOSED'];
-  const dmsSent = mockLeads.filter(l => activeStatuses.includes(l.status) || l.status === 'LOST').length; 
-
-  // Replies: Count of emails with status REPLIED (from email store)
-  const replies = mockEmails.filter(e => e.status === EmailStatus.REPLIED).length;
-  
-  // Funnel stages from leads
-  const callsBooked = mockLeads.filter(l => ['CALL_BOOKED', 'TRIAL', 'CLIENT_CLOSED'].includes(l.status)).length;
-  const trials = mockLeads.filter(l => ['TRIAL', 'CLIENT_CLOSED'].includes(l.status)).length;
-  const clients = mockLeads.filter(l => l.status === 'CLIENT_CLOSED').length;
-
-  return { dmsSent, replies, callsBooked, trials, clients };
-};
+// REMOVED: getFunnelMetrics().
+//
+// AnalyticsView imported this fixture and rendered it as the tenant's real
+// funnel, while services/analyticsApi.ts — a working client for the mounted, real
+// GET /api/analytics/summary — was imported by nothing. The screen now uses the
+// real endpoint exclusively.
+//
+// Deleted rather than left in place: a plausible-looking mock that satisfies the
+// same call signature as the real thing is exactly what gets re-imported by
+// accident, and the failure is silent because the numbers still look reasonable.
 
 // --- Thread Functions ---
 
