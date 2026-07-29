@@ -1,12 +1,20 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
-## 2026-07-29 (latest) — Frontend review done AND executed. 331 server / 37 frontend. NOTHING COMMITTED.
+## 2026-07-29 (latest) — Frontend review done, executed, and COMMITTED. 353 server / 43 frontend.
 
-### ⚠️ The tree is dirty on purpose, again
+### State of the tree: clean
 
-This session added to the already-uncommitted 07-29 backend work. **Review the diff and commit
-before anything else.** Report: **`.plans/REVIEW-FRONTEND-fable.md`** (findings, the cross-check
-table, and the execution plan, now annotated with what was implemented).
+**Committed as `61a7cda`** on `phase5-frontend-wiring` — 42 files, +3085/−127. Nothing outstanding,
+nothing to review before you start. **Not pushed** (the branch has no upstream); push is yours to
+make. The previous two entries' "the tree is dirty on purpose" warnings are historical — that work
+went in as `df9a0e0`.
+
+Report: **`.plans/REVIEW-FRONTEND-fable.md`** — findings, the client↔server cross-check table, and
+the execution plan annotated with what was implemented.
+
+One commit rather than several, deliberately: the concerns group naturally (review plan / campaign
+config / compliance / scheduling) but do not split by *file* — `ComposeFollowUp.tsx` alone carries
+E6, F10 and F12 edits. Splitting would have scattered related changes or needed hunk-level staging.
 
 ### What the frontend review found
 
@@ -150,8 +158,20 @@ Run the diff there before the next deploy rather than another read-through.
 
 ### Tests: 328 → **353** server, 19 → **43** frontend
 
-Three new frontend files plus three server cases. Every one mutation-checked by performing the
-mutation, confirming the failure, and restoring; the mutations are recorded in each file's header.
+Four new frontend files (`clientPortalInvoices`, `campaignWizardSendDays`, `campaignDetailRecipients`,
+`campaignSendingConfig`), three new server files (`geminiProxy`, `manualSendCompliance`,
+`oneOffFollowupSchedule`), plus cases added to `campaignRoutes` and `dnc`.
+
+Every one mutation-checked by performing the mutation, confirming the failure, and restoring; the
+mutations are recorded in each file's header comment. Two are worth knowing about:
+
+- `campaignSendingConfig` drives the **real provider**, not `sendingConfigPayload` directly. The
+  defect was never in the rule, it was in the wiring — a unit test on the helper would have passed
+  for the bug's entire life. Same for `manualSendCompliance`, which asserts the bytes handed to
+  SMTP rather than what `complianceFooter()` returns.
+- `clientPortalInvoices` states plainly what it does **not** prove: `fireEvent` wraps clicks in
+  `act()`, so React commits between them and the `disabled` attribute alone would stop the second
+  click. The ref guard is belt-and-braces and no DOM-level test can distinguish it.
 
 ### Machine note
 
@@ -159,9 +179,45 @@ mutation, confirming the failure, and restoring; the mutations are recorded in e
 `--max-old-space-size` made it worse — V8 scales the semi-space to the max heap. Use
 `NODE_OPTIONS="--max-semi-space-size=2 --max-old-space-size=1024"`. Now in `known-failures.md`.
 
+### Still open (nothing here blocks the deploy)
+
+- **F11 — ~280 lines of dead send/scheduling chain.** `useEmailProvider.sendNewEmail` has no callers
+  at all; `followupApi.listFollowups` and `cancelFollowup` have none anywhere. Left in place on
+  purpose: it is inert, and days before a deploy is the wrong moment to delete send-path code for
+  tidiness. Delete it in the same pass that next touches follow-ups.
+- **No client-side test for the scheduling path.** `oneOffFollowupSchedule.test.ts` covers the route
+  and the send; `DashboardView`'s branch on `date` and `useEmailProvider.scheduleFollowUp` are
+  verified by hand and by `tsc` only. A jsdom test asserting `scheduleFollowUp` is called (not
+  `sendFollowUp`) when a date is chosen is the missing piece.
+- **Invoice line items are unreachable from both ends.** `createSchema` accepts `lineItems` and the
+  client portal *renders* them (`portal/pages/InvoicesPage.tsx`), but the admin UI never sends any,
+  so every invoice shows as a single amount with no breakdown. Feature gap, not a defect.
+- **Surfaces the caller/receiver diff has not been run over:** `App.tsx` beyond routing,
+  `SettingsContext`, `AuthContext`, `TemplatesView`, `DocumentationView`, `EmailCard`, and most of
+  `gemini.ts`'s prompt construction.
+- **Needs the live database:** the three pending migrations' first execution, pagination stability,
+  whether `taskkill` behaves on the prod VM, and the `sendDays = 0` query below.
+
+### Before you deploy on 2026-08-05 — three things, in order
+
+1. **Configure Settings → Sender identity first.** This is no longer only a campaign blocker. As of
+   F13/F14 the manual paths fail closed too, so with no business name and postal address the Unibox
+   reply and the Dashboard follow-up composer both return 409 `MISSING_SENDER_IDENTITY` and send
+   nothing. The postal address was already on the NO-GO list; it now stops *all four* send paths,
+   not one. Both screens name the fix on screen, so it will be loud rather than mysterious.
+2. **Decide whether the new throughput is what you want.** Campaign pacing now actually reaches the
+   server (F9), so the wizard defaults mean ~27 sends/day per campaign (1 per 20 min inside
+   09:00–18:00 Mon–Fri) against the old 10-per-tick, 24/7, uncapped. That is the app finally
+   honouring what the UI always displayed — but if it is too slow, change the 20-minute default in
+   `src/features/campaigns/defaults.ts`, not the code that enforces it.
+3. **Check for legacy `sendDays = 0` rows** once Neon is back:
+   `SELECT id, name FROM "Campaign" WHERE "sendDays" = 0;` — those campaigns have been silently
+   frozen and are no longer creatable, so they need `sendDays` set or nulled by hand.
+
 **Deploy verdict for 2026-08-05: GO on the frontend.** The caveat is unchanged and unreviewable —
-nothing has run against Postgres. The non-code NO-GO list (DKIM, postal address, bank details,
-privacy policy) is still what actually blocks sending.
+nothing here has ever run against Postgres, and the three pending migrations plus these behaviour
+changes all get their first real execution on deploy day. The rest of the non-code NO-GO list
+(DKIM, bank details, privacy policy) is still outstanding and is what actually blocks sending.
 
 ---
 
