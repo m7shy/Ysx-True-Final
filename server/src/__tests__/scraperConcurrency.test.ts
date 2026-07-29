@@ -247,6 +247,85 @@ describe('scraper — one run per tenant under concurrent starts', () => {
     expect(cp.spawn.mock.calls.filter((c: any[]) => c[0] === 'taskkill')).toHaveLength(0);
   });
 
+  // taskkill EXITING non-zero (access denied, a pid it could not reach) is a
+  // different failure from taskkill failing to spawn, and only the latter was
+  // handled: the child stayed alive, nothing retried, and the job sat in
+  // 'cancelling' holding the tenant's slot and a global slot until restart.
+  const winOnly = process.platform === 'win32' ? it : it.skip;
+
+  winOnly('falls back to a direct kill when taskkill exits non-zero', async () => {
+    const { startJob, cancelJob } = await import('../scraper/service.js');
+
+    const job = await startJob('tenant-killfail', ['k']);
+    const child = spawned[spawned.length - 1];
+    cancelJob('tenant-killfail', job.id);
+
+    // The mocked spawn hands back a fake child for taskkill too.
+    const killer = spawned[spawned.length - 1];
+    expect(killer).not.toBe(child);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    killer.emit('close', 1, null);
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  winOnly('does not fall back when taskkill succeeds', async () => {
+    const { startJob, cancelJob } = await import('../scraper/service.js');
+
+    const job = await startJob('tenant-killok', ['k']);
+    const child = spawned[spawned.length - 1];
+    cancelJob('tenant-killok', job.id);
+    spawned[spawned.length - 1].emit('close', 0, null);
+
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  winOnly('re-signals a job still cancelling after the escalation deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const { startJob, cancelJob, listJobs } = await import('../scraper/service.js');
+      const cp: any = await import('node:child_process');
+
+      const job = await startJob('tenant-wedged', ['k']);
+      cancelJob('tenant-wedged', job.id);
+      // The child never exits — the whole point: the close handler, which is the
+      // only finalizer, never runs.
+      cp.spawn.mockClear();
+
+      await vi.advanceTimersByTimeAsync(60_000 + 1_000);
+
+      expect(cp.spawn.mock.calls.filter((c: any[]) => c[0] === 'taskkill')).toHaveLength(1);
+
+      // Escalating must NOT free the slot or force a terminal status: the child
+      // may still be alive, and starting a second scraper into the same profile
+      // is the bug 'cancelling' exists to prevent.
+      expect(listJobs('tenant-wedged')[0].status).toBe('cancelling');
+      await expect(startJob('tenant-wedged', ['k'])).rejects.toMatchObject({ code: 'CONFLICT' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  winOnly('does not re-signal a job whose child has since exited', async () => {
+    vi.useFakeTimers();
+    try {
+      const { startJob, cancelJob } = await import('../scraper/service.js');
+      const cp: any = await import('node:child_process');
+
+      const job = await startJob('tenant-clean-stop', ['k']);
+      const child = spawned[spawned.length - 1];
+      cancelJob('tenant-clean-stop', job.id);
+      child.emit('close', null, 'SIGTERM');
+      await Promise.resolve();
+      cp.spawn.mockClear();
+
+      await vi.advanceTimersByTimeAsync(60_000 + 1_000);
+      expect(cp.spawn.mock.calls.filter((c: any[]) => c[0] === 'taskkill')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('releases the claim when preparation fails, so the tenant is not locked out', async () => {
     const { startJob } = await import('../scraper/service.js');
     const fsMod: any = await import('node:fs');

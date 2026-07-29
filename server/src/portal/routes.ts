@@ -308,7 +308,7 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
   }
 
   if (invoice.status === 'SENT') {
-    const updated = await prisma.invoice.updateMany({
+    await prisma.invoice.updateMany({
       where: { id: invoice.id, clientId: ctx.clientId, userId: ctx.userId, status: 'SENT' },
       data: { status: 'VIEWED', viewedAt: invoice.viewedAt ?? new Date() },
     });

@@ -45,12 +45,6 @@ const setPasswordSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
 });
 
-// Body-supplied refresh token: accepted as a transitional fallback so that
-// clients running a stale cached bundle (pre-cookie migration) can still
-// refresh. Prefer the cookie when both are present. Remove this fallback
-// once every active bundle has been updated.
-const refreshSchema = z.object({ refreshToken: z.string().min(1, 'refreshToken is required') });
-
 function badRequest(res: Response, err: z.ZodError): void {
   res.status(400).json({ code: 'VALIDATION', message: err.issues.map((i) => i.message).join('; ') });
 }

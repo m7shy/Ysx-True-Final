@@ -125,6 +125,12 @@ beforeEach(() => {
   db.followupJobs.clear();
   vi.clearAllMocks();
   mocks.sendSmtpMail.mockResolvedValue({ messageId: 'sent-id' } as any);
+  // clearAllMocks clears calls but NOT implementations, so a resolved value set
+  // by one test would otherwise still be in force in the next. Every test here
+  // sets this explicitly today, which is exactly how the previous three
+  // order-dependent suites looked right up until one stopped.
+  mocks.checkRecipientReply.mockReset();
+  mocks.checkRecipientReply.mockResolvedValue('unknown');
 });
 
 describe('follow-up reply gate', () => {

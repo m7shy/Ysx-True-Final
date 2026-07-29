@@ -37,10 +37,11 @@ function extractBearer(req: Request): string | null {
  * Also enforces Client.status === ACTIVE on every request. This can't be
  * baked into the JWT (an already-issued access token would keep working
  * until it naturally expired), so it costs one indexed lookup by id here —
- * the only DB round-trip this middleware makes. Only mounted on /api/portal
- * (not /api/portal/auth), so an archived client still gets a clean 403 from
- * login/refresh/etc rather than this check running before they even have a
- * token.
+ * the only DB round-trip this middleware makes. Only mounted on /api/portal,
+ * not /api/portal/auth: an archived client's users can therefore still LOG IN
+ * (the auth routes do not check Client.status) and receive a token, and are
+ * then refused by every data route. No data is exposed either way; the check
+ * simply is not a login gate.
  */
 export async function requireClientAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractBearer(req);

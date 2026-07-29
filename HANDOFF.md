@@ -1,5 +1,91 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-29 (later) — Fable review done and its plan executed. 328/19 tests. NOTHING COMMITTED.
+
+### ⚠️ Read this first: the tree is dirty on purpose
+
+Fifteen modified files and two new ones are sitting **uncommitted** in the working tree. That was
+the instruction (review overnight, no commits), not an oversight. Review the diff and commit before
+doing anything else — `git status` will otherwise look alarming and a careless `checkout` throws
+away a full review's worth of fixes.
+
+```bash
+git -C C:/Users/banjigum1/Documents/YSXXS/YSXXS diff --stat
+```
+
+Report: **`.plans/REVIEW-2026-07-29-fable.md`** — findings, what verified as correct, what could not
+be determined, and the seven-task execution plan that was then carried out.
+
+### What the review found
+
+Priority targets were the 20 fixes of 2026-07-28, the unfinished backend review, and the portal
+backend. Confirmed defects, all now fixed:
+
+| # | Defect | File |
+|---|---|---|
+| 1 | Analytics mixed time windows: `dmsSent` counted `Lead.createdAt` (import date) while replies counted event date — **"Reply Rate — 11 of 3 contacted", i.e. 366%, was reachable** | `analytics/routes.ts` |
+| 2 | `PULSE_BURST_MS >= PULSE_IDLE_POLL_MS` left the burst permanently open — the compute never sleeps and the outage fix silently reverses | `scheduler/pulse.ts` |
+| 3 | `taskkill` running and FAILING (non-zero exit) was unhandled — job stuck `cancelling`, tenant slot + global slot held until restart | `scraper/service.ts` |
+| 4 | Invoice send: the loser of a concurrent double-send answered with its stale DRAFT row (latent — the only caller refetches) | `invoices/routes.ts` |
+| 5 | `orderBy: { lastContacted }` with `skip`/`take` and no tiebreaker — bulk sends share a timestamp, so a lead can be skipped indefinitely | `unibox/replyPoller.ts` |
+| 6 | Dead code + two comments asserting behaviour the code does not have (revoke is not instant for access tokens; archived clients CAN log in) | `portal/auth.ts`, `clients/routes.ts`, `auth/clientMiddleware.ts` |
+
+**#2 is the one to internalize.** It was found by simulation, not by reading: driving a verbatim copy
+of `pulse.ts` with a virtual clock at `BURST=120s/IDLE=60s` ran every poller at full cadence for 14
+simulated idle days — 10,135 follow-up ticks where the design expects ~672. HANDOFF itself tells the
+operator to tune those exact knobs, so the foot-gun was aimed squarely at the next person to read it.
+There is now a validator that refuses an unsafe pair and falls back to the defaults with a
+`logger.error`.
+
+### The portal backend has finally had a complete review
+
+Third attempt, first success (two prior models refused or never delivered). **No cross-tenant read or
+write was found.** Checked and holding: the `tenantDb` extension's AND-merge on every operation
+(including extended-where-unique and create-stamping and the re-homing guard), every
+`portal/routes.ts` query filtering on `clientId + userId`, child rows reachable only through an owned
+parent, per-agency email uniqueness on invite, hashed single-use login tokens, cookie-only refresh
+with rotation and reuse-detection, and the ambiguous-cross-agency login that refuses rather than
+guesses. The money paths verify too: the invoice claim gates both the email and the activity entry,
+mark-paid's CAS sits inside the transaction with the retry correctly outside it.
+
+### Verified as correct — do not redo this work
+
+The pulse gate (simulated, 7 boot phases × 4 configs), the never-executed revision-round migration
+(hand-executed on duplicate-bearing, multi-group and clean data — collision-free, idempotent), the
+scraper claim/cancel/eviction rework, `interleaveByTenant`, `selectLeadsForTick`'s wrap-around cursor
+arithmetic (the dead review's headline doubt — it is right), `normalizeSubject`, and every
+client↔server type contract touched yesterday. Section 5 of the report has the how-I-checked for each.
+
+### Tests: 316 → **328** server, 14 → **19** frontend
+
+New coverage where there was none: the ScraperView `cancelling` contract (the white screen from this
+morning had **no** regression net — reverting `statusMeta()` to direct indexing now fails two tests,
+verified by actually performing the mutation), the pulse config validator, the taskkill failure path
+and cancel escalation, and the analytics window. Every new test was mutation-checked — the fix
+disabled, the test confirmed failing, then restored.
+
+### One lesson worth carrying (now in known-failures.md)
+
+The Opus implementation pass produced a fix that **reintroduced the hazard it was repairing**: the
+too-small-burst branch raised `BURST_MS` to the 90s default unconditionally, which under a small
+`IDLE_POLL_MS` re-creates the permanently-open burst that the branch immediately above it exists to
+refuse. It typechecked, and all 326 tests passed, because no test covered the interaction between the
+two branches. Caught by reading the diff rather than by the suite. A repair is a code change like any
+other and is subject to the defect it is repairing.
+
+### Still open
+
+Everything from the entry below still stands. Specifically unresolved and needing the live database
+on **2026-08-05**: the three migrations' first real execution, pagination stability, and whether
+`taskkill` behaves on the production VM as assumed. The non-code NO-GO list (DKIM, postal address,
+bank details, privacy policy) remains **entirely undone** — that, not the code, is what blocks
+sending.
+
+**Deploy verdict: GO on code quality.** With the caveat that cannot be reviewed away — nothing here
+has ever run against Postgres.
+
+---
+
 ## 2026-07-29 — One more self-inflicted bug found and fixed. Fable review brief ready.
 
 ### A white screen I introduced the day before

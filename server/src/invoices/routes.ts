@@ -217,8 +217,18 @@ router.post('/:id/send', async (req: Request, res: Response) => {
   // the response keeps the shape the previous `update()` returned — it was
   // included above only to resolve recipient addresses, and it carries their
   // email addresses.
+  //
+  // The loser of a concurrent double-send read DRAFT before either claim landed,
+  // so its in-hand row is stale: responding with it asserts "not sent" for an
+  // invoice that was sent microseconds ago, which is precisely the "Send button
+  // reappears after send" bug this claim was written to kill. Losing the claim
+  // means the winner has already flipped it, so SENT is the truthful answer.
+  // Latent today only because the sole caller discards the body and refetches.
   const { client: _client, ...invoiceRow } = existing;
-  const invoice = isFirstSend ? { ...invoiceRow, status: 'SENT' as const, sentAt } : invoiceRow;
+  const invoice =
+    isFirstSend || invoiceRow.status === 'DRAFT'
+      ? { ...invoiceRow, status: 'SENT' as const, sentAt }
+      : invoiceRow;
 
   const recipients = existing.client.clientUsers.map((u) => u.email);
   if (!isFirstSend) {

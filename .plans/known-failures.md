@@ -256,6 +256,24 @@ Four instances found in one session, all of which type-check and all of which fa
 
 Worth grepping for deliberately: an exported argument, option or result field with no reader.
 
+## Fixes — a repair can commit the offence it is repairing (2026-07-29)
+A validator was added to `scheduler/pulse.ts` refusing `BURST_MS >= IDLE_POLL_MS` (which leaves the
+burst permanently open, so the database never idles and the whole outage fix silently reverses). The
+*second* branch of that same validator, handling a too-small burst, then raised `BURST_MS` to the
+90-second default **unconditionally** — so `PULSE_BURST_MS=2000` with `PULSE_IDLE_POLL_MS=10000`
+skipped the first check (2s < 10s), hit the second, and came out at 90s ≥ 10s: precisely the state
+the line above it exists to refuse.
+
+It typechecked. All 326 tests passed. No test covered the interaction between the two branches,
+because each branch had been tested in isolation against a default-valued sibling. It was caught by
+reading the diff.
+
+The general rule: **the repair is a code change like any other, and is subject to the defect class it
+repairs.** When a fix computes a replacement value, check that value against every invariant the
+surrounding code enforces — especially the one immediately above it. Corollary for tests: a validator
+with N branches needs a case where an *earlier* branch's condition is false and a later branch's
+output must still satisfy it.
+
 ## Reviewers — verify the PREMISE you hand them, not just the finding they return (2026-07-28)
 Two premises given to the scraper reviewer were wrong: that tenants could collide on a shared
 profile directory (the slug is per tenant — the real collision was same-tenant), and that the idle

@@ -230,7 +230,11 @@ async function selectLeadsForTick(): Promise<Lead[]> {
 
     const leads = await prisma.lead.findMany({
       where: { status: LeadStatus.CONTACTED, userId: group.userId },
-      orderBy: { lastContacted: 'asc' },
+      // `id` is not decoration: Postgres gives no stable order for equal keys,
+      // and bulk sends leave whole batches sharing one lastContacted, so a page
+      // boundary inside such a batch can reshuffle between ticks and skip a lead
+      // indefinitely.
+      orderBy: [{ lastContacted: 'asc' }, { id: 'asc' }],
       skip: cursor,
       take,
     });
@@ -241,7 +245,7 @@ async function selectLeadsForTick(): Promise<Lead[]> {
       const seen = new Set(leads.map((l) => l.id));
       const fromStart = await prisma.lead.findMany({
         where: { status: LeadStatus.CONTACTED, userId: group.userId },
-        orderBy: { lastContacted: 'asc' },
+        orderBy: [{ lastContacted: 'asc' }, { id: 'asc' }],
         take: take - leads.length,
       });
       leads.push(...fromStart.filter((l) => !seen.has(l.id)));

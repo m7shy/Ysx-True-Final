@@ -48,7 +48,20 @@ router.get('/summary', async (req: Request, res: Response) => {
   const db = tenantDb(requireUserId(req));
   const since = parseSince(req.query.days);
 
-  const leadWindow = since ? { createdAt: { gte: since } } : {};
+  // "Leads Contacted" is a count of outreach, so it has to window on WHEN the
+  // outreach happened. Windowing it on `createdAt` counted the import date: a
+  // lead imported 60 days ago and first mailed 3 days ago fell OUT of the 7-day
+  // count while its reply event (windowed on TrackingEvent.createdAt) stayed IN,
+  // rendering "Reply Rate — 11 of 3 contacted" = 366%.
+  const contactedWindow = since ? { lastContacted: { gte: since } } : {};
+  // The three funnel outcomes below stay on `createdAt` deliberately. There is no
+  // per-transition timestamp in the schema (nothing records when a lead BECAME
+  // CALL_BOOKED), so the only honest reading of a windowed outcome count is the
+  // cohort one: "of the leads that entered in this window, how many reached this
+  // stage". `updatedAt` was the alternative and is worse — any unrelated edit
+  // (a note, a tag) would move a lead into the window and make the number drift
+  // for reasons that have nothing to do with the funnel.
+  const cohortWindow = since ? { createdAt: { gte: since } } : {};
   const eventWindow = since ? { createdAt: { gte: since } } : {};
 
   const eventCount = (type: TrackingEventType) =>
@@ -56,11 +69,11 @@ router.get('/summary', async (req: Request, res: Response) => {
 
   const [dmsSent, replies, callsBooked, trials, clients, sent, opened, clicked, bounced] =
     await Promise.all([
-      db.lead.count({ where: { status: { in: ACTIVE_STATUSES }, ...leadWindow } }),
+      db.lead.count({ where: { status: { in: ACTIVE_STATUSES }, ...contactedWindow} }),
       eventCount(TrackingEventType.REPLIED),
-      db.lead.count({ where: { status: { in: [LeadStatus.CALL_BOOKED, LeadStatus.TRIAL, LeadStatus.CLIENT_CLOSED] }, ...leadWindow } }),
-      db.lead.count({ where: { status: { in: [LeadStatus.TRIAL, LeadStatus.CLIENT_CLOSED] }, ...leadWindow } }),
-      db.lead.count({ where: { status: LeadStatus.CLIENT_CLOSED, ...leadWindow } }),
+      db.lead.count({ where: { status: { in: [LeadStatus.CALL_BOOKED, LeadStatus.TRIAL, LeadStatus.CLIENT_CLOSED] }, ...cohortWindow } }),
+      db.lead.count({ where: { status: { in: [LeadStatus.TRIAL, LeadStatus.CLIENT_CLOSED] }, ...cohortWindow } }),
+      db.lead.count({ where: { status: LeadStatus.CLIENT_CLOSED, ...cohortWindow } }),
       db.campaignRecipient.count({
         where: { lastSentAt: since ? { gte: since } : { not: null } },
       }),

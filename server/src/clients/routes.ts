@@ -154,10 +154,16 @@ router.post('/:id/invite', async (req: Request, res: Response) => {
 
 /**
  * POST /api/clients/:id/portal-users/:clientUserId/revoke — bump the target
- * ClientUser's tokenVersion so every outstanding portal session (access +
- * refresh) for that person stops verifying immediately. Resolved through the
- * owning Client exactly like invite above, so one tenant can never revoke
- * another tenant's client users even by guessing a clientUserId.
+ * ClientUser's tokenVersion so no outstanding refresh token for that person can
+ * be redeemed again: the session dies at its next refresh. It is NOT instant for
+ * the access token already in their hands — requireClientAuth checks
+ * Client.status, not tokenVersion, and client access tokens carry no version
+ * claim — so portal access survives up to JWT_ACCESS_TTL (15m by default).
+ * Deliberate: verifying a version per request doubles this middleware's DB cost
+ * on a compute-billed database to close a 15-minute window.
+ *
+ * Resolved through the owning Client exactly like invite above, so one tenant
+ * can never revoke another tenant's client users even by guessing a clientUserId.
  */
 router.post('/:id/portal-users/:clientUserId/revoke', async (req: Request, res: Response) => {
   const userId = requireUserId(req);

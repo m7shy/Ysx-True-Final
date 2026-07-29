@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+const { loggerMock } = vi.hoisted(() => ({
+  loggerMock: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+vi.mock('../logger.js', () => ({ logger: loggerMock }));
+
 import { mayPoll, reportWork, pulseState, resetPulseForTests, startGatedPoller } from '../scheduler/pulse.js';
 
 /**
@@ -241,5 +246,106 @@ describe('pulse — startGatedPoller does not starve slow pollers', () => {
     clearInterval(timer);
     expect(runs).toBeGreaterThanOrEqual(5);
     expect(runs).toBeLessThanOrEqual(7);
+  });
+});
+
+/**
+ * Regression: the three env knobs are only safe in relation to each other.
+ *
+ * HANDOFF tells the operator to tune PULSE_IDLE_POLL_MS ("free, no code change"),
+ * and an operator who lowers it under the burst — or raises the burst over it —
+ * re-creates the outage while believing themselves safe: the burst re-opens the
+ * instant it closes, mayPoll never refuses, and the compute never suspends. It is
+ * silent, so it has to be refused at load.
+ */
+describe('pulse — env validation', () => {
+  async function loadPulseWith(env: Record<string, string>) {
+    loggerMock.error.mockClear();
+    loggerMock.warn.mockClear();
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+    vi.resetModules();
+    const mod = await import('../scheduler/pulse.js');
+    mod.resetPulseForTests();
+    return mod;
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('falls back to the defaults when the burst is at least as long as the idle interval', async () => {
+    const pulse = await loadPulseWith({ PULSE_BURST_MS: '120000', PULSE_IDLE_POLL_MS: '60000' });
+
+    vi.advanceTimersByTime(10 * 60_000 + 1_000); // let the grace period lapse
+    expect(pulse.mayPoll('primer')).toBe(true); // opens the first burst
+
+    // Past the bad burst's 120s AND its 60s interval, so the unvalidated config
+    // would have opened another burst here. With the fallback in force the
+    // default 90s burst is long shut and the next wake is 30 minutes out.
+    vi.advanceTimersByTime(121_000);
+    expect(pulse.mayPoll('primer')).toBe(false);
+    expect(pulse.mayPoll('watchdog')).toBe(false);
+    expect(pulse.pulseState().mode).toBe('idle');
+  });
+
+  it('logs the bad pair at error level rather than failing quietly', async () => {
+    await loadPulseWith({ PULSE_BURST_MS: '120000', PULSE_IDLE_POLL_MS: '60000' });
+
+    expect(loggerMock.error).toHaveBeenCalledTimes(1);
+    expect(loggerMock.error.mock.calls[0][0]).toMatchObject({ burstMs: 120000, idlePollMs: 60000 });
+  });
+
+  it('raises a sub-3s burst, which would sit below three gate ticks', async () => {
+    const pulse = await loadPulseWith({ PULSE_BURST_MS: '2000' });
+
+    vi.advanceTimersByTime(10 * 60_000 + 1_000);
+    expect(pulse.mayPoll('primer')).toBe(true);
+
+    // 60s in: within the raised 90s burst, so a second poller still gets its
+    // turn. At the configured 2s the window would have closed 58s ago.
+    vi.advanceTimersByTime(60_000);
+    expect(pulse.mayPoll('watchdog')).toBe(true);
+    expect(loggerMock.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps the raise against the idle interval instead of overshooting it', async () => {
+    // The repair must not commit the offence it repairs: raising a 2s burst to
+    // the 90s default under a 10s idle interval leaves the burst permanently
+    // open, which is exactly the never-sleeps failure the first branch refuses.
+    const pulse = await loadPulseWith({ PULSE_BURST_MS: '2000', PULSE_IDLE_POLL_MS: '10000' });
+
+    vi.advanceTimersByTime(10 * 60_000 + 1_000);
+    expect(pulse.mayPoll('primer')).toBe(true); // opens the burst
+
+    // 5s in: past the capped ~3.3s burst and before the 10s wake, so the gate is
+    // shut even for a poller that has not had its turn. At an uncapped 90s burst
+    // this window would still be open and the compute would never suspend.
+    vi.advanceTimersByTime(5_000);
+    expect(pulse.mayPoll('watchdog')).toBe(false);
+    expect(pulse.mayPoll('primer')).toBe(false);
+
+    // Still a working gate, not a wedged one.
+    vi.advanceTimersByTime(6_000);
+    expect(pulse.mayPoll('watchdog')).toBe(true);
+  });
+
+  it('falls back entirely when no burst fits inside the idle interval', async () => {
+    // idlePollMs/3 below the 3s floor means the interval itself is the problem;
+    // there is no burst length that is both fair and leaves any idle time.
+    const pulse = await loadPulseWith({ PULSE_BURST_MS: '1000', PULSE_IDLE_POLL_MS: '6000' });
+
+    expect(loggerMock.error).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(10 * 60_000 + 1_000);
+    expect(pulse.mayPoll('primer')).toBe(true);
+    vi.advanceTimersByTime(91_000); // past the default burst, before the 30min wake
+    expect(pulse.mayPoll('watchdog')).toBe(false);
+  });
+
+  it('leaves a sane configuration alone', async () => {
+    await loadPulseWith({ PULSE_BURST_MS: '45000', PULSE_IDLE_POLL_MS: '15000000' });
+    expect(loggerMock.error).not.toHaveBeenCalled();
+    expect(loggerMock.warn).not.toHaveBeenCalled();
   });
 });

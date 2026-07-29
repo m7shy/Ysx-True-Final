@@ -38,10 +38,19 @@ vi.mock('../db/prisma.js', () => ({
           if (where?.userId && lead.userId !== where.userId) return false;
           return true;
         });
-        if (orderBy?.lastContacted === 'asc') {
-          rows = [...rows].sort(
-            (a, b) => new Date(a.lastContacted).getTime() - new Date(b.lastContacted).getTime(),
-          );
+        // The query orders by [lastContacted asc, id asc]; the id tiebreak is
+        // there because Postgres does not promise a stable order for equal
+        // keys. This fake sorts deterministically no matter what, so it cannot
+        // demonstrate the instability — mirroring the clause here keeps the
+        // fake honest about the query shape rather than pretending to prove it.
+        const terms = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
+        if (terms.some((t: any) => t?.lastContacted === 'asc')) {
+          const byId = terms.some((t: any) => t?.id === 'asc');
+          rows = [...rows].sort((a, b) => {
+            const d = new Date(a.lastContacted).getTime() - new Date(b.lastContacted).getTime();
+            if (d !== 0 || !byId) return d;
+            return String(a.id).localeCompare(String(b.id));
+          });
         }
         if (skip) rows = rows.slice(skip);
         if (take != null) rows = rows.slice(0, take);

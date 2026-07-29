@@ -570,6 +570,7 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
 
   child.on('error', (err) => {
     releaseSlot(released);
+    clearCancelEscalation(id);
     logger.error({ err, jobId: id }, 'scraper spawn failed');
     job.status = 'failed';
     job.error = `Failed to launch scraper: ${err.message}`;
@@ -580,6 +581,7 @@ export async function startJob(userId: string, keywords: string[], importToCrm =
   child.on('close', async (code, signal) => {
     releaseSlot(released);
     procs.delete(id);
+    clearCancelEscalation(id);
     // 'cancelling' is the state cancelJob leaves behind while the child winds
     // down; this is where it becomes terminal and the tenant's slot is freed.
     if (job.status === 'cancelled' || job.status === 'cancelling') {
@@ -659,6 +661,7 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
   return new Promise((resolve) => {
     child.on('error', (err) => {
       releaseSlot(released);
+      clearCancelEscalation(id);
       logger.error({ err, jobId: id }, 'auto-scraper spawn failed');
       job.status = 'failed';
       job.error = `Failed to launch scraper: ${err.message}`;
@@ -670,6 +673,7 @@ export async function startAutoJob(userId: string, keywordCount: number): Promis
     child.on('close', async (code, signal) => {
       releaseSlot(released);
       procs.delete(id);
+      clearCancelEscalation(id);
       if (job.status === 'cancelled' || job.status === 'cancelling') {
         job.status = 'cancelled';
         appendLog(job, '■ cancelled');
@@ -709,15 +713,31 @@ function killProcessTree(child: ChildProcess, jobId: string): void {
   const pid = child.pid;
   if (!pid) return;
 
+  /** Last resort when taskkill cannot do it: signal the direct child at least. */
+  const directKill = (): void => {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  };
+
   if (process.platform === 'win32') {
     const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
     killer.on('error', (err) => {
       logger.error({ err, jobId, pid }, 'taskkill failed; falling back to a direct kill');
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
+      directKill();
+    });
+    // A non-zero exit is taskkill RUNNING and failing — access denied, or a pid it
+    // could not reach. Only the spawn failure was handled before, so this path
+    // left the child alive with nothing retrying: the job stayed 'cancelling',
+    // holding the tenant's slot and a global slot until the backend restarted.
+    // (A dead pid also exits non-zero, which is harmless — the child's own close
+    // handler has already finalized the job by then.)
+    killer.on('close', (code) => {
+      if (code === 0) return;
+      logger.error({ code, jobId, pid }, 'taskkill exited non-zero; falling back to a direct kill');
+      directKill();
     });
     return;
   }
@@ -731,6 +751,42 @@ function killProcessTree(child: ChildProcess, jobId: string): void {
       /* already gone */
     }
   }
+}
+
+/**
+ * How long to wait after signalling before signalling again.
+ *
+ * Nothing here forces the job terminal or frees the slot: while the child may
+ * still be alive, the slot has to stay held (that is the Stop-then-Start bug
+ * this status was introduced for), and the child's own `close` handler remains
+ * the only finalizer. This just stops a single failed kill from being the end of
+ * the story.
+ */
+const CANCEL_ESCALATION_MS = Number(process.env.SCRAPER_CANCEL_ESCALATION_MS ?? 60_000);
+const cancelEscalations = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearCancelEscalation(id: string): void {
+  const timer = cancelEscalations.get(id);
+  if (!timer) return;
+  clearTimeout(timer);
+  cancelEscalations.delete(id);
+}
+
+function scheduleCancelEscalation(job: ScrapeJob, id: string): void {
+  clearCancelEscalation(id);
+  const timer = setTimeout(() => {
+    cancelEscalations.delete(id);
+    const child = procs.get(id);
+    if (job.status !== 'cancelling' || !child) return;
+    logger.warn(
+      { jobId: id, afterMs: CANCEL_ESCALATION_MS },
+      'Scraper still cancelling long after the kill; signalling the process tree again',
+    );
+    appendLog(job, '■ still stopping — re-signalling the scraper process tree');
+    killProcessTree(child, id);
+  }, CANCEL_ESCALATION_MS);
+  timer.unref?.();
+  cancelEscalations.set(id, timer);
 }
 
 export function cancelJob(userId: string, id: string): boolean {
@@ -750,6 +806,7 @@ export function cancelJob(userId: string, id: string): boolean {
   const child = procs.get(id);
   if (child) {
     killProcessTree(child, id);
+    scheduleCancelEscalation(job, id);
   } else {
     // No child to wait for, so nothing will ever fire the close handler.
     job.status = 'cancelled';

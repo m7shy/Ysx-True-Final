@@ -215,6 +215,14 @@ function makeModel(model: string) {
       return expand(model, { ...row }, args.include);
     },
     updateMany: async (args: any) => {
+      // One-shot seam for the concurrent-send test: a single-threaded fake
+      // otherwise runs the two requests end to end, so the loser's stale-row
+      // response — the thing under test — is never produced.
+      if (model === 'invoice' && control.holdNextInvoiceClaim) {
+        const gate = control.holdNextInvoiceClaim;
+        control.holdNextInvoiceClaim = null;
+        await gate;
+      }
       const rows = db[model].filter((r) => matches(r, args.where));
       rows.forEach((r) => Object.assign(r, args.data));
       return { count: rows.length };
@@ -231,7 +239,7 @@ function makeModel(model: string) {
 // insert raise P2002, which is the only way to deterministically exercise the
 // unique-collision retry: a naturally-occurring collision needs two concurrent
 // transactions, which a single-threaded in-memory fake cannot produce.
-const control = { failNextReceiptCreate: false };
+const control = { failNextReceiptCreate: false, holdNextInvoiceClaim: null as Promise<void> | null };
 
 // Mirrors the real @@unique([userId, number]) on Receipt.
 function assertReceiptNumberFree(userId: string, number: string): void {
@@ -976,5 +984,51 @@ describe('invoice send is idempotent', () => {
 
     const emails = sentEmails.slice(before).filter((e) => e.subject.includes(number));
     expect(emails).toHaveLength(1);
+  });
+
+  it('tells the loser of the claim that the invoice is SENT, not DRAFT', async () => {
+    // The test above cannot reach this: a single-threaded fake runs the two
+    // requests end to end, so the second one re-reads the row AFTER the winner
+    // flipped it and never holds a stale snapshot. The real race does — both
+    // read DRAFT, one claim matches 0 rows — and the loser then answered with
+    // its stale row: status DRAFT, sentAt null, for an invoice sent
+    // microseconds earlier. Latent only because the one caller today discards
+    // the body and refetches; a consumer that trusts it puts the Send button
+    // straight back on screen, which is the bug the claim was written to kill.
+    const created = await request(app)
+      .post('/api/invoices')
+      .set('Authorization', adminA)
+      .send({ clientId: 'cA', projectId: 'pA', amountCents: 4242 });
+    const id = created.body.invoice.id;
+    const number = created.body.invoice.number;
+    const before = sentEmails.length;
+
+    // Hold one request at its claim so the other reads DRAFT as well and then
+    // claims first; the held request resumes to find 0 rows matched.
+    let release!: () => void;
+    control.holdNextInvoiceClaim = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    // `.then` rather than a bare Test object: supertest does not dispatch until
+    // the request is subscribed to, and this one has to be in flight (and
+    // parked on the gate) before the other is sent.
+    const held = request(app)
+      .post(`/api/invoices/${id}/send`)
+      .set('Authorization', adminA)
+      .then((r) => r);
+    await new Promise((resolve) => setTimeout(resolve, 20)); // reach the held claim
+    const winner = await request(app).post(`/api/invoices/${id}/send`).set('Authorization', adminA);
+    release();
+    const loser = await held;
+
+    expect(winner.status).toBe(200);
+    expect(loser.status).toBe(200);
+    expect(winner.body.invoice.status).toBe('SENT');
+    expect(loser.body.invoice.status).toBe('SENT');
+    expect(loser.body.invoice.sentAt).toBeTruthy();
+
+    // Still exactly one email: the response patch must not resurrect the send.
+    expect(sentEmails.slice(before).filter((e) => e.subject.includes(number))).toHaveLength(1);
   });
 });

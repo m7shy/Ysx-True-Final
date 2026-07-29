@@ -31,7 +31,7 @@ function rowMatches(row: any, where: any = {}): boolean {
   if (where.status?.in && !where.status.in.includes(row.status)) return false;
   if (where.status && typeof where.status === 'string' && row.status !== where.status) return false;
   if (where.type && row.type !== where.type) return false;
-  for (const field of ['createdAt', 'lastSentAt']) {
+  for (const field of ['createdAt', 'lastSentAt', 'lastContacted']) {
     const cond = where[field];
     if (!cond) continue;
     if (cond.gte && !(row[field] >= cond.gte)) return false;
@@ -83,14 +83,17 @@ beforeAll(() => {
   token = signAccessToken({ userId: USER_ID, email: 'a@example.com', tokenVersion: 0 });
 
   store.leads = [
-    { status: 'NEW', createdAt: RECENT },          // never counted — not yet contacted
-    { status: 'CONTACTED', createdAt: RECENT },
-    { status: 'REPLIED', createdAt: RECENT },
-    { status: 'CALL_BOOKED', createdAt: RECENT },
-    { status: 'TRIAL', createdAt: RECENT },
-    { status: 'CLIENT_CLOSED', createdAt: RECENT },
-    { status: 'LOST', createdAt: RECENT },
-    { status: 'CONTACTED', createdAt: OLD },       // outside a 30-day window
+    { status: 'NEW', createdAt: RECENT, lastContacted: null }, // never counted — not yet contacted
+    { status: 'CONTACTED', createdAt: RECENT, lastContacted: RECENT },
+    { status: 'REPLIED', createdAt: RECENT, lastContacted: RECENT },
+    { status: 'CALL_BOOKED', createdAt: RECENT, lastContacted: RECENT },
+    { status: 'TRIAL', createdAt: RECENT, lastContacted: RECENT },
+    { status: 'CLIENT_CLOSED', createdAt: RECENT, lastContacted: RECENT },
+    { status: 'LOST', createdAt: RECENT, lastContacted: RECENT },
+    { status: 'CONTACTED', createdAt: OLD, lastContacted: OLD }, // outside a 30-day window
+    // The long-dormant lead: imported months ago, first mailed two days ago. It
+    // is the whole point of windowing "Leads Contacted" on lastContacted.
+    { status: 'CONTACTED', createdAt: OLD, lastContacted: RECENT },
   ];
   store.events = [
     { type: 'REPLIED', createdAt: RECENT },
@@ -121,7 +124,7 @@ describe('GET /api/analytics/summary', () => {
     expect(res.status).toBe(200);
 
     // Contacted = everything past NEW, LOST included: it was still mailed.
-    expect(res.body.dmsSent).toBe(7);
+    expect(res.body.dmsSent).toBe(8);
     // Stages nest deliberately — a closed client is also a booked call and a trial.
     expect(res.body.callsBooked).toBe(3); // CALL_BOOKED + TRIAL + CLIENT_CLOSED
     expect(res.body.trials).toBe(2);      // TRIAL + CLIENT_CLOSED
@@ -146,7 +149,7 @@ describe('GET /api/analytics/summary', () => {
   it('windows every count when ?days is given', async () => {
     const res = await get('/api/analytics/summary?days=30');
     expect(res.status).toBe(200);
-    expect(res.body.dmsSent).toBe(6); // the 60-day-old CONTACTED lead drops out
+    expect(res.body.dmsSent).toBe(7); // the lead last contacted 60 days ago drops out
     expect(res.body.opened).toBe(2);  // the 60-day-old OPENED drops out
     expect(res.body.sent).toBe(2);    // the 60-day-old send drops out
   });
@@ -157,14 +160,39 @@ describe('GET /api/analytics/summary', () => {
     seen.length = 0;
     await get('/api/analytics/summary?days=7');
     expect(seen.length).toBeGreaterThan(0);
-    expect(seen.every((q) => Boolean(q.where.createdAt?.gte ?? q.where.lastSentAt?.gte))).toBe(true);
+    expect(
+      seen.every((q) =>
+        Boolean(q.where.createdAt?.gte ?? q.where.lastSentAt?.gte ?? q.where.lastContacted?.gte),
+      ),
+    ).toBe(true);
+  });
+
+  it('counts a long-dormant lead that was contacted inside the window', async () => {
+    // The 366%-reply-rate bug: "Leads Contacted" windowed on createdAt, so a lead
+    // imported 60 days ago and first mailed 2 days ago was excluded from the
+    // 7-day denominator while its reply event was included.
+    seen.length = 0;
+    const res = await get('/api/analytics/summary?days=7');
+    expect(res.status).toBe(200);
+
+    // Six leads mailed 2 days ago plus the dormant one; the lead last contacted
+    // 60 days ago and the never-contacted NEW lead stay out.
+    expect(res.body.dmsSent).toBe(7);
+
+    // And the window is expressed on the contact timestamp, not the import date —
+    // the arithmetic above would also pass if createdAt happened to agree.
+    const contactedQuery = seen.find(
+      (q) => q.model === 'lead' && Array.isArray(q.where.status?.in) && q.where.status.in.includes('LOST'),
+    );
+    expect(contactedQuery?.where.lastContacted?.gte).toBeInstanceOf(Date);
+    expect(contactedQuery?.where.createdAt).toBeUndefined();
   });
 
   it('ignores a nonsensical days value and falls back to all-time', async () => {
     for (const bad of ['0', '-5', 'abc', '9999']) {
       const res = await get(`/api/analytics/summary?days=${bad}`);
       expect(res.status).toBe(200);
-      expect(res.body.dmsSent).toBe(7);
+      expect(res.body.dmsSent).toBe(8);
     }
   });
 });

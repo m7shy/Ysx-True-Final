@@ -46,12 +46,78 @@ const num = (raw: string | undefined, fallback: number): number => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
+const DEFAULT_ACTIVE_GRACE_MS = 10 * 60_000;
+const DEFAULT_IDLE_POLL_MS = 30 * 60_000;
+const DEFAULT_BURST_MS = 90_000;
+/** Three GATE_TICK_MS floors: below this, timer jitter can cost a poller its turn. */
+const MIN_BURST_MS = 3 * 1_000;
+
+/**
+ * The three knobs are only safe in relation to each other, and HANDOFF tells the
+ * operator to tune exactly these — so an unrelated pair has to be caught here
+ * rather than discovered on the next invoice.
+ *
+ * If the burst is as long as the idle interval, a new burst opens the instant the
+ * old one closes (`now >= burstUntil` implies `now >= nextIdleWakeAt`), `mayPoll`
+ * never returns false, and the compute never sleeps — a silent, total reversal of
+ * the outage fix. Simulated at BURST=120s/IDLE=60s: every poller ran at full
+ * cadence for 14 idle days.
+ *
+ * A burst under 3s sits below three GATE_TICK_MS periods (the tick floor is 1s),
+ * so timer jitter can cost a slow poller its turn. Degradation, not starvation —
+ * hence a warning and a bump rather than a full fallback.
+ */
+function resolvePulseConfig(): { activeGraceMs: number; idlePollMs: number; burstMs: number } {
+  const activeGraceMs = num(process.env.PULSE_ACTIVE_GRACE_MS, DEFAULT_ACTIVE_GRACE_MS);
+  let idlePollMs = num(process.env.PULSE_IDLE_POLL_MS, DEFAULT_IDLE_POLL_MS);
+  let burstMs = num(process.env.PULSE_BURST_MS, DEFAULT_BURST_MS);
+
+  const fallBackToDefaults = (reason: string): void => {
+    logger.error(
+      { burstMs, idlePollMs, fallbackBurstMs: DEFAULT_BURST_MS, fallbackIdlePollMs: DEFAULT_IDLE_POLL_MS },
+      reason,
+    );
+    burstMs = DEFAULT_BURST_MS;
+    idlePollMs = DEFAULT_IDLE_POLL_MS;
+  };
+
+  if (burstMs >= idlePollMs) {
+    fallBackToDefaults(
+      'Pulse: PULSE_BURST_MS >= PULSE_IDLE_POLL_MS would leave the burst permanently open and the database never idle — falling back to the defaults for both',
+    );
+  } else if (burstMs < MIN_BURST_MS) {
+    // Capped against the idle interval, not raised blindly to the default: a
+    // 90s burst under a 10s idle interval re-creates the permanently-open burst
+    // that the branch above exists to refuse, so the repair would reintroduce
+    // the very hazard it is repairing.
+    const raised = Math.min(DEFAULT_BURST_MS, Math.floor(idlePollMs / 3));
+    if (raised < MIN_BURST_MS) {
+      // No burst length is both long enough to be fair and short enough to
+      // leave this idle interval any idle time in — the interval itself is the
+      // problem, so neither value can be trusted.
+      fallBackToDefaults(
+        'Pulse: PULSE_IDLE_POLL_MS is too small to hold a usable burst — falling back to the defaults for both',
+      );
+    } else {
+      logger.warn(
+        { burstMs, raisedToMs: raised, idlePollMs },
+        'Pulse: PULSE_BURST_MS is below three gate ticks, so slow pollers can miss their turn — raising it',
+      );
+      burstMs = raised;
+    }
+  }
+
+  return { activeGraceMs, idlePollMs, burstMs };
+}
+
+const pulseConfig = resolvePulseConfig();
+
 /** How long to keep polling at full speed after the last sign of real work. */
-const ACTIVE_GRACE_MS = num(process.env.PULSE_ACTIVE_GRACE_MS, 10 * 60_000);
+const ACTIVE_GRACE_MS = pulseConfig.activeGraceMs;
 /** Gap between idle wake-ups. Raise to cut compute cost, at the price of latency. */
-const IDLE_POLL_MS = num(process.env.PULSE_IDLE_POLL_MS, 30 * 60_000);
+const IDLE_POLL_MS = pulseConfig.idlePollMs;
 /** How long an idle wake-up stays open, so every poller gets one turn in it. */
-const BURST_MS = num(process.env.PULSE_BURST_MS, 90_000);
+const BURST_MS = pulseConfig.burstMs;
 
 type Mode = 'active' | 'idle';
 
