@@ -14,6 +14,7 @@ import {
   SequenceStage,
 } from './types';
 import { DEFAULT_SCHEDULE, DEFAULT_SEQUENCE, DEFAULT_SETTINGS } from './defaults';
+import { ConfirmModal } from '../../../components/ConfirmModal';
 import { buildLeads } from './utils';
 import { useCampaigns } from '../../../context/CampaignContext';
 import type { AutoFollowUp, Recipient } from '../../../types';
@@ -96,6 +97,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
   // Submission state
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
 
   const csvLeads: WizardLead[] = useMemo(() => (csv ? buildLeads(csv, mapping) : []), [csv, mapping]);
   const leads: WizardLead[] = useMemo(() => [...crmLeads, ...csvLeads], [crmLeads, csvLeads]);
@@ -112,7 +114,13 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
       case 2:
         return sequence.every((s) => s.variants.every((v) => v.body.trim().length > 0));
       case 3:
-        return name.trim().length > 0;
+        // At least one active day. Un-ticking all seven produces a sendDays
+        // bitmask of 0, which the send engine reads as "no day is ever a send
+        // day": the campaign would sit ACTIVE forever having sent nothing,
+        // with no pausedReason and nothing recording why. The server refuses
+        // it too (campaigns/routes.ts rejectEmptySendDays) — this stops the
+        // user reaching a 400 at the very end of a four-step wizard.
+        return name.trim().length > 0 && DAY_KEYS.some((k) => schedule.sendDays[k]);
       default:
         return true;
     }
@@ -123,6 +131,33 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
     for (let i = 1; i < step; i++) done.add(i);
     return done;
   }, [step]);
+
+  /**
+   * Whether closing now would throw away real work. Compared against the
+   * defaults rather than tracked with a dirty flag so that undoing an edit
+   * correctly makes the wizard clean again.
+   */
+  const hasWork =
+    leads.length > 0 ||
+    csv !== null ||
+    name !== (initialName || 'New Campaign') ||
+    JSON.stringify(sequence) !== JSON.stringify(DEFAULT_SEQUENCE) ||
+    JSON.stringify(schedule) !== JSON.stringify(DEFAULT_SCHEDULE) ||
+    JSON.stringify(settings) !== JSON.stringify(DEFAULT_SETTINGS);
+
+  /**
+   * Close, confirming first if there is anything to lose. Both close controls
+   * route through here: the wizard holds every imported lead and every
+   * sequence edit in component state with no persistence, so a single misclick
+   * on Close after importing 800 leads discarded all of it silently.
+   */
+  const requestClose = () => {
+    if (hasWork) {
+      setConfirmClose(true);
+      return;
+    }
+    onClose();
+  };
 
   const handleClearCsv = () => {
     setCsv(null);
@@ -220,10 +255,21 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ initialName, ini
             }}
           />
         </div>
-        <button type="button" onClick={onClose} className="text-sm text-neutral-400 hover:text-white transition-colors">
+        <button type="button" onClick={requestClose} className="text-sm text-neutral-400 hover:text-white transition-colors">
           Close
         </button>
       </header>
+
+      <ConfirmModal
+        isOpen={confirmClose}
+        onClose={() => setConfirmClose(false)}
+        onConfirm={onClose}
+        title="Discard this campaign?"
+        message="Your imported leads, sequence and schedule are not saved anywhere yet. Closing now loses all of it. Use Save as Draft on the final step to keep it."
+        confirmText="Discard"
+        cancelText="Keep editing"
+        isDanger
+      />
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-4 md:p-8">

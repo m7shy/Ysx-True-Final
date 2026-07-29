@@ -10,9 +10,18 @@ import { logger } from '../logger.js';
  *
  * Contract with services/gemini.ts:
  *   POST /api/gemini/generate { model, contents, config } → { text }
+ *
  * `contents` is a plain prompt string; `config` carries responseMimeType /
  * responseSchema in the REST API's own shape (uppercase Type enums), so it
  * maps 1:1 onto generationConfig.
+ *
+ * Errors respond `{ code, message }`, matching every other route in this server.
+ * They used to be `{ ok: false, error }`, which no caller could read: the only
+ * client is services/gemini.ts via apiClient's apiRequest, whose parseError
+ * reads `data.code` / `data.message` and falls back to `res.statusText`. So the
+ * precise diagnostics written below — "GEMINI_API_KEY unset", the upstream quota
+ * message, the blockReason — all reached the user as bare "Not Implemented" or
+ * "Bad Gateway", and every AI feature failed opaquely.
  */
 
 const router = Router();
@@ -38,7 +47,7 @@ function toContents(raw: unknown): unknown[] | null {
 router.post('/generate', async (req: Request, res: Response) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    res.status(501).json({ ok: false, error: 'Gemini is not configured on this server (GEMINI_API_KEY unset).' });
+    res.status(501).json({ code: 'NOT_CONFIGURED', message: 'Gemini is not configured on this server (GEMINI_API_KEY unset).' });
     return;
   }
 
@@ -46,7 +55,7 @@ router.post('/generate', async (req: Request, res: Response) => {
   const model = safeModel(body.model) ?? 'gemini-2.5-flash';
   const contents = toContents(body.contents);
   if (!contents) {
-    res.status(400).json({ ok: false, error: 'contents (prompt) is required' });
+    res.status(400).json({ code: 'VALIDATION', message: 'contents (prompt) is required' });
     return;
   }
 
@@ -72,7 +81,7 @@ router.post('/generate', async (req: Request, res: Response) => {
       logger.error({ status: upstream.status, message, model }, 'Gemini proxy upstream error');
       // 429/5xx pass through so the client can distinguish quota from bad input.
       const status = upstream.status === 429 || upstream.status >= 500 ? upstream.status : 502;
-      res.status(status).json({ ok: false, error: message });
+      res.status(status).json({ code: status === 429 ? 'RATE_LIMIT' : 'UPSTREAM', message });
       return;
     }
 
@@ -80,7 +89,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     const text = parts.map((p) => (typeof p?.text === 'string' ? p.text : '')).join('');
     if (!text) {
       const reason = data?.candidates?.[0]?.finishReason ?? data?.promptFeedback?.blockReason ?? 'empty response';
-      res.status(502).json({ ok: false, error: `Gemini returned no text (${reason})` });
+      res.status(502).json({ code: 'EMPTY_RESPONSE', message: `Gemini returned no text (${reason})` });
       return;
     }
 
@@ -89,8 +98,8 @@ router.post('/generate', async (req: Request, res: Response) => {
     const aborted = err?.name === 'AbortError';
     logger.error({ err, model }, 'Gemini proxy request failed');
     res.status(aborted ? 504 : 502).json({
-      ok: false,
-      error: aborted ? 'Gemini request timed out' : 'Failed to reach Gemini',
+      code: aborted ? 'TIMEOUT' : 'UPSTREAM',
+      message: aborted ? 'Gemini request timed out' : 'Failed to reach Gemini',
     });
   } finally {
     clearTimeout(timer);

@@ -359,3 +359,36 @@ describe('send window must be configured at both ends', () => {
     expect(neither.status).toBe(201);
   });
 });
+
+describe('sendDays must not be an empty bitmask', () => {
+  // sendDays: 0 sets no day at all, and isWithinSendWindow() reads it as "no
+  // day is ever a send day" — the campaign sits ACTIVE forever having sent
+  // nothing, with no pausedReason, because the worker never selects it. The
+  // wizard could produce it simply by un-ticking all seven day chips.
+  it('rejects sendDays: 0 on create', async () => {
+    const res = await authed('post', '/api/campaigns').send({ name: '[TEST] d', sendDays: 0 });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION');
+    expect(res.body.message).toMatch(/sending day/i);
+  });
+
+  it('rejects sendDays: 0 on update', async () => {
+    const created = await authed('post', '/api/campaigns').send({ name: '[TEST] d2' });
+    expect(created.status).toBe(201);
+
+    const res = await authed('patch', `/api/campaigns/${created.body.campaign.id}`).send({ sendDays: 0 });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION');
+  });
+
+  it('still accepts a real bitmask, and absence', async () => {
+    // 31 = Mon–Fri. Absence means "no day restriction", which is the correct
+    // way to express what 0 was being mistaken for.
+    const weekdays = await authed('post', '/api/campaigns').send({ name: '[TEST] d3', sendDays: 31 });
+    expect(weekdays.status).toBe(201);
+    expect(weekdays.body.campaign.sendDays).toBe(31);
+
+    const absent = await authed('post', '/api/campaigns').send({ name: '[TEST] d4' });
+    expect(absent.status).toBe(201);
+  });
+});

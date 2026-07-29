@@ -7,7 +7,7 @@
 // tracking still rewrites raw URLs in the text body.
 
 import { config } from '../config.js';
-import { signTrackingToken, signClickToken } from './trackingToken.js';
+import { signTrackingToken, signClickToken, signAddressUnsubscribeToken } from './trackingToken.js';
 
 function publicBaseUrl(): string {
   return (config.PUBLIC_BASE_URL || config.OAUTH_REDIRECT_BASE_URL || 'http://localhost:3001').replace(/\/+$/, '');
@@ -179,4 +179,16 @@ export function unsubscribeHeaders(unsubscribeUrl: string): Record<string, strin
  */
 export function unsubscribeUrlForRecipient(recipientId: string): string {
   return `${publicBaseUrl()}/t/u/${signTrackingToken(recipientId)}`;
+}
+
+/**
+ * Unsubscribe URL for a one-off send, which has no CampaignRecipient row to
+ * hang a token on — the manual paths (Dashboard follow-up composer, Unibox
+ * reply) previously had no unsubscribe link at all for exactly this reason.
+ *
+ * Same public route as the campaign link; the token is domain-separated so the
+ * two can never be confused, and the opt-out lands in the Suppression list.
+ */
+export function unsubscribeUrlForAddress(userId: string, email: string): string {
+  return `${publicBaseUrl()}/t/u/${signAddressUnsubscribeToken(userId, email)}`;
 }

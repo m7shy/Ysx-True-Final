@@ -1,5 +1,170 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-29 (latest) — Frontend review done AND executed. 331 server / 37 frontend. NOTHING COMMITTED.
+
+### ⚠️ The tree is dirty on purpose, again
+
+This session added to the already-uncommitted 07-29 backend work. **Review the diff and commit
+before anything else.** Report: **`.plans/REVIEW-FRONTEND-fable.md`** (findings, the cross-check
+table, and the execution plan, now annotated with what was implemented).
+
+### What the frontend review found
+
+The headline: **no new white-screen-class type mismatch exists.** Every client response type was
+cross-checked field-by-field against the server route that populates it (§3 of the report) — the
+three historical white screens are fixed, their fixes verify, and the remaining `Record`-over-union
+lookups are now either exhaustive-and-safe or guarded.
+
+**The brief's premise was wrong** and that is worth carrying: it stated every verified finding from
+the 07-28 frontend review was already fixed. Three were not — the invoice double-send (reported
+07-25 *and* 07-28), "0 Recipients" on every campaign detail, and the dead Download CSV / Share
+buttons. When a handoff says "all of X is done", derive X from the code.
+
+| # | Defect | Status |
+|---|---|---|
+| F1 | Invoice **Send** double-click emails the client twice | fixed (E1) |
+| F2 | Wizard allows zero send days → `sendDays: 0` → campaign ACTIVE forever, 0 sent, no pausedReason | fixed both sides (E2) |
+| F3 | `PerformanceView` — a routed screen of entirely invented figures | unrouted (E3) |
+| F4 | `ComposeFollowUp` fed mockZoho fixtures into real AI drafts in Live mode | gated (E6) |
+| F5 | Campaign detail always "0 Recipients"; the real endpoint had no caller | wired (E4) |
+| F6 | Dead Download CSV / Share controls | CSV wired, Share removed (E5) |
+| F8 | Duplicating a campaign drops every pacing/safety setting | fixed |
+| F9 | **`addCampaign` discarded the ENTIRE wizard Setup step — 13 fields — so every campaign ever created sent 24/7, unthrottled, ignoring replies** | fixed |
+| F10 | Follow-up composer reported "scheduled successfully" for an email it had already sent (07-28 S2) — **now genuinely schedules** | fixed |
+| F11 | ~280 lines of dead send/scheduling chain (`sendNewEmail`, `listFollowups`, `cancelFollowup`) | reported, left in place |
+| F12 | Every AI failure showed the wrong reason — server sent `{ok,error}`, client reads `{code,message}`; screens then replaced it with "check your network" | fixed |
+| F13 | **People who clicked unsubscribe could still be emailed by hand — `/api/mail/send` had NO opt-out check at all; Unibox reply checked DNC but not the suppression list** | fixed |
+| F14 | **Unibox reply and `/api/mail/send` carry no unsubscribe link, no postal address, no List-Unsubscribe header — the campaign path refuses to send without them** | **fixed — HMAC address token** |
+| F15 | Unibox showed "Failed to send reply. Please try again." for the three new refusals retrying can never fix | fixed |
+
+### F2 is the one to internalize
+
+`sendDays` is a bitmask; un-ticking all seven day chips yields 0; `isWithinSendWindow` reads 0 as
+"no day is ever a send day". The campaign then sits **ACTIVE, 0 sent, forever**, with no
+pausedReason — the worker never selects it, so there is nothing to attach a reason to. Same family
+as `MISSING_SENDER_IDENTITY`, but strictly worse: that one at least produces a banner. Refused now
+at both ends (wizard `canAdvance`, server `rejectEmptySendDays`) rather than coerced, because
+silently rewriting 0 to "every day" would send on days the user just unticked.
+
+### Two process notes
+
+- **The first cut of the invoice fix reintroduced the class it was fixing.** A single in-flight
+  flag would have made "send invoice B while A is in flight" a silent no-op. Caught by reading the
+  diff, not by the tests — which had passed. Third session running that the diff, not the suite,
+  caught the regression-in-the-repair.
+- **A test can pass and still prove nothing.** The first invoice test passed against a deliberately
+  weakened guard, because `fireEvent` wraps clicks in `act()` so React commits between them and the
+  `disabled` attribute alone stops the second click. The test file now says so explicitly rather
+  than implying coverage it does not have.
+
+### F9 is the biggest find of the session — and it changes send behaviour on deploy day
+
+Fixing F8 (Duplicate loses pacing) exposed that `addCampaign` had the same hole: it posted nine
+fields and **silently dropped the thirteen the wizard's Setup step collects** — send window, active
+days, timezone, daily limit, send interval, all three stop-on-* rules, plain-text mode, follow-up
+priority, both tracking flags. Proved by diffing the two payloads mechanically, not by reading.
+
+So *every campaign this app has ever created* sent around the clock, seven days a week, in batches
+of 10, with no daily cap — while the UI displayed the throttle the user had configured. `tsc` could
+not see it: `addCampaign` takes `Omit<Campaign, …>`, so the wizard's properties typecheck as
+accepted and are then simply never read. **Seventh instance of "a value the code produces that
+nothing reads", and by far the costliest.**
+
+> ⚠️ **Read before deploying.** These settings now actually reach the server, so throughput drops
+> hard and on purpose: with the wizard defaults a campaign goes from *10 per tick, 24/7, uncapped*
+> to *1 every 20 minutes inside 09:00–18:00 Mon–Fri* — about **27 sends/day**, ~10× less.
+> (`sendIntervalMinutes != null` flips the worker from `BATCH_SIZE` to one per tick,
+> `worker.ts:360,467`.) That is the app finally honouring the wizard, not a regression — but it
+> will read as "sending broke" to anyone who doesn't know, and you may want to revisit the
+> 20-minute default in `src/features/campaigns/defaults.ts` first.
+
+### F13/F14 — the compliance machinery guards one path out of four
+
+`complianceFooter()`, `unsubscribeHeaders()`, `assertSenderIdentity()` and `isSuppressed()` all have
+**exactly two call sites each, every one on the campaign path**. The two send paths a human drives —
+the Unibox reply and the Dashboard follow-up composer (`POST /api/mail/send`) — had none of it.
+
+F13 (fixed): `/api/mail/send` had no opt-out enforcement whatsoever, and the Unibox reply checked
+`Lead.status === DNC` but never the suppression list — which is the record that *survives* the lead
+row. So someone who clicked unsubscribe could still be emailed by hand. Both now check DNC +
+suppression per address before any mailbox work; 5 tests, both guards mutation-checked.
+
+F14 (fixed, on your decision): both manual paths now carry the footer, the RFC 8058 headers and the
+fail-closed identity check. The blocker was that the unsubscribe URL came from a `CampaignRecipient`
+row, which a one-off email has no equivalent of — solved with an HMAC token over
+`"a" NUL userId NUL email` signed with the existing `TRACKING_SECRET`, so **no table and no
+migration**. The opt-out writes to the Suppression list, which F13's new guards then enforce.
+
+> ⚠️ **This changes behaviour on deploy: the manual paths now FAIL CLOSED.** Until Settings → Sender
+> identity has a business name and postal address, the Unibox reply and the Dashboard follow-up
+> composer return 409 `MISSING_SENDER_IDENTITY` and send nothing. Those two paths previously worked
+> precisely *because* they skipped the check. Both screens now show the server's message verbatim,
+> so the operator is told what to fix — but if the postal address is still undone on 08-05 (it is on
+> the NO-GO list), manual sending stops too, not just campaigns.
+
+Two details worth keeping:
+- **The domain separator is load-bearing.** Without `"a" NUL`, the address payload `userId\0email`
+  base64-decodes as a "recipientId" and `verifyTrackingToken` recomputes the identical HMAC — the
+  two token families collide outright. Proven by mutation, and there is a test that fails if anyone
+  removes it.
+- **`/api/mail/send` now refuses multi-recipient sends** (400): one message cannot carry a correct
+  per-recipient opt-out link, and a wrong link would unsubscribe someone else. Nothing sends
+  multi today, so this closes the shape, not a use case.
+
+### Follow-up scheduling is now wired (F10)
+
+It rides F14's footer, as planned. `campaignId` and `originalMessageId` are optional on the route
+(the columns were **already nullable — no migration**), the scheduler's `campaignId is required`
+throw is gone, and `sendFollowupJob` gained an `else` branch that stamps the same compliance footer
+using the address token. Client side: `useEmailProvider.scheduleFollowUp()`, and DashboardView
+finally uses the `date` it had been throwing away.
+
+**Do not "simplify" this by inventing a campaignId.** `sendFollowupJob` looks the id up and cancels
+the job as `campaign_deleted` when it does not resolve — a synthetic id yields a follow-up that is
+accepted, displayed as scheduled, and silently dropped at send time. There is a comment saying so
+at both the schema and the scheduler.
+
+**A timezone bug caught in the wiring:** the composer passed `` `${date}T09:00:00` `` with no
+offset, so the server would have parsed 9am in *its* timezone — eight hours early for a US user.
+Inert while nothing read the value; fatal the moment it schedules. Now `toISOString()`.
+
+`followupReplyGate.test.ts` broke and was right to: its jobs have no campaignId, so they now take
+the footer branch and need a sender identity. That is the change reporting itself — those
+follow-ups previously went out with no footer at all.
+
+### The technique matters more than any single finding
+
+F9 was not found by reading carefully — three reviews had read that file. It was found by
+**mechanically diffing the keys a caller passes against the keys the receiver reads**. That same
+check then produced F10, F11 and F12 in one sweep. It is now 4-for-4 in this codebase on a class
+that careful reading has repeatedly missed:
+
+```bash
+# what the wizard passes vs what addCampaign posts — the diff IS the bug
+comm -23 <(keys_passed_by_caller) <(keys_read_by_receiver)
+```
+
+Surfaces still unswept by it: `App.tsx` beyond routing, `SettingsContext`, `AuthContext`,
+`TemplatesView`, `DocumentationView`, `EmailCard`, and most of `gemini.ts`'s prompt construction.
+Run the diff there before the next deploy rather than another read-through.
+
+### Tests: 328 → **353** server, 19 → **43** frontend
+
+Three new frontend files plus three server cases. Every one mutation-checked by performing the
+mutation, confirming the failure, and restoring; the mutations are recorded in each file's header.
+
+### Machine note
+
+`tsc` OOM'd three times at *tiny* heaps (15–170 MB) with ~1 GB free. Raising
+`--max-old-space-size` made it worse — V8 scales the semi-space to the max heap. Use
+`NODE_OPTIONS="--max-semi-space-size=2 --max-old-space-size=1024"`. Now in `known-failures.md`.
+
+**Deploy verdict for 2026-08-05: GO on the frontend.** The caveat is unchanged and unreviewable —
+nothing has run against Postgres. The non-code NO-GO list (DKIM, postal address, bank details,
+privacy policy) is still what actually blocks sending.
+
+---
+
 ## 2026-07-29 (later) — Fable review done and its plan executed. 328/19 tests. NOTHING COMMITTED.
 
 ### ⚠️ Read this first: the tree is dirty on purpose

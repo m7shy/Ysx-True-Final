@@ -27,10 +27,18 @@ const scheduleSchema = z.object({
   body: z.string().min(1, 'body is required'),
   replyTo: z.string().trim().optional(),
   scheduledAt: z.string().min(1, 'scheduledAt is required'),
-  // Required metadata for reply-gating / grouping
-  campaignId: z.string().min(1, 'campaignId is required'),
+  // Metadata for reply-gating / grouping.
+  //
+  // campaignId and originalMessageId are OPTIONAL: a one-off follow-up composed
+  // on the Dashboard belongs to no campaign, and messages fetched over IMAP
+  // frequently carry no Message-ID (mailGateway derives it from
+  // `envelope?.messageId`, which is not guaranteed). Requiring either made the
+  // whole scheduling feature unreachable from the only UI that offers it.
+  // Reply detection degrades gracefully without a Message-ID — checkRecipientReply
+  // falls back to In-Reply-To/References and then to the thread subject.
+  campaignId: z.string().min(1).optional(),
   recipientEmail: z.string().min(1, 'recipientEmail is required'),
-  originalMessageId: z.string().min(1, 'originalMessageId is required'),
+  originalMessageId: z.string().min(1).optional(),
   initialSentAt: z.string().min(1, 'initialSentAt is required'),
   // Optional metadata used by UI / analytics
   leadId: z.string().optional(),

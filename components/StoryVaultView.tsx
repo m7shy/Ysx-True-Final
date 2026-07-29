@@ -28,7 +28,12 @@ export const StoryVaultView: React.FC = () => {
       }
     } catch (error) {
       console.error("Processing failed", error);
-      setError("An unexpected error occurred. Please try again.");
+      // The Gemini proxy's message says what actually went wrong; a generic
+      // "try again" hides an unset API key or an exhausted quota behind advice
+      // that will never work.
+      setError(error instanceof Error && error.message
+        ? error.message
+        : "An unexpected error occurred. Please try again.");
     } finally {
       setIsProcessing(false);
     }

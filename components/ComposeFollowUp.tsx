@@ -42,6 +42,7 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
 
   // UI state
   const [subjectCopied, setSubjectCopied] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
 
   // Preset options for scheduling
   const schedulePresets = [
@@ -97,22 +98,40 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
   const handleGenerate = async () => {
     setIsGenerating(true);
     try {
-      // Fetch past emails for style mimicry
+      // Past emails, used to mimic the user's own writing style.
+      //
+      // Gated on sandbox mode: fetchSentEmails() reads services/mockZoho's
+      // fixtures, so in Live mode this was conditioning a real draft to a real
+      // prospect on three emails invented by the fixture author — silently, and
+      // in exactly the direction that makes the result sound like someone else.
+      // No examples is the honest input until this reads the real mailbox
+      // (services/mailGateway's gwFetchSent is the eventual source).
       let examples: string[] = [];
-      try {
-        const pastEmails = await fetchSentEmails();
-        examples = pastEmails
-          .filter(e => e.status === EmailStatus.SENT || e.status === EmailStatus.REPLIED)
-          .slice(0, 3)
-          .map(e => e.body);
-      } catch (fetchErr) {
-        console.warn("Could not fetch past emails for style mimicry:", fetchErr);
+      if (!settings.useRealApi) {
+        try {
+          const pastEmails = await fetchSentEmails();
+          examples = pastEmails
+            .filter(e => e.status === EmailStatus.SENT || e.status === EmailStatus.REPLIED)
+            .slice(0, 3)
+            .map(e => e.body);
+        } catch (fetchErr) {
+          console.warn("Could not fetch past emails for style mimicry:", fetchErr);
+        }
       }
 
       const generated = await generateFollowUpDraft(email, tone, additionalContext, examples, signature);
       setDraft(generated);
+      setGenerateError(null);
     } catch (error) {
+      // Previously console.error alone: the spinner simply stopped and no draft
+      // appeared, with nothing on screen to say why. The Gemini proxy returns a
+      // specific reason (unset key, quota, safety block) — show it.
       console.error(error);
+      setGenerateError(
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not generate a draft. Please try again.'
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -159,8 +178,14 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
     } else if (type === 'SCHEDULE') {
       setTimeout(() => {
         setIsProcessing(false);
-        // Append time to avoid timezone issues
-        const isoDateTime = `${scheduledDate}T09:00:00`;
+        // 09:00 in the USER's timezone, converted to an absolute instant.
+        //
+        // This used to hand over the bare local string `YYYY-MM-DDT09:00:00`,
+        // which carries no offset — the server would have parsed it in ITS
+        // timezone, so a follow-up set for 9am in Los Angeles would have gone
+        // out at 9am UTC, eight hours early. Harmless while nothing consumed
+        // the value; now that it schedules a real send, it has to be an instant.
+        const isoDateTime = new Date(`${scheduledDate}T09:00:00`).toISOString();
         onComplete(isoDateTime, draft?.body); // Date present means scheduled, pass content
       }, 1000);
     }
@@ -236,7 +261,7 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
             <p className="text-sm text-neutral-400 text-center mb-6">
               {confirmDialog.type === 'SEND'
                 ? "This email will be sent immediately to the recipient. Are you sure?"
-                : `This email will be automatically sent on ${new Date(scheduledDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} if no reply is received.`}
+                : `This email will be queued and sent on ${new Date(scheduledDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at 9:00am your time. It will not send if they reply first.`}
             </p>
             <div className="flex space-x-3">
               <button
@@ -478,6 +503,13 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                 />
               </div>
 
+              {generateError && (
+                <div className="flex items-start gap-2 mb-3 text-xs text-red-300 bg-red-500/10 p-2 rounded-xl border border-red-500/25">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{generateError}</span>
+                </div>
+              )}
+
               <div className="flex space-x-3">
                 <button
                   onClick={handleGenerate}
@@ -603,12 +635,14 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                   </button>
                 </div>
 
-                {settings.useRealApi && (
-                  <div className="flex items-center text-xs text-amber-400 bg-amber-500/15 p-2 rounded-xl border border-amber-500/25 mb-3">
-                    <AlertTriangle className="w-4 h-4 mr-2 shrink-0" />
-                    <span>Scheduling is not supported in Client-Side mode (requires backend).</span>
-                  </div>
-                )}
+                {/*
+                  These controls were disabled for a while because nothing
+                  behind them scheduled anything — DashboardView used the chosen
+                  date only to pick the toast wording. They are live again now
+                  that handleActionComplete routes a date through
+                  scheduleFollowUp -> POST /api/followups/schedule, which queues
+                  a real server-side job.
+                */}
 
                 {/* Quick Presets */}
                 <div className="grid grid-cols-4 gap-2 mb-3">
@@ -619,7 +653,7 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                       <button
                         key={preset.label}
                         onClick={() => applyPreset(preset.days)}
-                        disabled={settings.useRealApi}
+                        disabled={isProcessing}
                         className={`px-2 py-1.5 text-xs border rounded-full transition-all font-medium active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
                           isActive
                             ? 'bg-purple-600 border-purple-600 text-white'
@@ -644,7 +678,7 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                       max="365"
                       value={sendDelay}
                       onChange={handleDelayChange}
-                      disabled={settings.useRealApi}
+                      disabled={isProcessing}
                       className="w-full p-2 text-sm border border-purple-500/30 rounded-xl text-neutral-200 bg-white/[0.03] focus:outline-none focus:border-purple-400 transition-colors disabled:opacity-50"
                     />
                   </div>
@@ -655,14 +689,14 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                       min={new Date().toISOString().split('T')[0]}
                       value={scheduledDate}
                       onChange={handleDateChange}
-                      disabled={settings.useRealApi}
+                      disabled={isProcessing}
                       className="w-full p-2 text-sm border border-purple-500/30 rounded-xl text-neutral-200 bg-white/[0.03] focus:outline-none focus:border-purple-400 transition-colors disabled:opacity-50 [color-scheme:dark]"
                     />
                   </div>
 
                   <button
                     onClick={initiateSchedule}
-                    disabled={isProcessing || !scheduledDate || settings.useRealApi}
+                    disabled={isProcessing || !scheduledDate}
                     className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-full hover:bg-purple-500 transition-all flex items-center disabled:opacity-50 whitespace-nowrap active:scale-95 disabled:cursor-not-allowed"
                   >
                     {isProcessing ? (
@@ -674,10 +708,13 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                   </button>
                 </div>
 
+                {/* True again as of the scheduling wiring: the job is queued
+                    server-side with skipIfReplied, and sendFollowupJob checks
+                    for a reply before it sends. */}
                 <p className="text-xs text-purple-300/80 mt-3 font-medium animate-in fade-in">
                   {scheduledDate ? (
                     <>
-                      Follow-up set for{' '}
+                      Follow-up queued for{' '}
                       <span className="font-semibold underline decoration-purple-500/60">
                         {new Date(scheduledDate).toLocaleDateString(undefined, {
                           weekday: 'long',
@@ -686,10 +723,10 @@ export const ComposeFollowUp: React.FC<ComposeFollowUpProps> = ({ email, onClose
                           day: 'numeric',
                         })}
                       </span>
-                      . It will send automatically if no reply is received.
+                      {' '}at 9:00am. It will not send if they reply first.
                     </>
                   ) : (
-                    'Select a date to enable auto-follow up.'
+                    'Pick a date to queue this follow-up.'
                   )}
                 </p>
               </div>

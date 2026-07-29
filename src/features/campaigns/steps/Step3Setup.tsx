@@ -171,6 +171,12 @@ export const Step3Setup: React.FC<Step3Props> = ({
                 );
               })}
             </div>
+            {!DAYS.some((d) => schedule.sendDays[d.key]) && (
+              <div className="flex items-start gap-2 mt-2 text-xs text-amber-400">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                Pick at least one active day — a campaign with no sending days never sends anything.
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -227,11 +233,15 @@ export const Step3Setup: React.FC<Step3Props> = ({
               <input
                 type="number"
                 min={1}
+                max={2000}
                 value={schedule.maxNewLeadsPerDay}
                 onChange={(e) =>
                   onScheduleChange({
                     ...schedule,
-                    maxNewLeadsPerDay: Math.max(1, Number(e.target.value) || 1),
+                    // Clamped to the server's own ceiling (dailyLimit max 2000
+                    // in campaigns/routes.ts), so a larger number is corrected
+                    // here instead of 400-ing at the end of the wizard.
+                    maxNewLeadsPerDay: Math.max(1, Math.min(2000, Number(e.target.value) || 1)),
                   })
                 }
                 className="w-full bg-white/[0.03] border border-white/10 text-sm text-white rounded-xl px-3 py-2 focus:outline-none focus:border-volt-text transition-colors"

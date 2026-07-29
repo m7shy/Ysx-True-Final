@@ -25,7 +25,13 @@ export const BrandOSView: React.FC = () => {
       }
     } catch (error) {
       console.error("Failed to generate brand bible", error);
-      setError("An unexpected error occurred. Please check your network and try again.");
+      // Show the server's actual reason. The Gemini proxy explains itself
+      // precisely ("GEMINI_API_KEY unset", an upstream quota message, a safety
+      // blockReason) and this used to replace all of it with "check your
+      // network", which sends the user to debug the one thing that is fine.
+      setError(error instanceof Error && error.message
+        ? error.message
+        : "An unexpected error occurred. Please check your network and try again.");
     } finally {
       setIsLoading(false);
     }

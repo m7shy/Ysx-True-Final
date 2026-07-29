@@ -295,6 +295,64 @@ export const useEmailProvider = () => {
     [settings]
   );
 
+  /**
+   * Queue a follow-up to be sent later, server-side.
+   *
+   * The composer has offered a date picker since it was written, but nothing
+   * behind it ever scheduled anything: DashboardView took the chosen date and
+   * used it only to pick the toast wording, so "send in 5 days" sent
+   * immediately and reported success. POST /api/followups/schedule existed and
+   * worked the whole time — it was simply never called from here.
+   *
+   * `campaignId` and `originalMessageId` are omitted on purpose. A one-off
+   * follow-up belongs to no campaign, and an IMAP message often has no
+   * Message-ID; both are optional server-side, and reply detection falls back
+   * to In-Reply-To/References and then the thread subject. Do NOT invent a
+   * campaign id to satisfy the field — sendFollowupJob cancels a job whose
+   * campaign does not resolve, so the follow-up would vanish silently.
+   */
+  const scheduleFollowUp = useCallback(
+    async (originalEmail: Email, followUpContent: string, sendAtIso: string): Promise<SendEmailResult> => {
+      setLoading(true);
+      setError(null);
+
+      const baseFollowups: FollowupsSummary = { attempted: true, scheduled: 0, errors: [] };
+
+      try {
+        if (!settings.useRealApi) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return { success: true, followups: { ...baseFollowups, scheduled: 1 } };
+        }
+
+        await scheduleFollowup({
+          provider: toFollowupProviderKey(settings.activeProvider),
+          to: originalEmail.to,
+          subject: toReplySubject(originalEmail.subject),
+          body: withSignature(followUpContent, settings.emailSignature),
+          scheduledAt: sendAtIso,
+          recipientEmail: originalEmail.to,
+          // The thread's first message, so the reply check knows how far back
+          // to look. Falls back to now for an email with no date.
+          initialSentAt: originalEmail.date || new Date().toISOString(),
+          ...(originalEmail.messageId ? { originalMessageId: originalEmail.messageId } : {}),
+          // Never mail someone who has already answered.
+          skipIfReplied: true,
+        });
+
+        return { success: true, followups: { ...baseFollowups, scheduled: 1 } };
+      } catch (err: any) {
+        console.error('Failed to schedule follow-up:', err);
+        const appErr =
+          err instanceof AppError ? err : new AppError(AppErrorCode.UNKNOWN, 'SYSTEM', err?.message || 'Unknown error');
+        setError(appErr);
+        return { success: false, error: appErr, followups: baseFollowups };
+      } finally {
+        setLoading(false);
+      }
+    },
+    [settings]
+  );
+
   return {
     loading,
     emails,
@@ -303,6 +361,7 @@ export const useEmailProvider = () => {
     loadEmails,
     sendNewEmail,
     sendFollowUp,
+    scheduleFollowUp,
     updateSettings,
   };
 }

@@ -112,6 +112,13 @@ export interface Campaign {
   name: string;
   createdAt: string;
   status: 'DRAFT' | 'SCHEDULED' | 'SENT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+  /**
+   * Write-only. Sent on create/update to populate CampaignRecipient rows, but
+   * `toClientCampaign` hardcodes it to `[]` on every response so a 5,000-row
+   * campaign is not serialised into every list render. Reading it to display a
+   * count or a table therefore always showed zero recipients — use
+   * services/campaignsApi's fetchCampaignRecipients instead.
+   */
   recipients: Recipient[];
   subject: string;
   body: string;

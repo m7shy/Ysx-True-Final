@@ -26,7 +26,7 @@ const STAT_CARDS: { key: StatKey; label: string; valueClass: string; icon: any; 
 
 export const DashboardView: React.FC<DashboardViewProps> = () => {
   const { settings } = useSettings();
-  const { emails, loading, error: appError, loadEmails, sendFollowUp } = useEmailProvider();
+  const { emails, loading, error: appError, loadEmails, sendFollowUp, scheduleFollowUp } = useEmailProvider();
   const { showToast } = useNotification();
 
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
@@ -152,13 +152,24 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       // throwing, so the catch below never fired on a failed send — and the user
       // was told "Follow-up sent successfully" for an email that never left.
       // Believing that costs a real follow-up to a real prospect.
-      const result = await sendFollowUp(selectedEmail, body);
+      // `date` now decides which of the two actually happens. It used to
+      // choose only the toast wording, so picking a date sent the email
+      // immediately and then reported it as scheduled.
+      const result = date
+        ? await scheduleFollowUp(selectedEmail, body, date)
+        : await sendFollowUp(selectedEmail, body);
+
       if (!result?.success) {
         showToast('ERROR', `Action failed: ${result?.error?.message ?? 'The follow-up could not be sent.'}`);
         return;
       }
       setSelectedEmailId(null);
-      showToast('SUCCESS', date ? "Follow-up scheduled successfully." : "Follow-up sent successfully.");
+      showToast(
+        'SUCCESS',
+        date
+          ? `Follow-up scheduled for ${new Date(date).toLocaleString()}. It won't send if they reply first.`
+          : 'Follow-up sent successfully.',
+      );
     } catch (e: any) {
       // Still needed: a throw before sendFollowUp's own try (or from the toast
       // path) would otherwise surface as an unhandled rejection.

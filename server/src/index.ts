@@ -35,7 +35,12 @@ import { requireClientAuth } from './auth/clientMiddleware.js';
 import clientsRouter from './clients/routes.js';
 import projectsRouter from './projects/routes.js';
 import invoicesRouter from './invoices/routes.js';
-import { unsubscribeHeaders, unsubscribeUrlForRecipient, complianceFooter } from './campaigns/trackedHtml.js';
+import {
+  unsubscribeHeaders,
+  unsubscribeUrlForRecipient,
+  unsubscribeUrlForAddress,
+  complianceFooter,
+} from './campaigns/trackedHtml.js';
 import { assertSenderIdentity } from './campaigns/senderIdentity.js';
 import { reportActivity } from './scheduler/pulse.js';
 import { isSuppressed } from './leads/suppression.js';
@@ -598,6 +603,33 @@ export async function sendFollowupJob(job: any) {
     // Only append the HTML footer to an HTML part that actually exists —
     // synthesising one would turn a deliberately plain-text follow-up into a
     // multipart message and change how it lands.
+    if (bodyHtml) bodyHtml = `${bodyHtml}${footer.html}`;
+  } else {
+    // One-off follow-up: scheduled from the Dashboard composer, so there is no
+    // campaign and no CampaignRecipient row to derive an opt-out link from.
+    //
+    // It gets the SAME footer and headers regardless — a scheduled follow-up to
+    // a cold prospect is the same commercial message whether or not a campaign
+    // queued it, and the whole point of routing every send through one builder
+    // is that the two cannot drift apart. The opt-out URL is signed over
+    // (tenant, address) instead of a row id.
+    //
+    // Fails closed identically: assertSenderIdentity throws and the scheduler's
+    // per-job handler retries, so the follow-up sends itself once an address is
+    // configured rather than being lost.
+    const recipientForFooter = String(job.recipientEmail ?? job.to ?? '').trim();
+    if (!recipientForFooter) {
+      await cancelFollowup(String(job.id), 'no_recipient');
+      logger.warn({ id: job.id }, 'Follow-up cancelled: no recipient address to build a compliant footer from');
+      return;
+    }
+
+    const identity = await assertSenderIdentity(userId);
+    const unsubscribeUrl = unsubscribeUrlForAddress(userId, recipientForFooter);
+    const footer = complianceFooter(identity, unsubscribeUrl);
+
+    headers = unsubscribeHeaders(unsubscribeUrl);
+    bodyText = `${bodyText ?? ''}${footer.text}`;
     if (bodyHtml) bodyHtml = `${bodyHtml}${footer.html}`;
   }
 

@@ -13,6 +13,11 @@ import {
   type WireProvider,
 } from '../creds/mailboxStore.js';
 import { sendSmtpMail } from './smtpGateway.js';
+import { prisma } from '../db/prisma.js';
+import { isSuppressed } from '../leads/suppression.js';
+import { LeadStatus } from '@prisma/client';
+import { assertSenderIdentity } from '../campaigns/senderIdentity.js';
+import { complianceFooter, unsubscribeHeaders, unsubscribeUrlForAddress } from '../campaigns/trackedHtml.js';
 
 /**
  * Mail router (tenant-scoped).
@@ -308,15 +313,77 @@ router.post('/send', express.json({ limit: '1mb' }), async (req: Request, res: R
       throw makeHttpError(400, 'INVALID_INPUT', 'to, subject and body are required');
     }
 
+    // Honour do-not-contact and the suppression list before anything is sent.
+    //
+    // This route had NO opt-out enforcement of any kind, so a person who
+    // clicked unsubscribe could still be emailed from the Dashboard's follow-up
+    // composer — the one send path that reaches a prospect with no campaign row
+    // behind it. isSuppressed/enforceDnc were checked on the campaign initial
+    // send (campaigns/worker.ts) and the campaign follow-up job (index.ts) and
+    // nowhere else, which is exactly what suppression.ts's own comment
+    // ("Callers on the send path check isSuppressed() separately") assumes every
+    // caller does.
+    //
+    // Checked per address, and by address rather than by lead id: the
+    // suppression record is what survives the Lead row being deleted, so an
+    // opt-out must still bite when there is no longer a lead to read a status
+    // from.
+    for (const addr of toList) {
+      const email = addr.replace(/^.*<|>.*$/g, '').trim().toLowerCase();
+      if (!email) continue;
+
+      const lead = await prisma.lead.findFirst({
+        where: { userId, email: { equals: email, mode: 'insensitive' } },
+        select: { status: true },
+      });
+      if (lead?.status === LeadStatus.DNC) {
+        throw makeHttpError(409, 'DNC', `${email} is marked do-not-contact — sending would breach their opt-out`);
+      }
+      if (await isSuppressed(userId, email)) {
+        throw makeHttpError(409, 'SUPPRESSED', `${email} has unsubscribed — sending would breach their opt-out`);
+      }
+    }
+
+    // A commercial message needs a per-RECIPIENT opt-out link, so one message
+    // to several addresses cannot be made compliant: every recipient but one
+    // would get a link that unsubscribes somebody else. Refused rather than
+    // sent with a wrong link. Nothing sends multi-recipient today — gwSend
+    // takes a single address — so this closes the shape rather than a use case.
+    if (toList.length > 1) {
+      throw makeHttpError(
+        400,
+        'MULTIPLE_RECIPIENTS',
+        'Send to one recipient at a time: each message carries an unsubscribe link bound to its recipient.',
+      );
+    }
+
+    // Fail closed without a sender identity, exactly as the campaign path does.
+    //
+    // This route sent commercial email with no postal address, no visible
+    // unsubscribe link and no List-Unsubscribe header, while the campaign path
+    // refuses to send at all without them. Same law, same obligation; the only
+    // reason it differed is that the footer's opt-out URL used to be derived
+    // from a CampaignRecipient row, which a one-off send has none of.
+    // unsubscribeUrlForAddress signs (tenant, address) instead — no row, no
+    // migration — and the opt-out lands on the suppression list the guard above
+    // reads.
+    const identity = await assertSenderIdentity(userId);
+    const unsubscribeUrl = unsubscribeUrlForAddress(userId, toList[0].replace(/^.*<|>.*$/g, '').trim());
+    const footer = complianceFooter(identity, unsubscribeUrl);
+
     // From MUST be the authenticated mailbox. A client-supplied "from" becomes Reply-To.
     const replyToValue = typeof raw.from === 'string' && raw.from.includes('@') ? raw.from : undefined;
 
     const messageId = await sendSmtpMail(userId, provider, {
       to: toList.join(', '),
       subject,
-      text: bodyText,
-      html: bodyHtml,
+      text: bodyText !== undefined ? `${bodyText}${footer.text}` : undefined,
+      // Only append to an HTML part that already exists — synthesising one
+      // would turn a deliberately plain-text message into multipart and change
+      // how it lands.
+      html: bodyHtml !== undefined ? `${bodyHtml}${footer.html}` : undefined,
       replyTo: replyToValue,
+      headers: unsubscribeHeaders(unsubscribeUrl),
     });
 
     res.json({

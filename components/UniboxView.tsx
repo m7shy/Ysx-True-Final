@@ -93,8 +93,13 @@ export const UniboxView: React.FC = () => {
       // the irreversible half; a stale thread list is cosmetic.
       await sendReplyToThread(selectedThreadId, replyText);
     } catch (e) {
+      // Show the server's reason. This route now refuses a send for three
+      // reasons that "Please try again" is actively wrong about — the lead is
+      // do-not-contact, the address unsubscribed, or the account has no postal
+      // address configured yet (MISSING_SENDER_IDENTITY). Retrying cannot fix
+      // any of them, and only the message says which it is.
       console.error("Failed to send reply", e);
-      showToast('ERROR', "Failed to send reply. Please try again.");
+      showToast('ERROR', e instanceof Error && e.message ? e.message : "Failed to send reply. Please try again.");
       if (isMounted.current) setIsSending(false);
       return;
     }

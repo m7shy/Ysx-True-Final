@@ -1,7 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Search, Shield, Send, Play } from 'lucide-react';
+import { Search, Shield, Send, Play, AlertTriangle } from 'lucide-react';
 import { Lead, SequenceStage } from '../types';
 import { renderTemplate } from '../utils';
+
+/** Mirrors the `.max(5000)` on `recipients` in server/src/campaigns/routes.ts. */
+const MAX_RECIPIENTS = 5000;
 
 interface Step4Props {
   leads: Lead[];
@@ -65,6 +68,15 @@ export const Step4Review: React.FC<Step4Props> = ({
           <p className="text-xs text-neutral-500 mt-2">
             {filtered.length} of {leads.length} lead{leads.length === 1 ? '' : 's'}
           </p>
+          {leads.length > MAX_RECIPIENTS && (
+            // The server caps `recipients` at 5000 per request, so submitting
+            // this would 400 with a zod message after four steps of work.
+            <div className="flex items-start gap-2 mt-2 text-xs text-amber-400">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              {leads.length.toLocaleString()} leads exceeds the {MAX_RECIPIENTS.toLocaleString()} per-campaign
+              limit — remove some, or split this into more than one campaign.
+            </div>
+          )}
         </div>
         <ul className="flex-1 overflow-y-auto">
           {filtered.map(({ lead, index }) => {

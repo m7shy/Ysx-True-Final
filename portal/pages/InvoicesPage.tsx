@@ -14,13 +14,29 @@ import {
   type InvoiceStatus,
 } from '../services/portalApi';
 
-const STATUS_BADGE: Record<InvoiceStatus, { variant: 'neutral' | 'volt' | 'success' | 'warning' | 'danger'; label: string }> = {
+type StatusBadge = { variant: 'neutral' | 'volt' | 'success' | 'warning' | 'danger'; label: string };
+
+const STATUS_BADGE: Record<InvoiceStatus, StatusBadge> = {
   SENT: { variant: 'volt', label: 'Awaiting payment' },
   VIEWED: { variant: 'volt', label: 'Awaiting payment' },
   OVERDUE: { variant: 'danger', label: 'Overdue' },
   PAID: { variant: 'success', label: 'Paid' },
   CANCELLED: { variant: 'neutral', label: 'Cancelled' },
 };
+
+/**
+ * Never index STATUS_BADGE directly. It is exhaustive over the CLIENT's
+ * InvoiceStatus union, which is an assertion about the server rather than a
+ * derivation from it — adding a status to the Prisma enum leaves this map
+ * "exhaustive" as far as tsc is concerned while the lookup returns undefined,
+ * and the next line reads `.variant` off it. That exact shape white-screened
+ * ScraperView on 2026-07-29 (STATUS_META['cancelling']) and the portal shell
+ * the day before. The portal routes currently filter DRAFT and CANCELLED out,
+ * so this is defence against a future widening, not a live bug.
+ */
+function statusBadge(status: InvoiceStatus): StatusBadge {
+  return STATUS_BADGE[status] ?? { variant: 'neutral', label: String(status) };
+}
 
 export const InvoicesPage: React.FC<{ id?: string }> = ({ id }) => {
   return id ? <InvoiceDetail id={id} /> : <InvoiceList />;
@@ -80,7 +96,7 @@ const InvoiceList: React.FC = () => {
             </THead>
             <TBody>
               {data.invoices.map((inv) => {
-                const badge = STATUS_BADGE[inv.status];
+                const badge = statusBadge(inv.status);
                 return (
                   <TR
                     key={inv.id}
@@ -123,7 +139,7 @@ const InvoiceDetail: React.FC<{ id: string }> = ({ id }) => {
     );
 
   const { invoice, paymentInstructions } = data;
-  const badge = STATUS_BADGE[invoice.status];
+  const badge = statusBadge(invoice.status);
   const receipt = invoice.payments.find((p) => p.receipt)?.receipt ?? null;
 
   return (

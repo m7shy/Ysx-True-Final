@@ -21,7 +21,6 @@ import { IntegrationsView } from './components/IntegrationsView';
 import { DocumentationView } from './components/DocumentationView';
 import { LeadsView } from './components/LeadsView';
 import { BrandOSView } from './components/BrandOSView';
-import { PerformanceView } from './components/PerformanceView';
 import { StoryVaultView } from './components/StoryVaultView';
 import { CampaignsListView } from './components/CampaignsListView';
 import { CampaignDetailView } from './components/CampaignDetailView';
@@ -29,12 +28,19 @@ import { UniboxView } from './components/UniboxView';
 import { ScraperView } from './components/ScraperView';
 
 // Icons & UI
-import { Mail, RefreshCcw, Layout, Plus, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, TrendingUp, Film, Megaphone, MessageSquare, AlertTriangle, LogOut, Radar, Briefcase } from 'lucide-react';
+import { Mail, RefreshCcw, Layout, Plus, FileText, BarChart3, Settings, Layers, X, Users, Menu, PlugZap, Palette, Film, Megaphone, MessageSquare, AlertTriangle, LogOut, Radar, Briefcase } from 'lucide-react';
 import ClientPortalView from './components/ClientPortalView';
 import { gwHealth } from './services/mailGateway';
 import { getScraperStatus, getAutoSchedule } from './services/scraperApi';
 
-type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'SCRAPER' | 'BRAND_OS' | 'PERFORMANCE' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX' | 'CLIENT_PORTAL';
+// 'PERFORMANCE' was removed from this union on 2026-07-29 rather than merely
+// unlinked from the sidebar: components/PerformanceView.tsx is fed entirely by
+// services/mockPerformance (invented client names, fees, hours logged and
+// revenue) and there is no data model behind it to wire up. Leaving it in the
+// union would let it be routed to again by a one-word change; removing it makes
+// tsc refuse. The component and its fixture are kept on disk for whenever the
+// profitability data model actually exists.
+type View = 'DASHBOARD' | 'TEMPLATES' | 'ANALYTICS' | 'INTEGRATIONS' | 'DOCUMENTATION' | 'LEADS' | 'SCRAPER' | 'BRAND_OS' | 'STORY_VAULT' | 'CAMPAIGNS' | 'CAMPAIGN_DETAIL' | 'UNIBOX' | 'CLIENT_PORTAL';
 
 // Campaign-creation overlay flow: name popup first, then the 4-step wizard.
 type WizardFlow = 'closed' | 'naming' | 'wizard';
@@ -48,7 +54,6 @@ const VIEW_TITLES: Record<View, string> = {
   LEADS: 'Leads',
   SCRAPER: 'YouTube Scraper',
   BRAND_OS: 'Brand OS',
-  PERFORMANCE: 'Performance',
   STORY_VAULT: 'Story Vault',
   CAMPAIGNS: 'Campaigns',
   CAMPAIGN_DETAIL: 'Campaign Details',
@@ -170,7 +175,6 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
             {nav('SCRAPER', Radar, 'Scraper', undefined, scraperBusy)}
             {nav('STORY_VAULT', Film, 'Story Vault')}
             {nav('BRAND_OS', Palette, 'Brand OS')}
-            {nav('PERFORMANCE', TrendingUp, 'Performance')}
             {nav('TEMPLATES', FileText, 'Templates')}
             {nav('ANALYTICS', BarChart3, 'Analytics')}
             {nav('INTEGRATIONS', Layers, 'Integrations')}
@@ -390,7 +394,6 @@ const AppContent: React.FC = () => {
       case 'DOCUMENTATION': return <DocumentationView onBack={() => setCurrentView('INTEGRATIONS')} />;
       case 'LEADS': return <LeadsView onCompose={handleComposeFromLead} />;
       case 'BRAND_OS': return <BrandOSView />;
-      case 'PERFORMANCE': return <PerformanceView />;
       case 'STORY_VAULT': return <StoryVaultView />;
       case 'UNIBOX': return <UniboxView />;
       case 'CLIENT_PORTAL': return <ClientPortalView />;

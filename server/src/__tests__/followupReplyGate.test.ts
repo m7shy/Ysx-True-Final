@@ -50,6 +50,21 @@ function activeCampaign() {
 vi.mock('../db/prisma.js', () => ({
   prisma: {
     lead: { findFirst: async () => null },
+    // The jobs in this file carry no campaignId, so they take sendFollowupJob's
+    // one-off branch, which stamps the compliance footer via
+    // assertSenderIdentity -> prisma.user.findUnique. Before campaign-less
+    // follow-ups were sendable that branch did not exist and these jobs went
+    // out with no footer at all; the identity has to resolve here or the send
+    // fails closed, which is the correct behaviour but not what this file is
+    // testing.
+    user: {
+      findUnique: async () => ({
+        businessName: 'YSX Visuals',
+        businessAddress: '12 Example Street, London N1 1AA',
+        senderProvenance: null,
+      }),
+    },
+    suppression: { findUnique: async () => null },
     campaign: {
       findFirst: async () => activeCampaign(),
       findUnique: async () => activeCampaign(),

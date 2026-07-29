@@ -10,9 +10,10 @@ import { LeadStatus, TrackingEventType } from '@prisma/client';
 
 import { prisma } from '../db/prisma.js';
 import { logger } from '../logger.js';
-import { verifyTrackingToken, verifyClickToken } from './trackingToken.js';
+import { verifyTrackingToken, verifyClickToken, verifyAddressUnsubscribeToken } from './trackingToken.js';
 import { stopRecipientForEvent } from './engine.js';
 import { enforceDnc } from '../leads/dnc.js';
+import { suppress } from '../leads/suppression.js';
 
 const router = express.Router();
 
@@ -172,7 +173,42 @@ const UNSUB_CONFIRM_FORM = (token: string) => `<!doctype html>
 </form>
 </div></body></html>`;
 
+/**
+ * Opt out by address, for links minted by the one-off send paths (no
+ * CampaignRecipient row exists to resolve).
+ *
+ * Writes to the Suppression list FIRST and unconditionally: that record is
+ * keyed on the address and survives the Lead being deleted, so it is the part
+ * that must not depend on a lead existing. Flipping the Lead to DNC (and
+ * running enforceDnc to tear down queued sends) is best-effort on top, for the
+ * common case where the address is in the CRM.
+ */
+async function unsubscribeByAddress(userId: string, email: string): Promise<boolean> {
+  await suppress(userId, email, 'UNSUBSCRIBE');
+
+  const lead = await prisma.lead.findFirst({
+    where: { userId, email: { equals: email, mode: 'insensitive' } },
+    select: { id: true, email: true, status: true },
+  });
+
+  if (lead) {
+    if (lead.status !== LeadStatus.DNC) {
+      await prisma.lead.update({ where: { id: lead.id }, data: { status: LeadStatus.DNC } });
+    }
+    await enforceDnc(userId, lead as any);
+  }
+
+  logger.info({ userId, hasLead: Boolean(lead) }, 'Address unsubscribed via one-click link');
+  return true;
+}
+
 async function unsubscribeByToken(token: string): Promise<boolean> {
+  // Address-scoped token (one-off sends). Tried first and independently: the
+  // two token families are domain-separated in the HMAC, so exactly one can
+  // ever verify.
+  const address = verifyAddressUnsubscribeToken(token);
+  if (address) return unsubscribeByAddress(address.userId, address.email);
+
   const recipientId = verifyTrackingToken(token);
   if (!recipientId) return false;
   const recipient = await loadRecipient(recipientId);
@@ -204,8 +240,10 @@ router.get('/u/:token', async (req: Request, res: Response) => {
     // Verify the token is structurally valid (signed, not tampered) without
     // touching the lead — we just want to know if the link is legit enough
     // to show a confirmation form vs. an error page.
-    const recipientId = verifyTrackingToken(req.params.token);
-    if (!recipientId) {
+    const valid =
+      Boolean(verifyAddressUnsubscribeToken(req.params.token)) ||
+      Boolean(verifyTrackingToken(req.params.token));
+    if (!valid) {
       res.status(404).send(UNSUB_PAGE('This unsubscribe link is invalid or expired'));
       return;
     }

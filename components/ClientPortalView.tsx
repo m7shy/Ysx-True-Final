@@ -70,6 +70,15 @@ const STAGE_LABEL: Record<ProjectStage, string> = {
   COMPLETE: 'Complete',
 };
 
+/**
+ * Exhaustive over the CLIENT's ProjectStage union, which asserts a shape the
+ * server is free to widen: a new value in the Prisma ProjectStage enum leaves
+ * this map "exhaustive" to tsc while the lookup returns undefined. Degrade to
+ * the raw value rather than rendering nothing. (Same class as the ScraperView
+ * and portal-shell white screens of 2026-07-28/29.)
+ */
+const stageLabel = (stage: ProjectStage): string => STAGE_LABEL[stage] ?? String(stage);
+
 const INVOICE_BADGE: Record<string, 'neutral' | 'volt' | 'success' | 'warning' | 'danger'> = {
   DRAFT: 'neutral',
   SENT: 'volt',
@@ -323,7 +332,7 @@ const ProjectsTab: React.FC<{ onOpen: (id: string) => void }> = ({ onOpen }) => 
                 <TR key={p.id} className="cursor-pointer" onClick={() => onOpen(p.id)}>
                   <TD className="font-medium text-white">{p.name}</TD>
                   <TD className="text-neutral-400">{p.client?.name}</TD>
-                  <TD><Badge variant="volt">{STAGE_LABEL[p.stage]}</Badge></TD>
+                  <TD><Badge variant="volt">{stageLabel(p.stage)}</Badge></TD>
                   <TD className="text-neutral-400">{p.progressPct}%</TD>
                   <TD className="text-neutral-400">{dateStr(p.etaAt)}</TD>
                   <TD>
@@ -400,6 +409,12 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
   const [removeTarget, setRemoveTarget] = React.useState<{ id: string; label: string } | null>(null);
   const [removeBusy, setRemoveBusy] = React.useState(false);
 
+  // Add-file-link and post-message in-flight state (see submitFile/sendMsg).
+  const [fileBusy, setFileBusy] = React.useState(false);
+  const fileBusyRef = React.useRef(false);
+  const [msgBusy, setMsgBusy] = React.useState(false);
+  const msgBusyRef = React.useRef(false);
+
   const load = React.useCallback(() => {
     fetchAdminProject(id)
       .then((r) => {
@@ -441,25 +456,41 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
     }
   };
 
+  // Both forms below submit on Enter as well as on click, so a repeated press
+  // could add the same file link twice or post the same message twice to the
+  // client's portal. Ref-guarded rather than state-guarded for the reason given
+  // on sendingRef in InvoicesTab: two submits can land before React re-renders.
   const submitFile = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (fileBusyRef.current) return;
+    fileBusyRef.current = true;
+    setFileBusy(true);
     try {
       await addFileLink(id, file);
       setFile({ ...file, label: '', url: '' });
       load();
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      fileBusyRef.current = false;
+      setFileBusy(false);
     }
   };
 
   const sendMsg = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (msgBusyRef.current) return;
+    msgBusyRef.current = true;
+    setMsgBusy(true);
     try {
       await postAdminMessage(id, msg);
       setMsg('');
       load();
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      msgBusyRef.current = false;
+      setMsgBusy(false);
     }
   };
 
@@ -580,7 +611,7 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
             <div className="grid grid-cols-2 gap-3">
               <Select label="Stage" value={status.stage} onChange={(e) => setStatus({ ...status, stage: e.target.value as ProjectStage })}>
                 {STAGES.map((s) => (
-                  <option key={s} value={s}>{STAGE_LABEL[s]}</option>
+                  <option key={s} value={s}>{stageLabel(s)}</option>
                 ))}
               </Select>
               <Input
@@ -638,7 +669,7 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
             </div>
             <div className="flex gap-2">
               <Input placeholder="https:// link (Drive, Frame.io…)" required type="url" value={file.url} onChange={(e) => setFile({ ...file, url: e.target.value })} className="flex-1" />
-              <Button type="submit" size="sm">Add</Button>
+              <Button type="submit" size="sm" loading={fileBusy}>Add</Button>
             </div>
           </form>
           <ul className="space-y-1">
@@ -717,7 +748,7 @@ const ProjectDetail: React.FC<{ id: string; onBack: () => void }> = ({ id, onBac
           </div>
           <form onSubmit={sendMsg} className="flex gap-2">
             <Input placeholder="Message the client…" required value={msg} onChange={(e) => setMsg(e.target.value)} className="flex-1" aria-label="Message" />
-            <Button type="submit" size="sm" aria-label="Send"><Send className="h-3.5 w-3.5" /></Button>
+            <Button type="submit" size="sm" aria-label="Send" loading={msgBusy}><Send className="h-3.5 w-3.5" /></Button>
           </form>
 
           <Eyebrow className="mb-2 mt-5">Recent activity</Eyebrow>
@@ -772,6 +803,14 @@ const InvoicesTab: React.FC = () => {
   const [payTarget, setPayTarget] = React.useState<{ id: string; number: string } | null>(null);
   const [payReference, setPayReference] = React.useState('');
   const [payBusy, setPayBusy] = React.useState(false);
+  // In-flight invoice sends, keyed by invoice id so two DIFFERENT invoices can
+  // still be sent concurrently — a single "is a send running" flag would make
+  // clicking Send on invoice B silently do nothing while A was in flight.
+  // The ref is the guard (written synchronously, so a second handler sees it
+  // even if React has not re-rendered); the state copy is what drives the
+  // spinner.
+  const [sendingIds, setSendingIds] = React.useState<ReadonlySet<string>>(() => new Set());
+  const sendingRef = React.useRef<Set<string>>(new Set());
 
   const load = React.useCallback(() => {
     fetchAdminInvoices().then((r) => setInvoices(r.invoices)).catch((e) => setError(e.message));
@@ -779,6 +818,31 @@ const InvoicesTab: React.FC = () => {
     fetchAdminProjects().then((r) => setProjects(r.projects)).catch(() => {});
   }, []);
   React.useEffect(load, [load]);
+
+  /**
+   * Send an invoice to the client's portal, once.
+   *
+   * POST /api/invoices/:id/send accepts a DRAFT *or* an already-SENT invoice
+   * (deliberately — re-sending is a legitimate dunning action) and emails every
+   * portal user of that client on each accepted call. This button had no
+   * in-flight state and stayed enabled until load() returned, so a double-click
+   * on a slow connection delivered the same invoice email twice.
+   */
+  const sendOne = async (invoiceId: string) => {
+    if (sendingRef.current.has(invoiceId)) return;
+    sendingRef.current.add(invoiceId);
+    setSendingIds(new Set(sendingRef.current));
+    setError(null);
+    try {
+      await sendInvoice(invoiceId);
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      sendingRef.current.delete(invoiceId);
+      setSendingIds(new Set(sendingRef.current));
+    }
+  };
 
   const confirmMarkPaid = async () => {
     if (!payTarget) return;
@@ -854,7 +918,12 @@ const InvoicesTab: React.FC = () => {
                   <TD>
                     <div className="flex gap-2">
                       {inv.status === 'DRAFT' && (
-                        <Button size="sm" variant="secondary" onClick={() => sendInvoice(inv.id).then(load).catch((e) => setError(e.message))}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          loading={sendingIds.has(inv.id)}
+                          onClick={() => void sendOne(inv.id)}
+                        >
                           Send
                         </Button>
                       )}

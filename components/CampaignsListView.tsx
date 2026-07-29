@@ -3,10 +3,11 @@ import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useCampaigns } from '../context/CampaignContext';
 import { Campaign } from '../types';
-import { Search, Plus, Download, MoreVertical, Play, Pause, Trash2, Copy, FileText, Share2, Edit3, ChevronDown, ArrowRight, BarChart3 } from 'lucide-react';
+import { Search, Plus, Download, MoreVertical, Play, Pause, Trash2, Copy, FileText, Edit3, ChevronDown, ArrowRight, BarChart3 } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
 import { EASE, staggerDelay, AnimatedHeading, MaskedReveal } from './motion/primitives';
 import { Button, Badge, Input } from '../src/design/ui';
+import { downloadCampaignRecipientsCsv } from '../services/campaignsApi';
 
 interface CampaignsListViewProps {
   onNewCampaign: () => void;
@@ -22,6 +23,9 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All statuses');
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [csvBusyId, setCsvBusyId] = useState<string | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
 
@@ -33,6 +37,27 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
   const [togglingId, setTogglingId] = useState<string | null>(null);
   // duplicatingId prevents a double-click from creating two copies.
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  /**
+   * Download this campaign's recipients as CSV.
+   *
+   * The endpoint (GET /api/campaigns/:id/recipients?format=csv) has existed and
+   * worked since the wizard landed; this button simply had no onClick, while
+   * carrying an aria-label and a title that announced it as functional to
+   * screen readers too.
+   */
+  const downloadCsv = async (campaign: Campaign) => {
+    setCsvBusyId(campaign.id);
+    setCsvError(null);
+    try {
+      await downloadCampaignRecipientsCsv(campaign.id, campaign.name);
+      setActiveMenuId(null);
+    } catch (err: any) {
+      setCsvError(err?.message ?? 'Could not download the recipient list.');
+    } finally {
+      setCsvBusyId(null);
+    }
+  };
 
   const filteredCampaigns = campaigns.filter(c => {
     const matchesSearch = c.name.toLowerCase().includes(searchQuery.toLowerCase());
@@ -124,6 +149,12 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
         </motion.p>
       </div>
 
+      {csvError && (
+        <div className="mb-4 rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          {csvError}
+        </div>
+      )}
+
       {/* Toolbar */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
@@ -143,30 +174,37 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
         </div>
 
         <div className="flex items-center gap-3 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
-          <div className="relative group">
+          {/* Opens on click, not on hover: the trigger had no onClick and the
+              menu was revealed by `group-hover` alone, so the filter could not
+              be reached by keyboard at all. */}
+          <div className="relative">
              <button
                type="button"
+               onClick={() => setFilterOpen((o) => !o)}
+               aria-haspopup="listbox"
+               aria-expanded={filterOpen}
                className="flex items-center space-x-2 px-4 py-2.5 bg-white/[0.02] border border-white/10 backdrop-blur-xl rounded-full text-sm font-medium text-neutral-300 hover:bg-white/[0.05] transition-colors duration-300 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text focus-visible:ring-offset-2 focus-visible:ring-offset-noir"
              >
                 <span>{statusFilter}</span>
                 <ChevronDown className="w-3 h-3 text-neutral-400" />
              </button>
-             {/* Simple Dropdown for Filter */}
-             <div className="absolute top-full right-0 mt-2 w-40 bg-noir/95 border border-white/10 backdrop-blur-xl rounded-2xl shadow-none py-1 hidden group-hover:block z-20">
-               {['All statuses', 'Active', 'Paused', 'Completed', 'Draft'].map(s => (
-                 <button key={s} type="button" onClick={() => setStatusFilter(s)} className="block w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] transition-colors duration-300">{s}</button>
-               ))}
-             </div>
+             {filterOpen && (
+               <div role="listbox" className="absolute top-full right-0 mt-2 w-40 bg-noir/95 border border-white/10 backdrop-blur-xl rounded-2xl shadow-none py-1 z-20">
+                 {['All statuses', 'Active', 'Paused', 'Completed', 'Draft'].map(s => (
+                   <button
+                     key={s}
+                     type="button"
+                     role="option"
+                     aria-selected={statusFilter === s}
+                     onClick={() => { setStatusFilter(s); setFilterOpen(false); }}
+                     className="block w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] transition-colors duration-300"
+                   >
+                     {s}
+                   </button>
+                 ))}
+               </div>
+             )}
           </div>
-
-          <button
-            type="button"
-            className="p-2.5 bg-white/[0.02] border border-white/10 backdrop-blur-xl rounded-full text-neutral-400 hover:text-white transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-text focus-visible:ring-offset-2 focus-visible:ring-offset-noir"
-            aria-label="Download campaigns as CSV"
-            title="Download CSV"
-          >
-             <Download className="w-5 h-5" />
-          </button>
 
           <Button onClick={onNewCampaign} leftIcon={<Plus className="w-4 h-4" />} className="whitespace-nowrap">
             Add New
@@ -368,11 +406,14 @@ export const CampaignsListView: React.FC<CampaignsListViewProps> = ({
                                 >
                                    <Copy className="w-4 h-4 mr-2" /> {duplicatingId === campaign.id ? 'Duplicating…' : 'Duplicate'}
                                 </button>
-                                <button type="button" className="w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] flex items-center transition-colors duration-300">
-                                   <Download className="w-4 h-4 mr-2" /> Download CSV
-                                </button>
-                                <button type="button" className="w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] flex items-center transition-colors duration-300">
-                                   <Share2 className="w-4 h-4 mr-2" /> Share
+                                <button
+                                  type="button"
+                                  disabled={csvBusyId === campaign.id}
+                                  onClick={() => void downloadCsv(campaign)}
+                                  className="w-full text-left px-4 py-2 text-sm text-neutral-300 hover:bg-white/[0.05] flex items-center transition-colors duration-300 disabled:opacity-50"
+                                >
+                                   <Download className="w-4 h-4 mr-2" />
+                                   {csvBusyId === campaign.id ? 'Preparing…' : 'Download CSV'}
                                 </button>
                                 <div className="h-px bg-white/10 my-1" />
                                 <button type="button" onClick={() => { setDeleteId(campaign.id); setActiveMenuId(null); }} className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-500/10 flex items-center transition-colors duration-300">

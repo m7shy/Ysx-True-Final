@@ -67,6 +67,79 @@ function buildSequence(campaignData: {
   return sequence;
 }
 
+/**
+ * The fields that describe HOW a campaign sends — window, days, pacing, tracking
+ * and the stop-on-* rules — as opposed to what it says.
+ *
+ * These are collected by the wizard's Setup step, declared on `Campaign`, and
+ * stored as real columns, but `addCampaign` posted only
+ * name/subject/body/schedule/recipients and dropped all thirteen, while
+ * `duplicateCampaign` never copied them either. A campaign the user throttled to
+ * 40/day on weekdays 09:00–18:00 in the prospect's timezone was therefore created
+ * with none of it: no window, no day restriction, no daily limit, no interval —
+ * it sent around the clock, seven days a week, as fast as the worker would go.
+ * Nothing surfaced the loss, because every field is optional server-side and
+ * simply fell back to a column default.
+ *
+ * Nulls are dropped rather than forwarded: each field on the create schema is
+ * `.optional()`, which accepts `undefined` but REJECTS `null`, and these columns
+ * are null on any campaign that never set them — so spreading a fetched campaign
+ * straight into the payload would 400 on exactly the common case.
+ */
+type CampaignSendingConfig = Partial<
+  Pick<
+    Campaign,
+    | 'sendWindowStart'
+    | 'sendWindowEnd'
+    | 'sendDays'
+    | 'timezone'
+    | 'dailyLimit'
+    | 'sendIntervalMinutes'
+    | 'stopOnReply'
+    | 'stopOnClick'
+    | 'stopOnOpen'
+    | 'plainTextMode'
+    | 'followUpPercent'
+    | 'openTracking'
+    | 'linkTracking'
+  >
+>;
+
+export function sendingConfigPayload(source: CampaignSendingConfig): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  const put = (key: keyof CampaignSendingConfig, value: unknown): void => {
+    if (value !== undefined && value !== null) payload[key] = value;
+  };
+
+  // The send window is validated as a PAIR (requireCompleteSendWindow): one end
+  // without the other is a 400, because a half-configured window is silently
+  // ignored by isWithinSendWindow. Both or neither.
+  if (source.sendWindowStart != null && source.sendWindowEnd != null) {
+    payload.sendWindowStart = source.sendWindowStart;
+    payload.sendWindowEnd = source.sendWindowEnd;
+  }
+
+  // `sendDays: 0` sets no day at all, which the send engine reads as "never
+  // send"; the server refuses it now, so only a row predating that validation
+  // can carry it. It cannot be copied, so it degrades to "no day restriction" —
+  // safe here because a duplicate is always created as a DRAFT and cannot send
+  // until the user activates it deliberately.
+  put('sendDays', source.sendDays || undefined);
+
+  put('timezone', source.timezone);
+  put('dailyLimit', source.dailyLimit);
+  put('sendIntervalMinutes', source.sendIntervalMinutes);
+  put('stopOnReply', source.stopOnReply);
+  put('stopOnClick', source.stopOnClick);
+  put('stopOnOpen', source.stopOnOpen);
+  put('plainTextMode', source.plainTextMode);
+  put('followUpPercent', source.followUpPercent);
+  put('openTracking', source.openTracking);
+  put('linkTracking', source.linkTracking);
+
+  return payload;
+}
+
 export const CampaignProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -115,6 +188,9 @@ export const CampaignProvider: React.FC<{ children: ReactNode }> = ({ children }
         autoFollowUps: campaignData.autoFollowUps,
         sequence,
         recipients: campaignData.recipients,
+        // Everything the Setup step configured. Without this the whole of that
+        // step was collected, typed through, and discarded.
+        ...sendingConfigPayload(campaignData),
       });
 
       setCampaigns((prev) => [data.campaign, ...prev]);
@@ -176,6 +252,12 @@ export const CampaignProvider: React.FC<{ children: ReactNode }> = ({ children }
         distributionMethod: campaign.distributionMethod,
         autoFollowUps: campaign.autoFollowUps,
         sequence: campaign.sequence?.map((s) => ({ ...s, status: 'PENDING', scheduledFor: new Date().toISOString() })),
+        // A copy must send the way the original does. Without this, duplicating
+        // a carefully-throttled campaign produced one with no window, no day
+        // restriction and no daily limit — and "Copy of X" gives the user no
+        // reason to suspect it. Recipients are deliberately NOT copied (the
+        // copy starts empty, as it always has).
+        ...sendingConfigPayload(campaign),
       });
       setCampaigns((prev) => [data.campaign, ...prev]);
       showToast('SUCCESS', 'Campaign duplicated as draft.');

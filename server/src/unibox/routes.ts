@@ -10,6 +10,9 @@ import { requireUserId } from '../auth/middleware.js';
 import { pickRotationMailbox, recordMailboxSend } from '../creds/mailboxStore.js';
 import { sendFromMailbox } from '../mail/smtpGateway.js';
 import { enforceDnc } from '../leads/dnc.js';
+import { isSuppressed } from '../leads/suppression.js';
+import { assertSenderIdentity } from '../campaigns/senderIdentity.js';
+import { complianceFooter, unsubscribeHeaders, unsubscribeUrlForAddress } from '../campaigns/trackedHtml.js';
 
 /**
  * Unibox (tenant-scoped), backed by the Lead table — Phase 1 has no Message
@@ -189,16 +192,44 @@ router.post('/threads/:id/reply', async (req: Request, res: Response) => {
       return;
     }
 
+    // The suppression list is checked separately from Lead.status, because it
+    // is the record that survives the lead row: an address can be suppressed
+    // (they clicked unsubscribe) while its Lead sits at any status, or while no
+    // Lead exists at all. The status check above alone let a manual reply reach
+    // someone who had already opted out.
+    if (await isSuppressed(userId, lead.email)) {
+      res.status(409).json({
+        code: 'SUPPRESSED',
+        message: 'This address has unsubscribed — replying would breach their opt-out',
+      });
+      return;
+    }
+
     const mailbox = await pickRotationMailbox(userId);
     if (!mailbox) {
       res.status(409).json({ code: 'NO_MAILBOX', message: 'No connected mailbox is available to send from' });
       return;
     }
 
+    // Same legal footer and one-click header as every other commercial send.
+    //
+    // This path had neither. It is a reply, but it is a reply inside a cold
+    // outreach thread the recipient never asked to be in — the same category as
+    // the campaign message that started it, which refuses to send without a
+    // postal address. The opt-out URL is signed over (tenant, address) because
+    // a manual reply has no CampaignRecipient row to derive one from.
+    //
+    // Fails closed: assertSenderIdentity throws MissingSenderIdentityError
+    // (409) and the reply is not sent.
+    const identity = await assertSenderIdentity(userId);
+    const unsubscribeUrl = unsubscribeUrlForAddress(userId, lead.email);
+    const footer = complianceFooter(identity, unsubscribeUrl);
+
     await sendFromMailbox(mailbox, {
       to: lead.email,
       subject: `Re: Conversation with ${lead.name}`,
-      text: content,
+      text: `${content}${footer.text}`,
+      headers: unsubscribeHeaders(unsubscribeUrl),
     });
 
     // Without this the send is invisible to rotation: pickRotationMailbox

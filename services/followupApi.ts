@@ -67,10 +67,24 @@ export interface ScheduleFollowupInput {
   subject: string;
   body: string;
   scheduledAt: string;
-  campaignId: string;
   recipientEmail: string;
-  originalMessageId: string;
   initialSentAt: string;
+  /**
+   * Optional, matching the server (`campaignId: z.string().min(1).optional()`).
+   * A one-off follow-up composed on the Dashboard belongs to no campaign.
+   *
+   * Never synthesise a value to fill this in: sendFollowupJob looks the id up
+   * and cancels the job as `campaign_deleted` when it does not resolve, so a
+   * fake id yields a follow-up that is accepted, displayed as scheduled, and
+   * then silently dropped at send time.
+   */
+  campaignId?: string;
+  /**
+   * Optional: IMAP does not guarantee a Message-ID, and mailGateway derives it
+   * from `envelope?.messageId`. Reply detection degrades to
+   * In-Reply-To/References and then the thread subject without it.
+   */
+  originalMessageId?: string;
   stepIndex?: number;
   skipIfReplied?: boolean;
   onlyIfNoReply?: boolean;

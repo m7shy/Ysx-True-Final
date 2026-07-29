@@ -72,9 +72,17 @@ export async function scheduleFollowup(input: FollowupJobInput): Promise<Followu
     throw new Error("userId is required");
   }
 
-  if (!input.campaignId) {
-    throw new Error("campaignId is required");
-  }
+  // campaignId is deliberately OPTIONAL (the column is `String?`).
+  //
+  // A follow-up scheduled from the Dashboard composer belongs to no campaign.
+  // sendFollowupJob already guards every campaign-specific step with
+  // `if (job.campaignId)` — the campaign-exists check, the paused deferral and
+  // the send-window deferral — so a null id skips them and sends on schedule.
+  //
+  // Do NOT "fix" a missing id by synthesising one: sendFollowupJob looks it up
+  // and cancels the job as `campaign_deleted` when it does not resolve, so a
+  // fake id produces a follow-up that is accepted, shown as scheduled, and then
+  // silently dropped at send time.
 
   const recipientRaw = (input.recipientEmail ?? input.to ?? "").trim();
   if (!recipientRaw) {

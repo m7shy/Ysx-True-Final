@@ -39,25 +39,33 @@ async function authFetch(path: string, init: RequestInit = {}): Promise<Response
   return res;
 }
 
+/**
+ * Mirrors toSentItem() in server/src/mail/routes.ts. `id` is optional because
+ * the server derives it from `envelope?.messageId`, which IMAP does not
+ * guarantee; a `flags` field was declared here and never sent by any route, so
+ * it has been dropped rather than left as a shape the client asserts and the
+ * server does not produce.
+ */
 export interface GatewaySentItem {
   uid: number;
-  id: string;
+  id?: string;
   subject: string;
   from: string;
   to: string[];
   date: string;
   snippet: string;
-  flags: string[];
 }
 
+/** GET /api/mail/sent responds with `{ items }` and no `ok` flag. */
 export interface GatewaySentResponse {
-  ok: boolean;
   items: GatewaySentItem[];
 }
 
 function mapGatewayItemToEmail(item: GatewaySentItem): Email {
   return {
-    id: item.id,
+    // Falls back to the UID: `id` is the IMAP Message-ID, which the server
+    // leaves undefined when the envelope has none, and React needs a key.
+    id: item.id || `uid-${item.uid}`,
     subject: item.subject,
     body: item.snippet || '',
     date: item.date,

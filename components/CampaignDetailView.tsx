@@ -1,16 +1,53 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Campaign, SequenceStep } from '../types';
 import { ArrowLeft, Clock, CheckCircle2, PauseCircle, Users, Activity, CalendarClock } from 'lucide-react';
-import { Card, Badge, Table, THead, TBody, TR, TH, TD } from '../src/design/ui';
+import { Card, Badge, Table, THead, TBody, TR, TH, TD, Spinner, Alert } from '../src/design/ui';
+import { fetchCampaignRecipients, type CampaignRecipientRow } from '../services/campaignsApi';
 
 interface CampaignDetailViewProps {
   campaign: Campaign;
   onBack: () => void;
 }
 
+/** Recipient status → badge tone. String-keyed so a status the client has not
+ *  been taught about renders as itself instead of crashing the view. */
+const RECIPIENT_BADGE: Record<string, 'neutral' | 'volt' | 'success' | 'warning' | 'danger'> = {
+  PENDING: 'neutral',
+  SENDING: 'volt',
+  IN_SEQUENCE: 'volt',
+  COMPLETED: 'success',
+  REPLIED: 'success',
+  FAILED: 'danger',
+  SKIPPED: 'neutral',
+};
+
 export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({ campaign, onBack }) => {
   const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'SEQUENCE' | 'RECIPIENTS'>('SEQUENCE');
+
+  // `campaign.recipients` is always [] — the list/detail payload hardcodes it
+  // (campaigns/routes.ts toClientCampaign) so a 5,000-row campaign is not
+  // serialised on every render. The real rows come from their own endpoint.
+  const [recipients, setRecipients] = useState<CampaignRecipientRow[] | null>(null);
+  const [recipientsError, setRecipientsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setRecipients(null);
+    setRecipientsError(null);
+    fetchCampaignRecipients(campaign.id)
+      .then((r) => {
+        if (active) setRecipients(r.recipients);
+      })
+      .catch((e: any) => {
+        if (active) setRecipientsError(e?.message ?? 'Could not load recipients.');
+      });
+    return () => {
+      // Switching campaigns fast must not let an older response overwrite a
+      // newer one.
+      active = false;
+    };
+  }, [campaign.id]);
 
   const getStatusIcon = (status: SequenceStep['status']) => {
     switch (status) {
@@ -72,7 +109,9 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({ campaign
         <div className="flex gap-2">
            <div className="flex items-center px-4 py-2 bg-white/[0.02] rounded-full border border-white/10">
               <Users className="w-4 h-4 text-neutral-400 mr-2" />
-              <span className="text-sm font-semibold text-neutral-200">{campaign.recipients.length}</span>
+              <span className="text-sm font-semibold text-neutral-200">
+                {recipients === null ? '—' : recipients.length}
+              </span>
               <span className="text-xs text-neutral-500 ml-1">Recipients</span>
            </div>
            <div className="flex items-center px-4 py-2 bg-white/[0.02] rounded-full border border-white/10">
@@ -164,32 +203,44 @@ export const CampaignDetailView: React.FC<CampaignDetailViewProps> = ({ campaign
         )}
 
         {activeTab === 'RECIPIENTS' && (
-           <Card padding="none" className="overflow-hidden">
-              <div className="overflow-x-auto">
-                <Table>
-                   <THead>
-                      <TR>
-                         <TH>Name</TH>
-                         <TH>Email</TH>
-                         <TH>Company</TH>
-                         <TH className="text-right">Status</TH>
-                      </TR>
-                   </THead>
-                   <TBody>
-                      {campaign.recipients.map((r, i) => (
-                         <TR key={i} hover>
-                            <TD className="font-medium text-white">{r.name}</TD>
-                            <TD className="text-neutral-400">{r.email}</TD>
-                            <TD className="text-neutral-400">{r.company}</TD>
-                            <TD className="text-right">
-                               <Badge variant="neutral">Pending</Badge>
-                            </TD>
-                         </TR>
-                      ))}
-                   </TBody>
-                </Table>
+           recipientsError ? (
+              <Alert variant="error">{recipientsError}</Alert>
+           ) : recipients === null ? (
+              <div className="flex justify-center py-16"><Spinner className="h-6 w-6 text-volt-text" /></div>
+           ) : recipients.length === 0 ? (
+              <div className="text-center py-12 bg-white/[0.02] rounded-2xl border border-dashed border-white/10">
+                 <p className="text-neutral-400">No recipients on this campaign yet.</p>
               </div>
-           </Card>
+           ) : (
+              <Card padding="none" className="overflow-hidden">
+                 <div className="overflow-x-auto">
+                   <Table>
+                      <THead>
+                         <TR>
+                            <TH>Name</TH>
+                            <TH>Email</TH>
+                            <TH>Company</TH>
+                            <TH className="text-right">Status</TH>
+                         </TR>
+                      </THead>
+                      <TBody>
+                         {recipients.map((r) => (
+                            <TR key={r.id} hover>
+                               <TD className="font-medium text-white">{r.name}</TD>
+                               <TD className="text-neutral-400">{r.email}</TD>
+                               <TD className="text-neutral-400">{r.company}</TD>
+                               <TD className="text-right">
+                                  {/* Was hardcoded to "Pending" for every row, so
+                                      even a fully-sent campaign read as untouched. */}
+                                  <Badge variant={RECIPIENT_BADGE[r.status] ?? 'neutral'}>{r.status}</Badge>
+                               </TD>
+                            </TR>
+                         ))}
+                      </TBody>
+                   </Table>
+                 </div>
+              </Card>
+           )
         )}
 
         {activeTab === 'OVERVIEW' && (

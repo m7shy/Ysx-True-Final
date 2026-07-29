@@ -118,6 +118,7 @@ vi.mock('../db/prisma.js', () => ({
 
 import { app } from '../index.js';
 import { signAccessToken } from '../auth/jwt.js';
+import { emailHash } from '../leads/suppression.js';
 
 const USER_ID = 'u1';
 let token: string;
@@ -207,5 +208,104 @@ describe('DNC enforcement', () => {
     const res = await authed('patch', `/api/unibox/threads/${leadId}/lead-status`).send({ leadStatus: 'LEFT_HANGING' });
     expect(res.status).toBe(200);
     expect(store.leads.get(leadId)?.status).toBe('CONTACTED');
+  });
+});
+
+/**
+ * The two MANUAL send paths must honour the opt-out too.
+ *
+ * isSuppressed() was enforced in exactly two places — the campaign initial send
+ * (campaigns/worker.ts) and the campaign follow-up job (index.ts) — while
+ * suppression.ts's own comment states the contract as "Callers on the send path
+ * check isSuppressed() separately". Two of the four callers did not:
+ *
+ *  - POST /api/mail/send (the Dashboard follow-up composer) had NO opt-out
+ *    check of any kind, neither DNC nor suppression;
+ *  - POST /api/unibox/threads/:id/reply checked Lead.status === DNC but never
+ *    the suppression list, which is the record that survives the Lead row.
+ *
+ * So a person who clicked unsubscribe could still be emailed by hand. These
+ * tests exist because the campaign path being correct says nothing about the
+ * paths beside it.
+ *
+ * Mutation coverage, verified by performing each mutation: deleting either
+ * guard makes its send return 200 instead of 409.
+ */
+describe('opt-out enforcement on the manual send paths', () => {
+  const suppress = (email: string) =>
+    store.suppressions.add(`${USER_ID}:${emailHash(email)}`);
+
+  function seedLead(email: string, status = 'CONTACTED') {
+    const leadId = nextId('l');
+    store.leads.set(leadId, {
+      id: leadId, userId: USER_ID, email, name: 'Target', company: 'Acme',
+      status, intelligence: null, isBounced: false,
+    });
+    return leadId;
+  }
+
+  const post = (path: string) =>
+    (request(app) as any).post(path).set('Authorization', `Bearer ${token}`);
+
+  beforeEach(() => {
+    store.suppressions.clear();
+  });
+
+  it('refuses a unibox reply to an address that unsubscribed', async () => {
+    const leadId = seedLead('opted-out@example.com');
+    suppress('opted-out@example.com');
+
+    const res = await post(`/api/unibox/threads/${leadId}/reply`).send({ content: 'circling back' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('SUPPRESSED');
+  });
+
+  it('refuses POST /api/mail/send to an address that unsubscribed', async () => {
+    seedLead('opted-out@example.com');
+    suppress('opted-out@example.com');
+
+    const res = await post('/api/mail/send').send({
+      to: 'opted-out@example.com', subject: 'Following up', body: 'hello',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('SUPPRESSED');
+  });
+
+  it('refuses POST /api/mail/send to a DNC lead', async () => {
+    seedLead('dnc@example.com', 'DNC');
+
+    const res = await post('/api/mail/send').send({
+      to: 'dnc@example.com', subject: 'Following up', body: 'hello',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('DNC');
+  });
+
+  it('enforces the opt-out even when no Lead row exists', async () => {
+    // The suppression record outlives the lead: deleting the lead must not
+    // resurrect the ability to mail someone who opted out.
+    suppress('ghost@example.com');
+
+    const res = await post('/api/mail/send').send({
+      to: 'ghost@example.com', subject: 'Following up', body: 'hello',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('SUPPRESSED');
+  });
+
+  it('checks every recipient of a multi-address send, not just the first', async () => {
+    seedLead('fine@example.com');
+    suppress('opted-out@example.com');
+
+    const res = await post('/api/mail/send').send({
+      to: 'fine@example.com, opted-out@example.com', subject: 'Following up', body: 'hello',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('SUPPRESSED');
   });
 });

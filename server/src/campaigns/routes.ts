@@ -116,12 +116,42 @@ function requireCompleteSendWindow(
   }
 }
 
-const createSchema = createSchemaBase.superRefine(requireCompleteSendWindow);
+/**
+ * `sendDays: 0` is a bitmask with no day set, and isWithinSendWindow() reads it
+ * as "no day is ever a send day" (`sendDays != null && (0 & dayBit) === 0` is
+ * false for every day of the week). The campaign then sits ACTIVE forever, 0
+ * sent, with no pausedReason and nothing anywhere recording why — the silent
+ * failure the MISSING_SENDER_IDENTITY banner exists to prevent, but with no
+ * banner even possible because the worker never touches the campaign.
+ *
+ * Refused rather than coerced: 0 is never what anyone means, and silently
+ * rewriting it to 127 ("every day") would send on days the user just
+ * unticked. `null`/absent already means unrestricted, so there is a correct
+ * way to express "no day restriction" and this is not it.
+ */
+function rejectEmptySendDays(
+  value: { sendDays?: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.sendDays === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sendDays'],
+      message:
+        'Select at least one sending day — sendDays: 0 would stop the campaign from ever sending. Omit the field to send every day.',
+    });
+  }
+}
+
+const createSchema = createSchemaBase
+  .superRefine(requireCompleteSendWindow)
+  .superRefine(rejectEmptySendDays);
 
 const updateSchema = createSchemaBase
   .partial()
   .extend({ progress: z.number().int().min(0).max(100).optional() })
-  .superRefine(requireCompleteSendWindow);
+  .superRefine(requireCompleteSendWindow)
+  .superRefine(rejectEmptySendDays);
 
 function toErrorPayload(err: unknown): { status: number; code: string; message: string } {
   if (err instanceof z.ZodError) {

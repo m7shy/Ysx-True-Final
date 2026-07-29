@@ -274,6 +274,30 @@ surrounding code enforces — especially the one immediately above it. Corollary
 with N branches needs a case where an *earlier* branch's condition is false and a later branch's
 output must still satisfy it.
 
+## This machine — `--max-old-space-size` is the WRONG lever for these OOMs (2026-07-29)
+Root `tsc` died three times in one session with ~1 GB free of 8 GB (the rest held by Chrome,
+Telegram and Claude Code itself). Every failure was in the **young** generation:
+
+```
+FATAL ERROR: NewSpace::EnsureCurrentCapacity Allocation failed - JavaScript heap out of memory
+FATAL ERROR: MarkCompactCollector: young object promotion failed
+```
+
+Note the heap sizes in those crashes — 15 MB, 145 MB, 170 MB. That is not a large compile
+exhausting a cap; it is the OS refusing pages. **Raising `--max-old-space-size=4096` made it worse**
+(one crash came at 15 MB *with* the flag set), because V8 sizes the semi-spaces relative to the max
+heap, so a bigger cap increases the young generation's appetite up front.
+
+What worked every time:
+```bash
+NODE_OPTIONS="--max-semi-space-size=2 --max-old-space-size=1024" npx tsc --noEmit
+```
+Shrink the young generation and *lower* the old-space cap so V8 collects instead of growing. Check
+free memory first (`Get-CimInstance Win32_OperatingSystem`) — if it is under ~1.5 GB, reach for this
+rather than for a bigger number. Vitest tolerated `--max-semi-space-size=2` fine too. The earlier
+entry in this file recommending `--max-old-space-size=4096` applies to genuinely large compiles,
+not to a starved machine; do not apply it reflexively.
+
 ## Reviewers — verify the PREMISE you hand them, not just the finding they return (2026-07-28)
 Two premises given to the scraper reviewer were wrong: that tenants could collide on a shared
 profile directory (the slug is per tenant — the real collision was same-tenant), and that the idle
