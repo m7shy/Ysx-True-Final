@@ -7,7 +7,13 @@ import { apiGet, apiPost, apiPatch, apiDelete, apiUpload, apiDownload } from './
  * logged-in tenant.
  */
 
-export type JobStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+/**
+ * Mirrors server/src/scraper/service.ts's JobStatus and must stay in step with
+ * it. When 'cancelling' was added server-side and not here, the type asserted a
+ * shape the server does not send: `tsc` stayed green while STATUS_META lost its
+ * exhaustiveness guarantee, and ScraperView crashed on the missing key.
+ */
+export type JobStatus = 'running' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface ImportSummary {
   created: number;

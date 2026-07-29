@@ -41,12 +41,32 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const STATUS_META: Record<ScrapeJob['status'], { label: string; className: string; Icon: any }> = {
-  running:   { label: 'Running',   className: 'text-amber-400',   Icon: Loader2 },
-  succeeded: { label: 'Done',      className: 'text-emerald-400', Icon: CheckCircle2 },
-  failed:    { label: 'Failed',    className: 'text-red-400',     Icon: XCircle },
-  cancelled: { label: 'Cancelled', className: 'text-neutral-400', Icon: Square },
+type StatusMeta = { label: string; className: string; Icon: any };
+
+const STATUS_META: Record<ScrapeJob['status'], StatusMeta> = {
+  running:    { label: 'Running',    className: 'text-amber-400',   Icon: Loader2 },
+  cancelling: { label: 'Stopping…',  className: 'text-amber-400',   Icon: Loader2 },
+  succeeded:  { label: 'Done',       className: 'text-emerald-400', Icon: CheckCircle2 },
+  failed:     { label: 'Failed',     className: 'text-red-400',     Icon: XCircle },
+  cancelled:  { label: 'Cancelled',  className: 'text-neutral-400', Icon: Square },
 };
+
+/**
+ * Never index STATUS_META directly. It is typed exhaustively over the CLIENT's
+ * JobStatus union, so the compiler only protects this map while that union
+ * matches the server's — and when 'cancelling' was added server-side without
+ * updating the client type, `STATUS_META[status]` returned undefined and the
+ * next line dereferenced `.Icon`, white-screening the whole view the moment Stop
+ * was pressed. A status we do not recognise should degrade to a label, not a
+ * blank page.
+ */
+function statusMeta(status: string): StatusMeta {
+  return (STATUS_META as Record<string, StatusMeta>)[status] ?? {
+    label: status,
+    className: 'text-neutral-400',
+    Icon: Square,
+  };
+}
 
 /** All-string mirror of ScraperSettings so number inputs can hold partial/
  * empty text while typing (a controlled <input type="number"> with a numeric
@@ -270,7 +290,13 @@ export const ScraperView: React.FC = () => {
         const job = await getScrapeJob(activeId);
         if (cancelled || !isMounted.current) return;
         setCurrent(job);
-        if (job.status !== 'running') {
+        // 'cancelling' is NOT terminal — the child process is still shutting
+        // down and the server still holds this tenant's slot. Treating "not
+        // running" as "finished" stopped the poll the instant Stop was pressed,
+        // dropped the job from the UI, and re-enabled Start — which then failed
+        // with a 409 because the server was correctly still busy. Keep polling
+        // until the process has genuinely exited.
+        if (job.status !== 'running' && job.status !== 'cancelling') {
           setActiveId(null);
           loadHistory();
           if (job.status === 'succeeded') {
@@ -361,7 +387,10 @@ export const ScraperView: React.FC = () => {
     }
   };
 
-  const isRunning = current?.status === 'running';
+  // Includes 'cancelling': the scraper is still occupying this tenant's slot
+  // while it winds down, so Start must stay disabled and the spinner must keep
+  // turning. Reporting it as idle invites a click that can only 409.
+  const isRunning = current?.status === 'running' || current?.status === 'cancelling';
 
   if (configured === false) {
     return (
@@ -787,11 +816,11 @@ export const ScraperView: React.FC = () => {
             <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
               <div className="flex items-center gap-2">
                 {(() => {
-                  const meta = STATUS_META[current.status];
+                  const meta = statusMeta(current.status);
                   const Icon = meta.Icon;
                   return (
                     <>
-                      <Icon className={`w-4 h-4 ${meta.className} ${current.status === 'running' ? 'animate-spin' : ''}`} />
+                      <Icon className={`w-4 h-4 ${meta.className} ${current.status === 'running' || current.status === 'cancelling' ? 'animate-spin' : ''}`} />
                       <span className={`text-sm font-medium ${meta.className}`}>{meta.label}</span>
                     </>
                   );
@@ -848,7 +877,7 @@ export const ScraperView: React.FC = () => {
           ) : (
             <ul className="divide-y divide-white/10">
               {history.map((job) => {
-                const meta = STATUS_META[job.status];
+                const meta = statusMeta(job.status);
                 const Icon = meta.Icon;
                 return (
                   <li key={job.id} className="px-6 py-3 flex items-center justify-between text-sm hover:bg-white/[0.03] transition-colors duration-300">
