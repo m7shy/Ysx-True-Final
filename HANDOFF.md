@@ -1,5 +1,61 @@
 # HANDOFF — Full-App Functional Audit (for next session)
 
+## 2026-07-29 — One more self-inflicted bug found and fixed. Fable review brief ready.
+
+### A white screen I introduced the day before
+
+Adding the `cancelling` JobStatus server-side without teaching the client about it broke
+`ScraperView` three ways, all on the Stop button (`50eb019`):
+
+- `STATUS_META` is a `Record` over the **client's** `JobStatus` union, and
+  `services/scraperApi.ts` still listed four statuses. The map therefore stayed "exhaustive" as far
+  as `tsc` was concerned, `STATUS_META['cancelling']` returned `undefined`, and the next line
+  dereferenced `.Icon` — **a blank page for the whole view the moment Stop was pressed.**
+- The poll treated anything not `running` as terminal, so it stopped polling, dropped the job from
+  the UI and re-enabled Start — which could then only 409, because the server correctly still held
+  the slot.
+- `isRunning` excluded it too, so the spinner froze and the controls unlocked mid-shutdown.
+
+**Same root cause as the portal white-screen fixed the previous day**: a client type asserting a
+shape the server does not send, so `tsc` reports green while the runtime shape is wrong. Twice in
+two days, both found by hand rather than by the compiler. Lookups now go through `statusMeta()`,
+which degrades an unknown status to a label instead of crashing.
+
+Found by asking "what consumes the status I added?" — which is the check that should have run when
+it was added, and is now item 3 in the failure-mode list in `known-failures.md`.
+
+### Honest state of the code
+
+- **Every defect that has been FOUND is fixed.** That is not the same as "no bugs left", and the
+  base rate argues against optimism: yesterday morning the tree had 244 passing tests and looked
+  healthy, and three reviews then found ~30 real defects. Writing the missing tests found three
+  more that were hours old. Today found one more.
+- **Nothing has ever run against Postgres.** All 316 server tests mock Prisma. Every fix is
+  verified by reasoning, typechecking and mocks. The first genuine test is the 2026-08-05 deploy,
+  which lands three migrations and five behaviour changes at once.
+- Coverage is uneven: the backend review **never finished** (API session limit), the **portal
+  backend has never been reviewed at all**, and the frontend has 14 tests across 2 files of a
+  ~13k-line tree.
+- Code is not what blocks sending. The readiness assessment's NO-GO reasons are almost entirely
+  non-code — DKIM, postal address, bank details, privacy policy — and **none of them has been done
+  yet.**
+
+### Fable 5 review brief — `.plans/REVIEW-PROMPT-FABLE-2026-07-29.md`
+
+Paste-ready for a fresh session. Fable plans, Opus executes, so it is written to produce a findings
+report **and an ordered execution plan**, explicitly not code.
+
+Targets in priority order: (1) the 20 fixes from 2026-07-28, since they are one author's work in
+one day with self-checks that demonstrably failed twice; (2) the unfinished backend review, whose
+worktree and probe files are preserved and which should be resumed rather than restarted; (3) the
+portal backend, never reviewed, client-facing, and the part that touches money.
+
+It carries the five failure modes measured on this repository rather than generic review advice,
+and it tells the reviewer to check the *verification* wherever a comment or this handoff claims
+something was verified — because at least one such claim was wrong.
+
+---
+
 ## 2026-07-28 (final) — Every review finding fixed. Frontend has a test runner. Prod still down until Aug 5.
 
 ### Read this first
