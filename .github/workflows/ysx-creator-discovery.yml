@@ -1,0 +1,68 @@
+name: YSXVISUALS Creator Discovery
+
+on:
+  schedule:
+    # GitHub cron is UTC.  Egypt moves between UTC+2 and UTC+3, so these are
+    # both possible UTC hours. runner.py checks Africa/Cairo and proceeds only
+    # at 09:00, 11:00, 14:00, 16:00, or 19:00 local time.
+    - cron: '0 6,7,8,9,11,12,13,14,16,17 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ysx-creator-discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out discovery code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install discovery dependency
+        run: pip install -r scraper/cloud_creator_discovery/requirements.txt
+
+      - name: Load dedicated discovery state branch
+        id: state
+        env:
+          STATE_BRANCH: ysx-discovery-state
+          REPOSITORY: ${{ github.repository }}
+          TOKEN: ${{ github.token }}
+        run: |
+          state_dir="$RUNNER_TEMP/ysx-discovery-state"
+          remote="https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git"
+          if git ls-remote --exit-code "$remote" "refs/heads/${STATE_BRANCH}" >/dev/null 2>&1; then
+            git clone --depth=1 --branch "$STATE_BRANCH" "$remote" "$state_dir"
+          else
+            mkdir -p "$state_dir"
+            git -C "$state_dir" init
+            git -C "$state_dir" checkout -b "$STATE_BRANCH"
+            git -C "$state_dir" remote add origin "$remote"
+          fi
+          git -C "$state_dir" config user.name "github-actions[bot]"
+          git -C "$state_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "path=$state_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Discover public YouTube channels
+        run: python scraper/cloud_creator_discovery/runner.py --state-dir "${{ steps.state.outputs.path }}"
+
+      - name: Persist deduplication ledger and report
+        env:
+          STATE_BRANCH: ysx-discovery-state
+        run: |
+          state_dir="${{ steps.state.outputs.path }}"
+          git -C "$state_dir" add daily discoveries reports
+          if git -C "$state_dir" diff --cached --quiet; then
+            echo "No discovery-state changes to persist."
+            exit 0
+          fi
+          git -C "$state_dir" commit -m "YSX discovery $(date -u +%Y-%m-%dT%H:%MZ)"
+          git -C "$state_dir" push origin "HEAD:refs/heads/${STATE_BRANCH}"
